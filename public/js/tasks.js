@@ -6,6 +6,8 @@ let lastTasksData     = [];       // кэш для тихого обновлен
 let currentFilter     = 'all';    // all | active | done | failed
 let currentDebugPlan  = null;     // id плана в открытом модале
 
+const API_MANAGE = `${window.location.origin}/api/manage`;
+
 // ─── Утилиты ─────────────────────────────────────────────────────────────────
 
 function taskStatusLabel(status) {
@@ -740,4 +742,81 @@ async function confirmCleanupCompleted() {
 async function onLoginSuccess() {
     tasksFirstLoad = true;
     await loadPlans();
+    await loadCronStatus();
+}
+
+async function loadCronStatus() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        const res = await fetch(`${API_MANAGE}/cron/status?chat_id=${encodeURIComponent(chatId)}`);
+        const data = await res.json();
+        const statusEl = document.getElementById('cronStatus');
+        if (!statusEl) return;
+
+        let html = '';
+        if (data.hasCronTasks) {
+            html += '<span style="color: #0a0;">✅ Есть задачи</span>\n\n';
+            data.tasks.forEach(task => {
+                html += `📧 ${task.type}: Интервал ${task.pollIntervalMinutes} мин\n`;
+                html += `   Последний poll: ${task.lastPollAgoMinutes ? task.lastPollAgoMinutes + ' мин назад' : 'не было'}\n`;
+                html += `   Обработано: ${task.processedCount || 0}\n`;
+                if (task.config) {
+                    html += `   IMAP: ${task.config.imapHost || '—'} / SMTP: ${task.config.smtpHost || '—'}\n`;
+                }
+            });
+        } else {
+            html += '<span style="color: #aaa;">❌ Нет активных cron задач</span>';
+        }
+        html += `\n\nГлобальный cron: ${data.globalCronActive ? '<span style="color: #0a0;">✅ Активен</span>' : '<span style="color: #d00;">⏹️ Остановлен</span>'}`;
+
+        statusEl.innerHTML = html;
+
+        // Load logs
+        const logsRes = await fetch(`${API_MANAGE}/cron/logs?chat_id=${encodeURIComponent(chatId)}`);
+        const logs = await logsRes.json();
+        const logsEl = document.getElementById('cronLogs');
+        if (logsEl) {
+            let logsHtml = '';
+            if (logs.length === 0) {
+                logsHtml = '<em>Нет логов</em>';
+            } else {
+                logs.forEach(log => {
+                    const time = new Date(log.at).toLocaleString('ru-RU');
+                    const details = log.reason || log.error || '';
+                    logsHtml += `${time}: ${log.status === 'success' ? '✅' : log.status === 'error' ? '❌' : '⏭️'} ${log.type} (${log.processedCount || 0}) ${details ? '- ' + details : ''}\n`;
+                });
+            }
+            logsEl.textContent = logsHtml;
+        }
+    } catch (e) {
+        console.error('loadCronStatus', e);
+        document.getElementById('cronStatus').textContent = 'Ошибка загрузки статуса';
+        const logsEl = document.getElementById('cronLogs');
+        if (logsEl) logsEl.textContent = 'Ошибка загрузки логов';
+    }
+}
+
+async function testPollNow() {
+    const chatId = getChatId();
+    if (!chatId) {
+        showToast('Нет Chat ID', 'error');
+        return;
+    }
+    try {
+        const res = await fetch(`${API_MANAGE}/cron/poll-now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast(`🧪 Poll запущен! Processed: ${data.processedCount || 0}. Проверьте логи.`, 'info');
+            setTimeout(() => loadCronStatus(), 3000);
+        } else {
+            showToast(`Ошибка: ${data.error || 'Неизвестно'}`, 'error');
+        }
+    } catch (e) {
+        showToast('Ошибка сети: ' + e.message, 'error');
+    }
 }
