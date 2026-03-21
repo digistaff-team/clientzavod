@@ -1,8 +1,10 @@
 const express = require('express');
 const router = express.Router();
+const { Telegraf } = require('telegraf');
 
 const contentMvpService = require('../services/contentMvp.service');
 const telegramRunner = require('../manage/telegram/runner');
+const manageStore = require('../manage/store');
 
 function normalizeChatId(chatId) {
   return String(chatId || '').trim();
@@ -12,6 +14,17 @@ function getBotFacade(chatId) {
   const entry = telegramRunner.bots.get(normalizeChatId(chatId));
   if (!entry || !entry.bot || !entry.bot.telegram) return null;
   return { telegram: entry.bot.telegram };
+}
+
+function getBotFacadeFromStoredToken(chatId) {
+  const state = manageStore.getState(normalizeChatId(chatId));
+  const token = String(state?.token || '').trim();
+  if (!token) return null;
+  return { telegram: new Telegraf(token).telegram };
+}
+
+function resolveBotFacade(chatId) {
+  return getBotFacade(chatId) || getBotFacadeFromStoredToken(chatId);
 }
 
 function toPositiveInt(value, fallback) {
@@ -26,7 +39,7 @@ router.post('/run-now', async (req, res) => {
   if (!chatId) {
     return res.status(400).json({ error: 'chat_id is required' });
   }
-  const bot = getBotFacade(chatId);
+  const bot = resolveBotFacade(chatId);
   if (!bot) {
     return res.status(409).json({ error: 'Telegram bot is not running for chat_id' });
   }
@@ -35,6 +48,201 @@ router.post('/run-now', async (req, res) => {
     return res.json(result);
   } catch (e) {
     return res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/topics', async (req, res) => {
+  const chatId = normalizeChatId(req.query.chat_id);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+
+  const status = req.query.status ? String(req.query.status).trim().toLowerCase() : null;
+  const limit = Math.min(toPositiveInt(req.query.limit, 100), 500);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+  try {
+    const result = await contentMvpService.listTopics(chatId, { status, limit, offset });
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/topics', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+
+  try {
+    const topic = await contentMvpService.createTopic(chatId, req.body || {});
+    return res.status(201).json({ topic });
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+});
+
+router.patch('/topics/:id', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id);
+  const topicId = parseInt(req.params.id, 10);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+  if (!Number.isFinite(topicId) || topicId <= 0) {
+    return res.status(400).json({ error: 'invalid topic id' });
+  }
+
+  try {
+    const topic = await contentMvpService.updateTopic(chatId, topicId, req.body || {});
+    return res.json({ topic });
+  } catch (e) {
+    return res.status(/not found/i.test(e.message) ? 404 : 400).json({ error: e.message });
+  }
+});
+
+router.delete('/topics/:id', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id || req.query.chat_id);
+  const topicId = parseInt(req.params.id, 10);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+  if (!Number.isFinite(topicId) || topicId <= 0) {
+    return res.status(400).json({ error: 'invalid topic id' });
+  }
+
+  try {
+    const topic = await contentMvpService.deleteTopic(chatId, topicId);
+    return res.json({ topic });
+  } catch (e) {
+    return res.status(/not found/i.test(e.message) ? 404 : 400).json({ error: e.message });
+  }
+});
+
+router.get('/materials', async (req, res) => {
+  const chatId = normalizeChatId(req.query.chat_id);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+
+  const limit = Math.min(toPositiveInt(req.query.limit, 100), 500);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+  try {
+    const result = await contentMvpService.listMaterials(chatId, { limit, offset });
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/materials', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+
+  try {
+    const material = await contentMvpService.createMaterial(chatId, req.body || {});
+    return res.status(201).json({ material });
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+});
+
+router.patch('/materials/:id', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id);
+  const materialId = parseInt(req.params.id, 10);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+  if (!Number.isFinite(materialId) || materialId <= 0) {
+    return res.status(400).json({ error: 'invalid material id' });
+  }
+
+  try {
+    const material = await contentMvpService.updateMaterial(chatId, materialId, req.body || {});
+    return res.json({ material });
+  } catch (e) {
+    return res.status(/not found/i.test(e.message) ? 404 : 400).json({ error: e.message });
+  }
+});
+
+router.delete('/materials/:id', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id || req.query.chat_id);
+  const materialId = parseInt(req.params.id, 10);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+  if (!Number.isFinite(materialId) || materialId <= 0) {
+    return res.status(400).json({ error: 'invalid material id' });
+  }
+
+  try {
+    const material = await contentMvpService.deleteMaterial(chatId, materialId);
+    return res.json({ material });
+  } catch (e) {
+    return res.status(/not found/i.test(e.message) ? 404 : 400).json({ error: e.message });
+  }
+});
+
+router.post('/import-google-sheet/preview', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+
+  try {
+    const result = await contentMvpService.previewContentImport(chatId, req.body || {});
+    return res.json(result);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/import-google-sheet', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+
+  try {
+    const result = await contentMvpService.importContentFromGoogleSheet(chatId, req.body || {});
+    return res.json(result);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/profile', async (req, res) => {
+  const chatId = normalizeChatId(req.query.chat_id);
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+
+  try {
+    const profile = await contentMvpService.getProfile(chatId);
+    return res.json(profile);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/profile', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id);
+  const files = req.body.files;
+  if (!chatId) {
+    return res.status(400).json({ error: 'chat_id is required' });
+  }
+  if (!files || typeof files !== 'object') {
+    return res.status(400).json({ error: 'files is required' });
+  }
+
+  try {
+    const profile = await contentMvpService.saveProfile(chatId, files);
+    return res.json(profile);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
   }
 });
 
@@ -79,7 +287,7 @@ router.post('/jobs/:id/:action', async (req, res) => {
   const jobId = parseInt(req.params.id, 10);
   const actionRaw = String(req.params.action || '').trim().toLowerCase();
   const action = actionRaw.replace(/-/g, '_');
-  const allowed = new Set(['approve', 'reject', 'regen_text', 'regen_image']);
+  const allowed = new Set(['approve', 'reject', 'regen_text', 'regen_image', 'regen_video']);
 
   if (!chatId) {
     return res.status(400).json({ error: 'chat_id is required' });
@@ -91,7 +299,7 @@ router.post('/jobs/:id/:action', async (req, res) => {
     return res.status(400).json({ error: 'invalid action' });
   }
 
-  const bot = getBotFacade(chatId);
+  const bot = resolveBotFacade(chatId);
   if (!bot) {
     return res.status(409).json({ error: 'Telegram bot is not running for chat_id' });
   }

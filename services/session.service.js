@@ -285,6 +285,14 @@ async function recoverAllSessions() {
     });
 }
 
+/**
+ * Удалить сессию из памяти
+ */
+function removeSession(chatId) {
+    sessions.delete(chatId);
+    initStatuses.delete(chatId);
+}
+
 module.exports = {
     createSession,
     getOrCreateSession,
@@ -295,5 +303,6 @@ module.exports = {
     cleanupIdleSessions,
     recoverAllSessions,
     getInitStatus,
+    removeSession,
     sessions
 };

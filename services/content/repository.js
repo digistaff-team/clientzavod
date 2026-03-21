@@ -37,6 +37,35 @@ async function withClient(chatId, fn) {
 async function ensureSchema(chatId) {
   return withClient(chatId, async (client) => {
     await client.query(`
+      CREATE TABLE IF NOT EXISTS content_topics (
+        id SERIAL PRIMARY KEY,
+        topic VARCHAR(500) NOT NULL,
+        focus VARCHAR(255),
+        secondary VARCHAR(255),
+        lsi VARCHAR(255),
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        used_at TIMESTAMPTZ
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_materials (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        content TEXT NOT NULL,
+        source_type VARCHAR(50),
+        source_url VARCHAR(500),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_config (
+        key VARCHAR(100) PRIMARY KEY,
+        value TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS content_jobs (
         id BIGSERIAL PRIMARY KEY,
         chat_id TEXT NOT NULL,
@@ -139,6 +168,10 @@ async function ensureSchema(chatId) {
     await client.query(`ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'text+image';`);
     await client.query(`ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS video_path TEXT;`);
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'text+image';`);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_content_topics_status_created_at
+      ON content_topics(status, created_at, id);
+    `);
   });
 }
 
@@ -650,6 +683,314 @@ async function countVideoGeneratedToday(chatId, dateStr, tz = 'Europe/Moscow') {
   });
 }
 
+async function reserveNextTopic(chatId) {
+  return withClient(chatId, async (client) => {
+    await client.query('BEGIN');
+    try {
+      const result = await client.query(
+        `SELECT id, topic, focus, secondary, lsi, status, created_at, used_at
+         FROM content_topics
+         WHERE status = 'pending'
+         ORDER BY created_at ASC, id ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1`
+      );
+      const row = result.rows[0];
+      if (!row) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      await client.query(
+        `UPDATE content_topics
+         SET status = 'used', used_at = NOW()
+         WHERE id = $1`,
+        [row.id]
+      );
+
+      await client.query('COMMIT');
+      return row;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    }
+  });
+}
+
+async function listTopics(chatId, options = {}) {
+  const status = options.status ? String(options.status).trim().toLowerCase() : null;
+  const limit = Math.min(Math.max(parseInt(options.limit, 10) || 100, 1), 500);
+  const offset = Math.max(parseInt(options.offset, 10) || 0, 0);
+
+  return withClient(chatId, async (client) => {
+    const params = [];
+    const where = [];
+
+    if (status) {
+      params.push(status);
+      where.push(`LOWER(status) = $${params.length}`);
+    }
+
+    params.push(limit);
+    const limitPos = params.length;
+    params.push(offset);
+    const offsetPos = params.length;
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const result = await client.query(
+      `SELECT id, topic, focus, secondary, lsi, status, created_at, used_at
+       FROM content_topics
+       ${whereSql}
+       ORDER BY created_at DESC, id DESC
+       LIMIT $${limitPos} OFFSET $${offsetPos}`,
+      params
+    );
+    const totalResult = await client.query(
+      `SELECT COUNT(*)::int AS total
+       FROM content_topics
+       ${whereSql}`,
+      status ? [status] : []
+    );
+
+    return {
+      total: totalResult.rows[0]?.total || 0,
+      items: result.rows
+    };
+  });
+}
+
+async function createTopic(chatId, data) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `INSERT INTO content_topics (topic, focus, secondary, lsi, status)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, topic, focus, secondary, lsi, status, created_at, used_at`,
+      [
+        data.topic,
+        data.focus || null,
+        data.secondary || null,
+        data.lsi || null,
+        data.status || 'pending'
+      ]
+    );
+    return result.rows[0];
+  });
+}
+
+async function getTopicById(chatId, topicId) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `SELECT id, topic, focus, secondary, lsi, status, created_at, used_at
+       FROM content_topics
+       WHERE id = $1
+       LIMIT 1`,
+      [topicId]
+    );
+    return result.rows[0] || null;
+  });
+}
+
+async function updateTopic(chatId, topicId, data) {
+  return withClient(chatId, async (client) => {
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (data.topic !== undefined) {
+      fields.push(`topic = $${paramIndex++}`);
+      values.push(data.topic);
+    }
+    if (data.focus !== undefined) {
+      fields.push(`focus = $${paramIndex++}`);
+      values.push(data.focus);
+    }
+    if (data.secondary !== undefined) {
+      fields.push(`secondary = $${paramIndex++}`);
+      values.push(data.secondary);
+    }
+    if (data.lsi !== undefined) {
+      fields.push(`lsi = $${paramIndex++}`);
+      values.push(data.lsi);
+    }
+    if (data.status !== undefined) {
+      fields.push(`status = $${paramIndex++}`);
+      values.push(data.status);
+      fields.push(`used_at = CASE WHEN $${paramIndex - 1} = 'pending' THEN NULL ELSE COALESCE(used_at, NOW()) END`);
+    }
+
+    if (!fields.length) {
+      return getTopicById(chatId, topicId);
+    }
+
+    values.push(topicId);
+    const result = await client.query(
+      `UPDATE content_topics
+       SET ${fields.join(', ')}
+       WHERE id = $${paramIndex}
+       RETURNING id, topic, focus, secondary, lsi, status, created_at, used_at`,
+      values
+    );
+    return result.rows[0] || null;
+  });
+}
+
+async function deleteTopic(chatId, topicId) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `DELETE FROM content_topics
+       WHERE id = $1
+       RETURNING id`,
+      [topicId]
+    );
+    return result.rows[0] || null;
+  });
+}
+
+async function updateTopicStatus(chatId, topicId, status, note = null) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `UPDATE content_topics
+       SET status = $1,
+           used_at = CASE
+             WHEN $1 = 'pending' THEN NULL
+             ELSE COALESCE(used_at, NOW())
+           END
+       WHERE id = $2
+       RETURNING id, topic, focus, secondary, lsi, status, created_at, used_at`,
+      [status, topicId]
+    );
+
+    if (note !== null) {
+      await client.query(
+        `INSERT INTO content_sheet_state (sheet_row, local_status, note)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (sheet_row) DO UPDATE SET
+           local_status = EXCLUDED.local_status,
+           note = EXCLUDED.note,
+           updated_at = NOW()`,
+        [topicId, status, note || null]
+      );
+    }
+
+    return result.rows[0] || null;
+  });
+}
+
+async function listMaterials(chatId, options = {}) {
+  const limit = Math.min(Math.max(parseInt(options.limit, 10) || 100, 1), 500);
+  const offset = Math.max(parseInt(options.offset, 10) || 0, 0);
+
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `SELECT id, title, content, source_type, source_url, created_at
+       FROM content_materials
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    const totalResult = await client.query(`SELECT COUNT(*)::int AS total FROM content_materials`);
+
+    return {
+      total: totalResult.rows[0]?.total || 0,
+      items: result.rows
+    };
+  });
+}
+
+async function createMaterial(chatId, data) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `INSERT INTO content_materials (title, content, source_type, source_url)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, title, content, source_type, source_url, created_at`,
+      [
+        data.title,
+        data.content,
+        data.sourceType || null,
+        data.sourceUrl || null
+      ]
+    );
+    return result.rows[0];
+  });
+}
+
+async function getMaterialById(chatId, materialId) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `SELECT id, title, content, source_type, source_url, created_at
+       FROM content_materials
+       WHERE id = $1
+       LIMIT 1`,
+      [materialId]
+    );
+    return result.rows[0] || null;
+  });
+}
+
+async function updateMaterial(chatId, materialId, data) {
+  return withClient(chatId, async (client) => {
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (data.title !== undefined) {
+      fields.push(`title = $${paramIndex++}`);
+      values.push(data.title);
+    }
+    if (data.content !== undefined) {
+      fields.push(`content = $${paramIndex++}`);
+      values.push(data.content);
+    }
+    if (data.sourceType !== undefined) {
+      fields.push(`source_type = $${paramIndex++}`);
+      values.push(data.sourceType);
+    }
+    if (data.sourceUrl !== undefined) {
+      fields.push(`source_url = $${paramIndex++}`);
+      values.push(data.sourceUrl);
+    }
+
+    if (!fields.length) {
+      return getMaterialById(chatId, materialId);
+    }
+
+    values.push(materialId);
+    const result = await client.query(
+      `UPDATE content_materials
+       SET ${fields.join(', ')}
+       WHERE id = $${paramIndex}
+       RETURNING id, title, content, source_type, source_url, created_at`,
+      values
+    );
+    return result.rows[0] || null;
+  });
+}
+
+async function deleteMaterial(chatId, materialId) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `DELETE FROM content_materials
+       WHERE id = $1
+       RETURNING id`,
+      [materialId]
+    );
+    return result.rows[0] || null;
+  });
+}
+
+async function loadMaterials(chatId, limit = 12) {
+  return withClient(chatId, async (client) => {
+    const result = await client.query(
+      `SELECT id, title, content, source_type, source_url, created_at
+       FROM content_materials
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit]
+    );
+    return result.rows;
+  });
+}
+
 module.exports = {
   withClient,
   ensureSchema,
@@ -673,5 +1014,18 @@ module.exports = {
   getPendingMediaJobs,
   getVideoAssetByJobId,
   updateJobVideoPath,
-  countVideoGeneratedToday
+  countVideoGeneratedToday,
+  reserveNextTopic,
+  listTopics,
+  createTopic,
+  getTopicById,
+  updateTopic,
+  deleteTopic,
+  updateTopicStatus,
+  listMaterials,
+  createMaterial,
+  getMaterialById,
+  updateMaterial,
+  deleteMaterial,
+  loadMaterials
 };

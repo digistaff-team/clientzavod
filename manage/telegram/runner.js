@@ -862,7 +862,7 @@ function startBot(chatId, token) {
     });
 
     // Обработчик загрузки файлов
-    bot.action(/^content:(\d+):(approve|regen_text|regen_image|reject)$/, async (ctx) => {
+    bot.action(/^content:(\d+):(approve|regen_text|regen_image|regen_video|reject)$/, async (ctx) => {
         const fromId = String(ctx.from?.id || '');
         const moderatorId = String(process.env.CONTENT_MVP_MODERATOR_USER_ID || '128247430');
         if (fromId !== moderatorId) {

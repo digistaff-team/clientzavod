@@ -2790,3 +2790,221 @@ select {
     color: #364fc7;
     font-size: 12px;
 }
+
+.content-section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+}
+
+.content-section-subtitle {
+    color: #6c757d;
+    font-size: 14px;
+    max-width: 760px;
+}
+
+.content-source-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 18px;
+}
+
+.content-card-block {
+    background: linear-gradient(180deg, #fafbff 0%, #f4f7fb 100%);
+    border: 1px solid #e6ebf2;
+    border-radius: 14px;
+    padding: 18px;
+}
+
+.content-card-block h3,
+.content-profile-card h3 {
+    margin-bottom: 10px;
+    color: #24324a;
+    font-size: 18px;
+}
+
+.content-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.content-form-grid-single {
+    grid-template-columns: 1fr;
+}
+
+.content-inline-help {
+    margin: 8px 0 14px;
+    color: #6c757d;
+    font-size: 13px;
+}
+
+.content-compact-editor {
+    min-height: 180px;
+}
+
+.content-profile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 18px;
+}
+
+.content-profile-card {
+    border: 1px solid #e6ebf2;
+    border-radius: 14px;
+    padding: 18px;
+    background: linear-gradient(180deg, #fcfdff 0%, #f8fafc 100%);
+}
+
+.content-profile-card p {
+    color: #6c757d;
+    font-size: 13px;
+    margin-bottom: 12px;
+}
+
+.content-profile-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 6px;
+}
+
+.content-profile-editor {
+    min-height: 240px;
+}
+
+.content-preview-wrap {
+    margin-top: 16px;
+    border-top: 1px solid #e6ebf2;
+    padding-top: 14px;
+}
+
+.content-preview-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.content-inline-stack {
+    display: grid;
+    gap: 8px;
+    min-width: 220px;
+}
+
+.content-inline-input,
+.content-inline-textarea {
+    width: 100%;
+    border: 1px solid #d5dce6;
+    border-radius: 10px;
+    padding: 8px 10px;
+    font: inherit;
+    color: #0f172a;
+    background: #fff;
+}
+
+.content-inline-input {
+    min-height: 38px;
+}
+
+.content-inline-textarea {
+    min-height: 112px;
+    resize: vertical;
+    line-height: 1.45;
+}
+
+.content-inline-input:focus,
+.content-inline-textarea:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.content-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.52);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 1200;
+    opacity: 0;
+    transition: opacity 0.18s ease;
+}
+
+.content-modal-overlay.visible {
+    opacity: 1;
+}
+
+.content-modal {
+    width: min(760px, 100%);
+    max-height: calc(100vh - 40px);
+    overflow: auto;
+    background: #ffffff;
+    border-radius: 18px;
+    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+    transform: translateY(10px);
+    transition: transform 0.18s ease;
+}
+
+.content-modal-overlay.visible .content-modal {
+    transform: translateY(0);
+}
+
+.content-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 20px 22px 12px;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.content-modal-header h3 {
+    margin: 0;
+    color: #24324a;
+}
+
+.content-modal-close {
+    border: none;
+    background: transparent;
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    color: #6c757d;
+}
+
+.content-modal-body {
+    padding: 20px 22px;
+}
+
+.content-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 0 22px 22px;
+}
+
+@media (max-width: 900px) {
+    .page-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .content-jobs-head,
+    .content-section-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .content-modal {
+        width: 100%;
+        max-height: calc(100vh - 20px);
+    }
+}

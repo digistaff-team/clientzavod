@@ -1,7 +1,15 @@
 const API_CONTENT = `${window.location.origin}/api/content`;
 const API_MANAGE = `${window.location.origin}/api/manage`;
+const PROFILE_KEYS = [
+    { file: 'IDENTITY.md', field: 'profileIdentity', badge: 'profileStatusIdentity' },
+    { file: 'SOUL.md', field: 'profileSoul', badge: 'profileStatusSoul' },
+    { file: 'USER.md', field: 'profileUser', badge: 'profileStatusUser' },
+    { file: 'MEMORY.md', field: 'profileMemory', badge: 'profileStatusMemory' }
+];
 
 let selectedJobId = null;
+let editingTopicId = null;
+let editingMaterialId = null;
 
 async function onLoginSuccess() {
     await loadDashboard();
@@ -23,17 +31,45 @@ function setApiStatus(msg, type = 'info') {
     el.className = `content-status-line ${type}`;
 }
 
+function shorten(text, max = 180) {
+    const value = String(text || '').trim();
+    if (!value) return '-';
+    if (value.length <= max) return value;
+    return `${value.slice(0, max)}...`;
+}
+
+function parseMaybeJsonArray(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (!raw.startsWith('[')) return raw;
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.join(', ') : raw;
+    } catch {
+        return raw;
+    }
+}
+
+async function fetchJson(url, options = {}) {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.error || 'Request failed');
+    }
+    return data;
+}
+
 async function loadDashboard() {
     await Promise.all([
         loadContentSettings(),
         loadMetrics(),
+        loadTopics(),
+        loadMaterials(),
+        loadProfile(),
         loadJobs()
     ]);
 }
 
-/**
- * Обновить скрытое поле scheduleTime на основе выбора часа и минут
- */
 function updateScheduleTime() {
     const hour = document.getElementById('contentScheduleHour')?.value || '00';
     const minute = document.getElementById('contentScheduleMinute')?.value || '00';
@@ -43,77 +79,44 @@ function updateScheduleTime() {
     }
 }
 
-/**
- * Валидация ввода минут (только цифры, 00-59)
- */
 function validateMinutes() {
     const minuteInput = document.getElementById('contentScheduleMinute');
     if (!minuteInput) return;
-    
-    // Удаляем нецифровые символы
     let val = minuteInput.value.replace(/[^0-9]/g, '');
-    
-    // Ограничиваем до 2 символов
-    if (val.length > 2) {
-        val = val.slice(0, 2);
-    }
-    
-    // Ограничиваем максимум 59
-    if (val !== '' && parseInt(val, 10) > 59) {
-        val = '59';
-    }
-    
+    if (val.length > 2) val = val.slice(0, 2);
+    if (val !== '' && parseInt(val, 10) > 59) val = '59';
     minuteInput.value = val;
     updateScheduleTime();
 }
 
-/**
- * Установить значения часа и минуты из строки времени HH:MM
- */
 function setScheduleTimeInputs(timeValue) {
     if (!timeValue) return;
-    
     const parts = timeValue.split(':');
-    if (parts.length >= 2) {
-        const hourSelect = document.getElementById('contentScheduleHour');
-        const minuteInput = document.getElementById('contentScheduleMinute');
-        
-        if (hourSelect) {
-            hourSelect.value = parts[0].padStart(2, '0');
-        }
-        if (minuteInput) {
-            minuteInput.value = parts[1].padStart(2, '0');
-        }
-        updateScheduleTime();
-    }
+    if (parts.length < 2) return;
+    const hourSelect = document.getElementById('contentScheduleHour');
+    const minuteInput = document.getElementById('contentScheduleMinute');
+    if (hourSelect) hourSelect.value = parts[0].padStart(2, '0');
+    if (minuteInput) minuteInput.value = parts[1].padStart(2, '0');
+    updateScheduleTime();
 }
 
-/**
- * Обновить поле timezone (вызывается при изменении select)
- */
 function updateScheduleTz() {
-    // Функция для совместимости, значение берётся напрямую из select
+    return;
 }
 
-/**
- * Установить значение timezone в select
- */
 function setScheduleTzInput(tzValue) {
     const tzSelect = document.getElementById('contentScheduleTz');
     if (!tzSelect || !tzValue) return;
-    
-    // Проверяем, есть ли такой часовой пояс в списке
-    const optionExists = Array.from(tzSelect.options).some(opt => opt.value === tzValue);
+    const optionExists = Array.from(tzSelect.options).some((opt) => opt.value === tzValue);
     if (optionExists) {
         tzSelect.value = tzValue;
-    } else {
-        // Если такого пояса нет, добавляем его как первый опцион
-        const newOption = document.createElement('option');
-        newOption.value = tzValue;
-        newOption.text = `${tzValue} (custom)`;
-        newOption.selected = true;
-        tzSelect.insertBefore(newOption, tzSelect.firstChild);
+        return;
     }
+    const newOption = document.createElement('option');
+    newOption.value = tzValue;
+    newOption.text = `${tzValue} (custom)`;
+    newOption.selected = true;
+    tzSelect.insertBefore(newOption, tzSelect.firstChild);
 }
 
 async function runNow() {
@@ -123,13 +126,11 @@ async function runNow() {
     if (btn) btn.disabled = true;
     setApiStatus('Запуск генерации...', 'info');
     try {
-        const res = await fetch(`${API_CONTENT}/run-now`, {
+        const data = await fetchJson(`${API_CONTENT}/run-now`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' })
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'run-now failed');
         showToast(data.message || 'Запуск выполнен', 'success');
         setApiStatus(data.message || 'OK', 'ok');
         await loadJobs();
@@ -145,9 +146,7 @@ async function loadMetrics() {
     const chatId = getChatId();
     if (!chatId) return;
     try {
-        const res = await fetch(`${API_CONTENT}/metrics?chat_id=${encodeURIComponent(chatId)}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'metrics failed');
+        const data = await fetchJson(`${API_CONTENT}/metrics?chat_id=${encodeURIComponent(chatId)}`);
         const w24 = data?.windows?.last24h || {};
         const w7 = data?.windows?.last7d || {};
         document.getElementById('metricPublished24h').textContent = w24.published ?? '-';
@@ -161,6 +160,483 @@ async function loadMetrics() {
     }
 }
 
+async function loadTopics() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const status = document.getElementById('topicsStatusFilter')?.value || '';
+    const qs = new URLSearchParams({ chat_id: chatId, limit: '200' });
+    if (status) qs.set('status', status);
+    try {
+        const data = await fetchJson(`${API_CONTENT}/topics?${qs.toString()}`);
+        renderTopicsTable(data.items || []);
+    } catch (e) {
+        setApiStatus(`Темы: ${e.message}`, 'error');
+    }
+}
+
+function renderTopicsTable(items) {
+    const body = document.getElementById('topicsTableBody');
+    if (!body) return;
+    if (!items.length) {
+        body.innerHTML = '<tr><td colspan="7" class="content-empty-cell">Темы не найдены</td></tr>';
+        return;
+    }
+
+    body.innerHTML = items.map((item) => {
+        const isEditing = editingTopicId === item.id;
+        return `
+            <tr>
+                <td>${item.id}</td>
+                <td>${isEditing
+                    ? `<input type="text" id="topic-edit-topic-${item.id}" value="${escapeHtml(item.topic || '')}" class="content-inline-input">`
+                    : escapeHtml(item.topic || '-')}</td>
+                <td>${isEditing
+                    ? `<input type="text" id="topic-edit-focus-${item.id}" value="${escapeHtml(item.focus || '')}" class="content-inline-input">`
+                    : escapeHtml(item.focus || '-')}</td>
+                <td>${isEditing
+                    ? `
+                        <div class="content-inline-stack">
+                            <input type="text" id="topic-edit-secondary-${item.id}" value="${escapeHtml(parseMaybeJsonArray(item.secondary) || '')}" class="content-inline-input" placeholder="Secondary">
+                            <input type="text" id="topic-edit-lsi-${item.id}" value="${escapeHtml(parseMaybeJsonArray(item.lsi) || '')}" class="content-inline-input" placeholder="LSI">
+                        </div>
+                    `
+                    : escapeHtml([parseMaybeJsonArray(item.secondary), parseMaybeJsonArray(item.lsi)].filter(Boolean).join(' | ') || '-')}</td>
+                <td>${isEditing
+                    ? `
+                        <select id="topic-edit-status-${item.id}" class="content-inline-input">
+                            <option value="pending" ${item.status === 'pending' ? 'selected' : ''}>pending</option>
+                            <option value="used" ${item.status === 'used' ? 'selected' : ''}>used</option>
+                            <option value="completed" ${item.status === 'completed' ? 'selected' : ''}>completed</option>
+                        </select>
+                    `
+                    : `<span class="content-status-badge">${escapeHtml(item.status || '-')}</span>`}</td>
+                <td>${fmtDate(item.created_at)}</td>
+                <td>
+                    <div class="content-actions">
+                        ${isEditing
+                            ? `
+                                <button class="btn btn-success" onclick="saveTopicInline(${item.id})">Сохранить</button>
+                                <button class="btn btn-secondary" onclick="cancelTopicInline()">Отмена</button>
+                            `
+                            : `<button class="btn btn-secondary" onclick="editTopicInline(${item.id})">Редактировать</button>`}
+                        <button class="btn btn-danger" onclick="deleteTopic(${item.id})">Удалить</button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function createTopic() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        await fetchJson(`${API_CONTENT}/topics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                topic: document.getElementById('topicTitle')?.value.trim(),
+                focus: document.getElementById('topicFocus')?.value.trim(),
+                secondary: document.getElementById('topicSecondary')?.value.trim(),
+                lsi: document.getElementById('topicLsi')?.value.trim()
+            })
+        });
+        showToast('Тема добавлена', 'success');
+        ['topicTitle', 'topicFocus', 'topicSecondary', 'topicLsi'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        await loadTopics();
+    } catch (e) {
+        showToast(e.message, 'error');
+        setApiStatus(`Тема: ${e.message}`, 'error');
+    }
+}
+
+function editTopicInline(topicId) {
+    editingMaterialId = null;
+    editingTopicId = topicId;
+    loadTopics();
+}
+
+function cancelTopicInline() {
+    editingTopicId = null;
+    loadTopics();
+}
+
+async function saveTopicInline(topicId) {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        await fetchJson(`${API_CONTENT}/topics/${topicId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                topic: document.getElementById(`topic-edit-topic-${topicId}`).value.trim(),
+                focus: document.getElementById(`topic-edit-focus-${topicId}`).value.trim(),
+                secondary: document.getElementById(`topic-edit-secondary-${topicId}`).value.trim(),
+                lsi: document.getElementById(`topic-edit-lsi-${topicId}`).value.trim(),
+                status: document.getElementById(`topic-edit-status-${topicId}`).value.trim()
+            })
+        });
+        editingTopicId = null;
+        showToast('Тема обновлена', 'success');
+        await loadTopics();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function deleteTopic(topicId) {
+    const chatId = getChatId();
+    if (!chatId) return;
+    if (!confirm('Удалить тему?')) return;
+    try {
+        await fetchJson(`${API_CONTENT}/topics/${topicId}?chat_id=${encodeURIComponent(chatId)}`, {
+            method: 'DELETE'
+        });
+        showToast('Тема удалена', 'success');
+        editingTopicId = null;
+        await loadTopics();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+function getImportPayload() {
+    return {
+        chat_id: getChatId(),
+        mode: document.getElementById('importMode')?.value || 'topics',
+        sheet_url: document.getElementById('importSheetUrl')?.value.trim(),
+        gid: document.getElementById('importSheetGid')?.value.trim()
+    };
+}
+
+function renderSheetTopRows(data) {
+    const wrap = document.getElementById('sheetTopRowsWrap');
+    const head = document.getElementById('sheetTopRowsHead');
+    const body = document.getElementById('sheetTopRowsBody');
+    const meta = document.getElementById('sheetTopRowsMeta');
+    if (!wrap || !head || !body || !meta) return;
+
+    const topRows = (data.preview || []).slice(0, 5);
+    if (!topRows.length) {
+        wrap.style.display = 'none';
+        return;
+    }
+
+    wrap.style.display = 'block';
+    meta.textContent = `режим: ${data.mode}, показаны первые ${topRows.length} строк`;
+
+    if (data.mode === 'materials') {
+        head.innerHTML = '<tr><th>Row</th><th>Title</th><th>Source</th><th>Content</th></tr>';
+        body.innerHTML = topRows.map((item) => `
+            <tr>
+                <td>${item.row}</td>
+                <td>${escapeHtml(item.title || '-')}</td>
+                <td>${escapeHtml([item.source_type, item.source_url].filter(Boolean).join(' | ') || '-')}</td>
+                <td>${escapeHtml(shorten(item.content, 140))}</td>
+            </tr>
+        `).join('');
+        return;
+    }
+
+    head.innerHTML = '<tr><th>Row</th><th>Topic</th><th>Focus</th><th>Status</th></tr>';
+    body.innerHTML = topRows.map((item) => `
+        <tr>
+            <td>${item.row}</td>
+            <td>${escapeHtml(item.topic || '-')}</td>
+            <td>${escapeHtml(item.focus || '-')}</td>
+            <td>${escapeHtml(item.status || '-')}</td>
+        </tr>
+    `).join('');
+}
+
+function renderImportPreview(data) {
+    const wrap = document.getElementById('importPreviewWrap');
+    const head = document.getElementById('importPreviewHead');
+    const body = document.getElementById('importPreviewBody');
+    const meta = document.getElementById('importPreviewMeta');
+    if (!wrap || !head || !body || !meta) return;
+
+    wrap.style.display = 'block';
+    meta.textContent = `rows: ${data.totalRows}, duplicates: ${data.skippedDuplicates}, empty: ${data.skippedEmpty}`;
+
+    if (data.mode === 'materials') {
+        head.innerHTML = '<tr><th>Row</th><th>Title</th><th>Source</th><th>Content</th><th>Duplicate</th></tr>';
+        body.innerHTML = (data.preview || []).map((item) => `
+            <tr>
+                <td>${item.row}</td>
+                <td>${escapeHtml(item.title || '-')}</td>
+                <td>${escapeHtml([item.source_type, item.source_url].filter(Boolean).join(' | ') || '-')}</td>
+                <td>${escapeHtml(shorten(item.content, 180))}</td>
+                <td>${item.duplicate ? 'yes' : 'no'}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="5" class="content-empty-cell">Нет строк для импорта</td></tr>';
+    } else {
+        head.innerHTML = '<tr><th>Row</th><th>Topic</th><th>Focus</th><th>Status</th><th>Duplicate</th></tr>';
+        body.innerHTML = (data.preview || []).map((item) => `
+            <tr>
+                <td>${item.row}</td>
+                <td>${escapeHtml(item.topic || '-')}</td>
+                <td>${escapeHtml(item.focus || '-')}</td>
+                <td>${escapeHtml(item.status || '-')}</td>
+                <td>${item.duplicate ? 'yes' : 'no'}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="5" class="content-empty-cell">Нет строк для импорта</td></tr>';
+    }
+
+    renderSheetTopRows(data);
+}
+
+async function previewSheetImport() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const statusEl = document.getElementById('topicsImportStatus');
+    if (statusEl) {
+        statusEl.textContent = 'Собираем предпросмотр...';
+        statusEl.className = 'content-status-line';
+    }
+    try {
+        const data = await fetchJson(`${API_CONTENT}/import-google-sheet/preview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(getImportPayload())
+        });
+        renderImportPreview(data);
+        if (statusEl) {
+            statusEl.textContent = `Предпросмотр готов: ${data.preview?.length || 0} строк`;
+            statusEl.className = 'content-status-line ok';
+        }
+        showToast('Предпросмотр готов', 'success');
+    } catch (e) {
+        if (statusEl) {
+            statusEl.textContent = e.message;
+            statusEl.className = 'content-status-line error';
+        }
+        showToast(e.message, 'error');
+    }
+}
+
+async function applySheetImport() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const statusEl = document.getElementById('topicsImportStatus');
+    if (statusEl) {
+        statusEl.textContent = 'Импортируем данные...';
+        statusEl.className = 'content-status-line';
+    }
+    try {
+        const payload = getImportPayload();
+        const mode = payload.mode;
+        const data = await fetchJson(`${API_CONTENT}/import-google-sheet`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (statusEl) {
+            statusEl.textContent = `Импортировано: ${data.imported}, дубликаты: ${data.skippedDuplicates}, пустые строки: ${data.skippedEmpty}`;
+            statusEl.className = 'content-status-line ok';
+        }
+        showToast('Импорт завершён', 'success');
+        if (mode === 'materials') {
+            await loadMaterials();
+        } else {
+            await loadTopics();
+        }
+        await previewSheetImport();
+    } catch (e) {
+        if (statusEl) {
+            statusEl.textContent = e.message;
+            statusEl.className = 'content-status-line error';
+        }
+        showToast(e.message, 'error');
+    }
+}
+
+async function loadMaterials() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        const data = await fetchJson(`${API_CONTENT}/materials?chat_id=${encodeURIComponent(chatId)}&limit=100`);
+        renderMaterialsTable(data.items || []);
+    } catch (e) {
+        setApiStatus(`Материалы: ${e.message}`, 'error');
+    }
+}
+
+function renderMaterialsTable(items) {
+    const body = document.getElementById('materialsTableBody');
+    if (!body) return;
+    if (!items.length) {
+        body.innerHTML = '<tr><td colspan="6" class="content-empty-cell">Материалы не найдены</td></tr>';
+        return;
+    }
+
+    body.innerHTML = items.map((item) => {
+        const isEditing = editingMaterialId === item.id;
+        return `
+            <tr>
+                <td>${item.id}</td>
+                <td>${isEditing
+                    ? `<input type="text" id="material-edit-title-${item.id}" value="${escapeHtml(item.title || '')}" class="content-inline-input">`
+                    : escapeHtml(item.title || '-')}</td>
+                <td>${isEditing
+                    ? `
+                        <div class="content-inline-stack">
+                            <input type="text" id="material-edit-source-type-${item.id}" value="${escapeHtml(item.source_type || '')}" class="content-inline-input" placeholder="Source type">
+                            <input type="text" id="material-edit-source-url-${item.id}" value="${escapeHtml(item.source_url || '')}" class="content-inline-input" placeholder="Source URL">
+                        </div>
+                    `
+                    : escapeHtml([item.source_type, item.source_url].filter(Boolean).join(' | ') || '-')}</td>
+                <td>${isEditing
+                    ? `<textarea id="material-edit-content-${item.id}" class="content-inline-textarea">${escapeHtml(item.content || '')}</textarea>`
+                    : escapeHtml(shorten(item.content, 220))}</td>
+                <td>${fmtDate(item.created_at)}</td>
+                <td>
+                    <div class="content-actions">
+                        ${isEditing
+                            ? `
+                                <button class="btn btn-success" onclick="saveMaterialInline(${item.id})">Сохранить</button>
+                                <button class="btn btn-secondary" onclick="cancelMaterialInline()">Отмена</button>
+                            `
+                            : `<button class="btn btn-secondary" onclick="editMaterialInline(${item.id})">Редактировать</button>`}
+                        <button class="btn btn-danger" onclick="deleteMaterial(${item.id})">Удалить</button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function createMaterial() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        await fetchJson(`${API_CONTENT}/materials`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                title: document.getElementById('materialTitle')?.value.trim(),
+                source_type: document.getElementById('materialSourceType')?.value.trim(),
+                source_url: document.getElementById('materialSourceUrl')?.value.trim(),
+                content: document.getElementById('materialContent')?.value.trim()
+            })
+        });
+        showToast('Материал сохранён', 'success');
+        ['materialTitle', 'materialSourceType', 'materialSourceUrl', 'materialContent'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        await loadMaterials();
+    } catch (e) {
+        showToast(e.message, 'error');
+        setApiStatus(`Материал: ${e.message}`, 'error');
+    }
+}
+
+function editMaterialInline(materialId) {
+    editingTopicId = null;
+    editingMaterialId = materialId;
+    loadMaterials();
+}
+
+function cancelMaterialInline() {
+    editingMaterialId = null;
+    loadMaterials();
+}
+
+async function saveMaterialInline(materialId) {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        await fetchJson(`${API_CONTENT}/materials/${materialId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                title: document.getElementById(`material-edit-title-${materialId}`).value.trim(),
+                source_type: document.getElementById(`material-edit-source-type-${materialId}`).value.trim(),
+                source_url: document.getElementById(`material-edit-source-url-${materialId}`).value.trim(),
+                content: document.getElementById(`material-edit-content-${materialId}`).value.trim()
+            })
+        });
+        editingMaterialId = null;
+        showToast('Материал обновлён', 'success');
+        await loadMaterials();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function deleteMaterial(materialId) {
+    const chatId = getChatId();
+    if (!chatId) return;
+    if (!confirm('Удалить материал?')) return;
+    try {
+        await fetchJson(`${API_CONTENT}/materials/${materialId}?chat_id=${encodeURIComponent(chatId)}`, {
+            method: 'DELETE'
+        });
+        showToast('Материал удалён', 'success');
+        editingMaterialId = null;
+        await loadMaterials();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function loadProfile() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        const data = await fetchJson(`${API_CONTENT}/profile?chat_id=${encodeURIComponent(chatId)}`);
+        const sourceEl = document.getElementById('profileSourceLine');
+        if (sourceEl) {
+            sourceEl.textContent = data.directory
+                ? `Профиль хранится в ${data.directory}`
+                : 'Путь профиля не определён';
+            sourceEl.className = 'content-status-line';
+        }
+        PROFILE_KEYS.forEach((entry) => {
+            const field = document.getElementById(entry.field);
+            const badge = document.getElementById(entry.badge);
+            const fileData = data.files?.[entry.file] || {};
+            if (field) {
+                field.value = fileData.content || fileData.template || '';
+            }
+            if (badge) {
+                badge.textContent = String(fileData.content || '').trim() ? 'filled' : 'empty';
+            }
+        });
+    } catch (e) {
+        setApiStatus(`Профиль: ${e.message}`, 'error');
+    }
+}
+
+async function saveProfile() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const files = {};
+    PROFILE_KEYS.forEach((entry) => {
+        files[entry.file] = document.getElementById(entry.field)?.value || '';
+    });
+    try {
+        await fetchJson(`${API_CONTENT}/profile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, files })
+        });
+        showToast('Профиль сохранён', 'success');
+        await loadProfile();
+    } catch (e) {
+        showToast(e.message, 'error');
+        setApiStatus(`Профиль: ${e.message}`, 'error');
+    }
+}
+
 async function loadJobs() {
     const chatId = getChatId();
     if (!chatId) return;
@@ -168,9 +644,7 @@ async function loadJobs() {
     const qs = new URLSearchParams({ chat_id: chatId, limit: '100' });
     if (status) qs.set('status', status);
     try {
-        const res = await fetch(`${API_CONTENT}/jobs?${qs.toString()}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'jobs failed');
+        const data = await fetchJson(`${API_CONTENT}/jobs?${qs.toString()}`);
         renderJobsTable(data.items || []);
     } catch (e) {
         setApiStatus(`Jobs: ${e.message}`, 'error');
@@ -201,9 +675,7 @@ async function openJobDetails(jobId) {
     if (!chatId) return;
     selectedJobId = jobId;
     try {
-        const res = await fetch(`${API_CONTENT}/jobs/${jobId}?chat_id=${encodeURIComponent(chatId)}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'job details failed');
+        const data = await fetchJson(`${API_CONTENT}/jobs/${jobId}?chat_id=${encodeURIComponent(chatId)}`);
         renderJobDetails(data.job);
     } catch (e) {
         showToast(e.message, 'error');
@@ -244,13 +716,11 @@ async function moderateSelectedJob(action) {
     const ask = action === 'approve' ? 'Подтвердить публикацию?' : `Выполнить действие: ${action}?`;
     if (!confirm(ask)) return;
     try {
-        const res = await fetch(`${API_CONTENT}/jobs/${selectedJobId}/${action}`, {
+        const data = await fetchJson(`${API_CONTENT}/jobs/${selectedJobId}/${action}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: chatId })
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'moderation action failed');
         showToast(data.message || 'Действие выполнено', 'success');
         await openJobDetails(selectedJobId);
         await loadJobs();
@@ -265,24 +735,13 @@ async function loadContentSettings() {
     const chatId = getChatId();
     if (!chatId) return;
     try {
-        const res = await fetch(`${API_MANAGE}/content/settings?chat_id=${encodeURIComponent(chatId)}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'load content settings failed');
+        const data = await fetchJson(`${API_MANAGE}/content/settings?chat_id=${encodeURIComponent(chatId)}`);
         const s = data.settings || {};
         document.getElementById('contentChannelId').value = s.channelId || '';
         document.getElementById('contentModeratorUserId').value = s.moderatorUserId || '';
-        
-        // Устанавливаем время через новые инпуты
-        const scheduleTime = s.scheduleTime || '';
-        document.getElementById('contentScheduleTime').value = scheduleTime;
-        if (scheduleTime) {
-            setScheduleTimeInputs(scheduleTime);
-        }
-        
-        // Устанавливаем часовой пояс через select
-        const scheduleTz = s.scheduleTz || 'Europe/Moscow';
-        setScheduleTzInput(scheduleTz);
-        
+        document.getElementById('contentScheduleTime').value = s.scheduleTime || '';
+        if (s.scheduleTime) setScheduleTimeInputs(s.scheduleTime);
+        setScheduleTzInput(s.scheduleTz || 'Europe/Moscow');
         document.getElementById('contentDailyLimit').value = s.dailyLimit || '';
     } catch (e) {
         setApiStatus(`Settings: ${e.message}`, 'error');
@@ -292,26 +751,20 @@ async function loadContentSettings() {
 async function saveContentSettings() {
     const chatId = getChatId();
     if (!chatId) return;
-    
-    // Обновляем скрытое поле перед отправкой
     updateScheduleTime();
-    
-    const payload = {
-        chat_id: chatId,
-        channel_id: document.getElementById('contentChannelId').value.trim(),
-        moderator_user_id: document.getElementById('contentModeratorUserId').value.trim(),
-        schedule_time: document.getElementById('contentScheduleTime').value.trim(),
-        schedule_tz: document.getElementById('contentScheduleTz').value.trim(),
-        daily_limit: document.getElementById('contentDailyLimit').value.trim()
-    };
     try {
-        const res = await fetch(`${API_MANAGE}/content/settings`, {
+        await fetchJson(`${API_MANAGE}/content/settings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                chat_id: chatId,
+                channel_id: document.getElementById('contentChannelId').value.trim(),
+                moderator_user_id: document.getElementById('contentModeratorUserId').value.trim(),
+                schedule_time: document.getElementById('contentScheduleTime').value.trim(),
+                schedule_tz: document.getElementById('contentScheduleTz').value.trim(),
+                daily_limit: document.getElementById('contentDailyLimit').value.trim()
+            })
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'save content settings failed');
         showToast('Настройки сохранены', 'success');
         setApiStatus('Настройки контента сохранены', 'ok');
         await loadContentSettings();

@@ -1,5 +1,6 @@
 const { Client } = require('pg');
 const config = require('../config');
+const contentRepository = require('./content/repository');
 
 function getAdminHosts() {
     const hosts = [
@@ -61,7 +62,7 @@ function getDbName(chatId) {
 async function createUserDatabase(chatId) {
     const dbName = getDbName(chatId);
 
-    return runWithAdminClient('postgres', async (client) => {
+    const createdDbName = await runWithAdminClient('postgres', async (client) => {
         const checkResult = await client.query(
             'SELECT 1 FROM pg_database WHERE datname = $1',
             [dbName]
@@ -74,6 +75,15 @@ async function createUserDatabase(chatId) {
 
         return dbName;
     });
+
+    try {
+        await contentRepository.ensureSchema(chatId);
+    } catch (error) {
+        console.error(`[DB] Failed to ensure content schema for ${dbName}:`, error.message);
+        throw error;
+    }
+
+    return createdDbName;
 }
 
 async function deleteUserDatabase(chatId) {

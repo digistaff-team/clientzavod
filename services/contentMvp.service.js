@@ -16,6 +16,7 @@ const aiRouterService = require('./ai_router_service');
 const manageStore = require('../manage/store');
 const sessionService = require('./session.service');
 const dockerService = require('./docker.service');
+const storageService = require('./storage.service');
 
 // Новые модули
 const contentModules = require('./content/index');
@@ -46,10 +47,14 @@ const MAX_IMAGE_ATTEMPTS = parseInt(process.env.CONTENT_MVP_MAX_IMAGE_ATTEMPTS |
 // TASK-015: Video configuration
 const DEFAULT_CONTENT_TYPE = process.env.CONTENT_MVP_CONTENT_TYPE || 'text+image'; // 'text+image' | 'text+video'
 const VIDEO_FALLBACK_ENABLED = process.env.VIDEO_FALLBACK_ENABLED !== 'false';
-
-const SHEET_URL = process.env.CONTENT_MVP_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1klEWbBtbr1Ym-i4Xez76-egXpjBVD8ikiQAfVNyrUjg/edit?usp=sharing';
-const SHEET_GID = process.env.CONTENT_MVP_SHEET_GID || '164844003';
-const DRIVE_FOLDER_URL = process.env.CONTENT_MVP_DRIVE_FOLDER_URL || 'https://drive.google.com/drive/folders/1Vo7ZmMUR4j2ksZw3LZusPp8oKdmXnO9u?usp=sharing';
+const PROFILE_FILES = ['IDENTITY.md', 'SOUL.md', 'USER.md', 'MEMORY.md'];
+const PROFILE_FILE_SET = new Set(PROFILE_FILES);
+const PROFILE_TEMPLATES = {
+  'IDENTITY.md': `# Личность AI\n\n## Имя\n\n## Роль\n\n## Бэкграунд\n`,
+  'SOUL.md': `# Tone of Voice\n\n## Стиль общения\n\n## Запрещенные темы\n\n## Принципы\n`,
+  'USER.md': `# Целевая аудитория\n\n## Кто эти люди\n\n## Их задачи\n\n## Что для них важно\n`,
+  'MEMORY.md': `# Контекст\n\n## Важные ссылки\n\n## Дополнительные источники\n\n## Заметки\n`
+};
 
 let schedulerHandle = null;
 let botsGetter = null;
@@ -99,8 +104,26 @@ function getNowInTz(tz) {
 }
 
 function splitKeywords(v) {
+  if (Array.isArray(v)) {
+    return v.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 5);
+  }
+
+  const raw = String(v || '').trim();
+  if (!raw) return [];
+
+  if (raw.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 5);
+      }
+    } catch {
+      // fall back to plain split
+    }
+  }
+
   return String(v || '')
-    .split(',')
+    .split(/[,\n;]+/)
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 5);
@@ -111,12 +134,57 @@ function extractHashtags(text) {
 }
 
 // ============================================
-// Google Sheets Provider
+// User Content Providers
 // ============================================
+function getProfileCandidateDirs(chatId) {
+  const repoDataDir = path.resolve(__dirname, '..', 'data', `user_${chatId}`);
+  const storageDir = storageService.getDataDir(String(chatId));
+  return [...new Set([
+    repoDataDir,
+    path.join(storageDir, `user_${chatId}`),
+    storageDir,
+    path.resolve(__dirname, '..', 'data', String(chatId))
+  ])];
+}
+
+function getPrimaryProfileDir(chatId) {
+  return storageService.getDataDir(String(chatId));
+}
+
+async function readFirstExistingFile(paths) {
+  for (const filePath of paths) {
+    try {
+      const text = await fs.readFile(filePath, 'utf8');
+      return { filePath, text: String(text || '').trim() };
+    } catch {
+      // try next path
+    }
+  }
+  return null;
+}
+
+function normalizeStatusValue(value, fallback = 'pending') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === 'used' || normalized === 'in progress' || normalized === 'processing') return 'used';
+  if (normalized === 'completed' || normalized === 'published' || normalized === 'done') return 'completed';
+  if (normalized === 'pending' || normalized === 'new') return 'pending';
+  return fallback;
+}
 
 function parseSheetId(sheetUrl) {
-  const m = String(sheetUrl).match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  return m ? m[1] : null;
+  const match = String(sheetUrl || '').match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return match ? match[1] : null;
+}
+
+function parseSheetGid(sheetUrl, explicitGid = null) {
+  if (explicitGid !== null && explicitGid !== undefined && String(explicitGid).trim() !== '') {
+    return String(explicitGid).trim();
+  }
+
+  const url = String(sheetUrl || '');
+  const match = url.match(/[?#&]gid=([0-9]+)/);
+  return match ? match[1] : '0';
 }
 
 function csvToRows(csv) {
@@ -160,96 +228,268 @@ function normalizeHeader(name) {
   return String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-async function readTopicsFromSheet() {
-  const sheetId = parseSheetId(SHEET_URL);
-  if (!sheetId) throw new Error('Invalid sheet URL');
-  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${encodeURIComponent(SHEET_GID)}`;
-  const resp = await fetch(url, { timeout: 20000 });
-  if (!resp.ok) throw new Error(`Sheet fetch failed: ${resp.status}`);
-  const csv = await resp.text();
-  const rows = csvToRows(csv);
-  if (rows.length < 2) return [];
-
-  const header = rows[0].map(normalizeHeader);
-  const idx = {
-    topic: header.indexOf('тема'),
-    focus: header.indexOf('фокусный ключ'),
-    secondary: header.indexOf('вторичные ключи'),
-    lsi: header.indexOf('lsi-ключи'),
-    status: header.indexOf('статус')
-  };
-  if (idx.topic === -1) throw new Error('Missing "Тема" column');
-
-  const topics = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    topics.push({
-      sheetRow: i + 1,
-      topic: (r[idx.topic] || '').trim(),
-      focus: idx.focus >= 0 ? (r[idx.focus] || '').trim() : '',
-      secondary: idx.secondary >= 0 ? (r[idx.secondary] || '').trim() : '',
-      lsi: idx.lsi >= 0 ? (r[idx.lsi] || '').trim() : '',
-      status: idx.status >= 0 ? (r[idx.status] || '').trim() : ''
-    });
+function findHeaderIndex(header, variants) {
+  for (const variant of variants) {
+    const index = header.indexOf(variant);
+    if (index >= 0) return index;
   }
-  return topics.filter((t) => t.topic);
+  return -1;
 }
 
-// ============================================
-// Google Drive Provider
-// ============================================
-
-function extractDriveFolderId(url) {
-  const m = String(url).match(/\/folders\/([a-zA-Z0-9_-]+)/);
-  return m ? m[1] : null;
+function normalizeImportMode(value) {
+  const mode = String(value || 'topics').trim().toLowerCase();
+  if (mode === 'materials' || mode === 'material') return 'materials';
+  return 'topics';
 }
 
-function decodeHexEscapes(str) {
-  return str.replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+async function loadTopicsFromTable(chatId, options = {}) {
+  await repository.ensureSchema(chatId);
+  return repository.listTopics(chatId, options);
 }
 
-async function listDriveDocs() {
-  const folderId = extractDriveFolderId(DRIVE_FOLDER_URL);
-  if (!folderId) return [];
-  const resp = await fetch(DRIVE_FOLDER_URL, { timeout: 20000 });
-  if (!resp.ok) return [];
-  const html = await resp.text();
-  const m = html.match(/window\['_DRIVE_ivd'\]\s*=\s*'([^']+)'/);
-  if (!m) return [];
-  const decoded = decodeHexEscapes(m[1]);
-  const re = new RegExp(`"([a-zA-Z0-9_-]{20,})",\\["${folderId}"\\],"([^"]*)","([^"]*)"`, 'g');
-  const out = [];
-  let mm;
-  while ((mm = re.exec(decoded)) !== null) {
-    out.push({ id: mm[1], name: mm[2], mime: mm[3] });
-  }
-  return out;
-}
-
-async function loadDriveMaterialsText(limit = 10) {
-  const docs = await listDriveDocs();
+async function loadMaterialsText(chatId, limit = 10) {
+  await repository.ensureSchema(chatId);
+  const materials = await repository.loadMaterials(chatId, limit);
   const parts = [];
-  for (const doc of docs.slice(0, limit)) {
-    if (doc.mime !== 'application/vnd.google-apps.document') continue;
-    const exportUrl = `https://docs.google.com/document/d/${doc.id}/export?format=txt`;
-    try {
-      const r = await fetch(exportUrl, { timeout: 20000 });
-      if (!r.ok) continue;
-      const txt = (await r.text()).trim();
-      if (!txt) continue;
-      parts.push(`### ${doc.name}\n${txt.slice(0, 4000)}`);
-    } catch {
-      // ignore single document errors
-    }
+  for (const item of materials) {
+    const content = String(item.content || '').trim();
+    if (!content) continue;
+    const meta = [
+      item.source_type ? `source_type=${item.source_type}` : '',
+      item.source_url ? `source_url=${item.source_url}` : ''
+    ].filter(Boolean).join(', ');
+    parts.push(`### ${item.title}${meta ? ` (${meta})` : ''}\n${content.slice(0, 4000)}`);
   }
   return parts.join('\n\n').slice(0, 20000);
+}
+
+async function loadUserPersona(chatId) {
+  const dirs = getProfileCandidateDirs(chatId);
+  const sections = {};
+  let sourceDir = null;
+
+  for (const fileName of PROFILE_FILES) {
+    const entry = await readFirstExistingFile(dirs.map((dir) => path.join(dir, fileName)));
+    if (entry?.text) {
+      sections[fileName.replace(/\.md$/i, '')] = entry.text;
+      sourceDir = sourceDir || path.dirname(entry.filePath);
+    }
+  }
+
+  const text = PROFILE_FILES
+    .map((fileName) => fileName.replace(/\.md$/i, ''))
+    .filter((key) => sections[key])
+    .map((key) => `## ${key}\n${sections[key].slice(0, 4000)}`)
+    .join('\n\n')
+    .slice(0, 16000);
+
+  return {
+    sourceDir,
+    sections,
+    text
+  };
+}
+
+async function getProfileFiles(chatId) {
+  const dirs = getProfileCandidateDirs(chatId);
+  const primaryDir = getPrimaryProfileDir(chatId);
+  await fs.mkdir(primaryDir, { recursive: true });
+
+  const files = {};
+  for (const fileName of PROFILE_FILES) {
+    const entry = await readFirstExistingFile(dirs.map((dir) => path.join(dir, fileName)));
+    files[fileName] = {
+      content: entry?.text || '',
+      exists: Boolean(entry?.text),
+      path: entry?.filePath || path.join(primaryDir, fileName),
+      template: PROFILE_TEMPLATES[fileName] || ''
+    };
+  }
+
+  return {
+    directory: primaryDir,
+    files
+  };
+}
+
+async function saveProfileFiles(chatId, payload = {}) {
+  const primaryDir = getPrimaryProfileDir(chatId);
+  await fs.mkdir(primaryDir, { recursive: true });
+
+  const written = {};
+  for (const [fileName, content] of Object.entries(payload)) {
+    if (!PROFILE_FILE_SET.has(fileName)) {
+      throw new Error(`Unsupported profile file: ${fileName}`);
+    }
+    const filePath = path.join(primaryDir, fileName);
+    await fs.writeFile(filePath, String(content || ''), 'utf8');
+    written[fileName] = filePath;
+  }
+
+  return getProfileFiles(chatId);
+}
+
+async function importTopicsFromGoogleSheet(chatId, data = {}) {
+  return importContentFromGoogleSheet(chatId, { ...data, mode: 'topics' });
+}
+
+async function loadGoogleSheetRows(data = {}) {
+  const sheetUrl = String(data.sheet_url || data.sheetUrl || '').trim();
+  if (!sheetUrl) {
+    throw new Error('sheet_url is required');
+  }
+
+  const sheetId = parseSheetId(sheetUrl);
+  if (!sheetId) {
+    throw new Error('Invalid Google Sheets URL');
+  }
+
+  const gid = parseSheetGid(sheetUrl, data.gid);
+  const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${encodeURIComponent(gid)}`;
+  const response = await fetch(exportUrl, { timeout: 20000 });
+  if (!response.ok) {
+    throw new Error(`Google Sheets import failed: ${response.status}`);
+  }
+
+  const csv = await response.text();
+  const rows = csvToRows(csv);
+  return { rows, sheetId, gid };
+}
+
+async function previewContentImport(chatId, data = {}) {
+  await repository.ensureSchema(chatId);
+
+  const mode = normalizeImportMode(data.mode);
+  const { rows, sheetId, gid } = await loadGoogleSheetRows(data);
+  if (!rows.length) {
+    return { mode, sheetId, gid, totalRows: 0, preview: [], skippedEmpty: 0, skippedDuplicates: 0 };
+  }
+
+  const header = rows[0].map(normalizeHeader);
+  if (mode === 'materials') {
+    const idx = {
+      title: findHeaderIndex(header, ['title', 'название', 'заголовок', 'material']),
+      content: findHeaderIndex(header, ['content', 'text', 'текст', 'материал']),
+      sourceType: findHeaderIndex(header, ['source_type', 'source type', 'тип источника']),
+      sourceUrl: findHeaderIndex(header, ['source_url', 'source url', 'ссылка', 'url'])
+    };
+    if (idx.title < 0) idx.title = 0;
+    if (idx.content < 0) idx.content = 1;
+
+    const existing = await repository.withClient(chatId, async (client) => {
+      const result = await client.query(`SELECT LOWER(TRIM(title)) AS title FROM content_materials`);
+      return new Set(result.rows.map((row) => row.title).filter(Boolean));
+    });
+
+    const preview = [];
+    let skippedEmpty = 0;
+    let skippedDuplicates = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const title = String(row[idx.title] || '').trim();
+      const content = String(row[idx.content] || '').trim();
+      if (!title || !content) {
+        skippedEmpty++;
+        continue;
+      }
+      const duplicate = existing.has(title.toLowerCase());
+      if (duplicate) skippedDuplicates++;
+      preview.push({
+        row: i + 1,
+        title,
+        content: content.slice(0, 300),
+        source_type: idx.sourceType >= 0 ? String(row[idx.sourceType] || '').trim() : '',
+        source_url: idx.sourceUrl >= 0 ? String(row[idx.sourceUrl] || '').trim() : '',
+        duplicate
+      });
+    }
+
+    return { mode, sheetId, gid, totalRows: Math.max(rows.length - 1, 0), preview, skippedEmpty, skippedDuplicates };
+  }
+
+  const idx = {
+    topic: findHeaderIndex(header, ['тема', 'topic', 'title', 'subject']),
+    focus: findHeaderIndex(header, ['фокусный ключ', 'focus', 'focus keyword', 'keyword']),
+    secondary: findHeaderIndex(header, ['вторичные ключи', 'secondary', 'secondary keywords']),
+    lsi: findHeaderIndex(header, ['lsi-ключи', 'lsi', 'lsi keywords']),
+    status: findHeaderIndex(header, ['статус', 'status'])
+  };
+  if (idx.topic < 0) idx.topic = 0;
+
+  const existingTopics = await repository.withClient(chatId, async (client) => {
+    const result = await client.query(`SELECT LOWER(TRIM(topic)) AS topic FROM content_topics`);
+    return new Set(result.rows.map((row) => row.topic).filter(Boolean));
+  });
+
+  const preview = [];
+  let skippedEmpty = 0;
+  let skippedDuplicates = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const topic = String(row[idx.topic] || '').trim();
+    if (!topic) {
+      skippedEmpty++;
+      continue;
+    }
+    const duplicate = existingTopics.has(topic.toLowerCase());
+    if (duplicate) skippedDuplicates++;
+    preview.push({
+      row: i + 1,
+      topic,
+      focus: idx.focus >= 0 ? String(row[idx.focus] || '').trim() : '',
+      secondary: idx.secondary >= 0 ? String(row[idx.secondary] || '').trim() : '',
+      lsi: idx.lsi >= 0 ? String(row[idx.lsi] || '').trim() : '',
+      status: idx.status >= 0 ? normalizeStatusValue(row[idx.status], 'pending') : 'pending',
+      duplicate
+    });
+  }
+
+  return { mode, sheetId, gid, totalRows: Math.max(rows.length - 1, 0), preview, skippedEmpty, skippedDuplicates };
+}
+
+async function importContentFromGoogleSheet(chatId, data = {}) {
+  await repository.ensureSchema(chatId);
+  const previewData = await previewContentImport(chatId, data);
+  const mode = previewData.mode;
+
+  let imported = 0;
+  for (const item of previewData.preview) {
+    if (item.duplicate) continue;
+    if (mode === 'materials') {
+      await repository.createMaterial(chatId, {
+        title: item.title,
+        content: item.content,
+        sourceType: item.source_type || null,
+        sourceUrl: item.source_url || null
+      });
+    } else {
+      await repository.createTopic(chatId, {
+        topic: item.topic,
+        focus: item.focus || null,
+        secondary: item.secondary || null,
+        lsi: item.lsi || null,
+        status: item.status || 'pending'
+      });
+    }
+    imported++;
+  }
+
+  return {
+    mode,
+    imported,
+    skippedDuplicates: previewData.skippedDuplicates,
+    skippedEmpty: previewData.skippedEmpty,
+    totalRows: previewData.totalRows,
+    sheetId: previewData.sheetId,
+    gid: previewData.gid
+  };
 }
 
 // ============================================
 // Generation Service
 // ============================================
 
-function buildTextPrompt(topic, materialsText) {
+function buildTextPrompt(topic, materialsText, personaText = '') {
   const secondary = splitKeywords(topic.secondary);
   const lsi = splitKeywords(topic.lsi);
   const keywordTagHints = [topic.focus, ...secondary].filter(Boolean).slice(0, 3);
@@ -262,7 +502,8 @@ function buildTextPrompt(topic, materialsText) {
 - Эмодзи: умеренно.
 - CTA: уместный по контексту.
 - Запрещены темы: война, политика, религия, секс, преступность.
-- Используй только факты из блока "Материалы".
+- Следуй контексту персонажа из блока "Профиль".
+- Используй только факты из блока "Материалы" и допустимые сведения из блока "Профиль".
 - Добавь в конце 2-3 релевантных хэштега.
 
 Тема: ${topic.topic}
@@ -271,19 +512,22 @@ function buildTextPrompt(topic, materialsText) {
 LSI-ключи: ${lsi.join(', ') || 'нет'}
 Рекомендованные хэштеги: ${hashtags.join(' ') || 'по контексту'}
 
+Профиль:
+${personaText || 'Профиль пользователя не заполнен'}
+
 Материалы:
 ${materialsText || 'Материалы недоступны'}
 `.trim();
 }
 
-async function generatePostText(chatId, topic, materialsText) {
+async function generatePostText(chatId, topic, materialsText, personaText = '') {
   const data = manageStore.getState(chatId);
   if (!data || !data.aiAuthToken || !data.aiModel) {
     throw new Error('AI model is not configured for chat');
   }
   const messages = [
     { role: 'system', content: 'Ты маркетинговый редактор Telegram-канала. Пиши кратко, фактически и без выдумок.' },
-    { role: 'user', content: buildTextPrompt(topic, materialsText) }
+    { role: 'user', content: buildTextPrompt(topic, materialsText, personaText) }
   ];
   const call = () => aiRouterService.callAI(chatId, data.aiAuthToken, data.aiModel, messages, null, data.aiUserEmail);
   let resp;
@@ -351,18 +595,22 @@ async function saveImageToUserWorkspace(chatId, buffer, jobId) {
 // ============================================
 
 async function pickNextTopic(chatId) {
-  const topics = await readTopicsFromSheet();
-  return repository.withClient(chatId, async (client) => {
-    for (const t of topics) {
-      if (String(t.status || '').trim() !== '') continue;
-      const st = await client.query('SELECT local_status FROM content_sheet_state WHERE sheet_row=$1', [t.sheetRow]);
-      const localStatus = st.rows[0]?.local_status;
-      if (!localStatus || localStatus === 'NEW' || localStatus === 'FAILED_RETRY') {
-        return t;
-      }
-    }
-    return null;
-  });
+  await repository.ensureSchema(chatId);
+  const topic = await repository.reserveNextTopic(chatId);
+  if (!topic) return null;
+  return {
+    sheetRow: topic.id,
+    topic: topic.topic,
+    focus: topic.focus || '',
+    secondary: topic.secondary || '',
+    lsi: topic.lsi || '',
+    status: topic.status || 'used'
+  };
+}
+
+async function releaseTopic(chatId, topic, note = 'generation_failed') {
+  if (!topic?.sheetRow) return;
+  await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', note);
 }
 
 // ============================================
@@ -440,11 +688,15 @@ async function handleGenerateJob(chatId, queueJob, bot, correlationId) {
     return { success: false, error: 'Нет доступных тем со статусом "".', retry: false };
   }
 
-  const materialsText = await loadDriveMaterialsText(12);
+  const [materialsText, persona] = await Promise.all([
+    loadMaterialsText(chatId, 12),
+    loadUserPersona(chatId)
+  ]);
   let text;
   try {
-    text = await generatePostText(chatId, topic, materialsText);
+    text = await generatePostText(chatId, topic, materialsText, persona.text);
   } catch (e) {
+    await releaseTopic(chatId, topic, `text_generation_failed: ${e.message}`);
     return { success: false, error: `Text generation failed: ${e.message}`, retry: true };
   }
 
@@ -463,6 +715,7 @@ async function handleGenerateJob(chatId, queueJob, bot, correlationId) {
     }
   }
   if (!imagePath) {
+    await releaseTopic(chatId, topic, `image_generation_failed: ${imageErr}`);
     return { success: false, error: `Image generation failed: ${imageErr}`, retry: true };
   }
 
@@ -576,11 +829,15 @@ async function handleVideoGenerateJob(chatId, queueJob, bot, correlationId) {
     return { success: false, error: 'Нет доступных тем со статусом "".', retry: false };
   }
 
-  const materialsText = await loadDriveMaterialsText(12);
+  const [materialsText, persona] = await Promise.all([
+    loadMaterialsText(chatId, 12),
+    loadUserPersona(chatId)
+  ]);
   let text;
   try {
-    text = await generatePostText(chatId, topic, materialsText);
+    text = await generatePostText(chatId, topic, materialsText, persona.text);
   } catch (e) {
+    await releaseTopic(chatId, topic, `text_generation_failed: ${e.message}`);
     return { success: false, error: `Text generation failed: ${e.message}`, retry: true };
   }
 
@@ -652,6 +909,7 @@ async function handleVideoGenerateJob(chatId, queueJob, bot, correlationId) {
       }
     }
     
+    await releaseTopic(chatId, topic, `video_generation_start_failed: ${e.message}`);
     await repository.updateJobStatus(chatId, jobId, STATUS.FAILED, e.message);
     return { success: false, error: e.message, retry: true };
   }
@@ -701,6 +959,7 @@ async function handleVideoGenerationComplete(chatId, job, bot, videoResult) {
       }
     }
     
+    await releaseTopic(chatId, topic, `video_generation_failed: ${videoResult.error}`);
     await repository.updateJobStatus(chatId, jobId, STATUS.FAILED, videoResult.error);
     return;
   }
@@ -732,6 +991,7 @@ async function handleVideoGenerationComplete(chatId, job, bot, videoResult) {
     console.log(`[CONTENT-MVP] Video job ${jobId} completed successfully`);
   } catch (e) {
     console.error(`[CONTENT-MVP] Failed to save video for job ${jobId}:`, e.message);
+    await releaseTopic(chatId, topic, `video_save_failed: ${e.message}`);
     await repository.updateJobStatus(chatId, jobId, STATUS.FAILED, e.message);
   }
 }
@@ -786,8 +1046,17 @@ async function generateDraft(chatId, reason = 'manual', correlationId = null) {
   const topic = await pickNextTopic(chatId);
   if (!topic) return { ok: false, message: 'Нет доступных тем со статусом "".' };
 
-  const materialsText = await loadDriveMaterialsText(12);
-  const text = await generatePostText(chatId, topic, materialsText);
+  const [materialsText, persona] = await Promise.all([
+    loadMaterialsText(chatId, 12),
+    loadUserPersona(chatId)
+  ]);
+  let text;
+  try {
+    text = await generatePostText(chatId, topic, materialsText, persona.text);
+  } catch (error) {
+    await releaseTopic(chatId, topic, `text_generation_failed: ${error.message}`);
+    throw error;
+  }
 
   let imagePath = '';
   let imageAttempts = 0;
@@ -803,7 +1072,10 @@ async function generateDraft(chatId, reason = 'manual', correlationId = null) {
       imageErr = e?.message || String(e);
     }
   }
-  if (!imagePath) throw new Error(`Image generation failed: ${imageErr}`);
+  if (!imagePath) {
+    await releaseTopic(chatId, topic, `image_generation_failed: ${imageErr}`);
+    throw new Error(`Image generation failed: ${imageErr}`);
+  }
 
   const jobId = await repository.createJob(chatId, {
     sheetRow: topic.sheetRow,
@@ -943,6 +1215,7 @@ async function publishDraft(chatId, bot, draft, correlationId = null) {
       });
     });
 
+    await repository.updateTopicStatus(chatId, draft.topic.sheetRow, 'completed', STATUS.PUBLISHED);
     await repository.setSheetState(chatId, draft.topic.sheetRow, STATUS.PUBLISHED);
     await removeDraft(chatId, String(draft.jobId));
     
@@ -1113,8 +1386,11 @@ async function regenerateDraftPart(chatId, draft, part, correlationId = null) {
   const topic = draft.topic;
   
   if (part === 'text') {
-    const materialsText = await loadDriveMaterialsText(12);
-    const text = await generatePostText(chatId, topic, materialsText);
+    const [materialsText, persona] = await Promise.all([
+      loadMaterialsText(chatId, 12),
+      loadUserPersona(chatId)
+    ]);
+    const text = await generatePostText(chatId, topic, materialsText, persona.text);
     draft.text = text;
   } else if (part === 'image') {
     const imageBuffer = await generateImage(topic, draft.text);
@@ -1299,6 +1575,139 @@ async function listJobs(chatId, options = {}) {
   return repository.listJobs(chatId, options);
 }
 
+async function listTopics(chatId, options = {}) {
+  return loadTopicsFromTable(chatId, options);
+}
+
+async function createTopic(chatId, data = {}) {
+  await repository.ensureSchema(chatId);
+  const topic = String(data.topic || '').trim();
+  const status = String(data.status || 'pending').trim().toLowerCase() || 'pending';
+  const allowedStatuses = new Set(['pending', 'used', 'completed']);
+  if (!topic) {
+    throw new Error('topic is required');
+  }
+  if (!allowedStatuses.has(status)) {
+    throw new Error('invalid topic status');
+  }
+
+  return repository.createTopic(chatId, {
+    topic,
+    focus: String(data.focus || '').trim() || null,
+    secondary: Array.isArray(data.secondary)
+      ? JSON.stringify(data.secondary)
+      : String(data.secondary || '').trim() || null,
+    lsi: Array.isArray(data.lsi)
+      ? JSON.stringify(data.lsi)
+      : String(data.lsi || '').trim() || null,
+    status
+  });
+}
+
+async function updateTopic(chatId, topicId, data = {}) {
+  await repository.ensureSchema(chatId);
+  const topic = String(data.topic || '').trim();
+  const status = data.status === undefined ? undefined : String(data.status || '').trim().toLowerCase();
+  const allowedStatuses = new Set(['pending', 'used', 'completed']);
+
+  if (!topic) {
+    throw new Error('topic is required');
+  }
+  if (status !== undefined && !allowedStatuses.has(status)) {
+    throw new Error('invalid topic status');
+  }
+
+  const updated = await repository.updateTopic(chatId, topicId, {
+    topic,
+    focus: String(data.focus || '').trim() || null,
+    secondary: Array.isArray(data.secondary)
+      ? JSON.stringify(data.secondary)
+      : String(data.secondary || '').trim() || null,
+    lsi: Array.isArray(data.lsi)
+      ? JSON.stringify(data.lsi)
+      : String(data.lsi || '').trim() || null,
+    status
+  });
+
+  if (!updated) {
+    throw new Error('topic not found');
+  }
+  return updated;
+}
+
+async function deleteTopic(chatId, topicId) {
+  await repository.ensureSchema(chatId);
+  const deleted = await repository.deleteTopic(chatId, topicId);
+  if (!deleted) {
+    throw new Error('topic not found');
+  }
+  return deleted;
+}
+
+async function listMaterials(chatId, options = {}) {
+  await repository.ensureSchema(chatId);
+  return repository.listMaterials(chatId, options);
+}
+
+async function createMaterial(chatId, data = {}) {
+  await repository.ensureSchema(chatId);
+  const title = String(data.title || '').trim();
+  const content = String(data.content || '').trim();
+  if (!title) {
+    throw new Error('title is required');
+  }
+  if (!content) {
+    throw new Error('content is required');
+  }
+
+  return repository.createMaterial(chatId, {
+    title,
+    content,
+    sourceType: String(data.source_type || data.sourceType || '').trim() || null,
+    sourceUrl: String(data.source_url || data.sourceUrl || '').trim() || null
+  });
+}
+
+async function updateMaterial(chatId, materialId, data = {}) {
+  await repository.ensureSchema(chatId);
+  const title = String(data.title || '').trim();
+  const content = String(data.content || '').trim();
+  if (!title) {
+    throw new Error('title is required');
+  }
+  if (!content) {
+    throw new Error('content is required');
+  }
+
+  const updated = await repository.updateMaterial(chatId, materialId, {
+    title,
+    content,
+    sourceType: String(data.source_type || data.sourceType || '').trim() || null,
+    sourceUrl: String(data.source_url || data.sourceUrl || '').trim() || null
+  });
+  if (!updated) {
+    throw new Error('material not found');
+  }
+  return updated;
+}
+
+async function deleteMaterial(chatId, materialId) {
+  await repository.ensureSchema(chatId);
+  const deleted = await repository.deleteMaterial(chatId, materialId);
+  if (!deleted) {
+    throw new Error('material not found');
+  }
+  return deleted;
+}
+
+async function getProfile(chatId) {
+  return getProfileFiles(chatId);
+}
+
+async function saveProfile(chatId, files = {}) {
+  return saveProfileFiles(chatId, files);
+}
+
 async function getJobById(chatId, jobId) {
   await repository.ensureSchema(chatId);
   return repository.getJobWithDetails(chatId, jobId);
@@ -1430,6 +1839,19 @@ module.exports = {
   runNow,
   handleModerationAction,
   ensureSchema: repository.ensureSchema,
+  listTopics,
+  createTopic,
+  updateTopic,
+  deleteTopic,
+  listMaterials,
+  createMaterial,
+  updateMaterial,
+  deleteMaterial,
+  getProfile,
+  saveProfile,
+  previewContentImport,
+  importContentFromGoogleSheet,
+  importTopicsFromGoogleSheet,
   listJobs,
   getJobById,
   getMetrics,

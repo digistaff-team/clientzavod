@@ -68,6 +68,34 @@ async function getContainerStatus(containerId) {
     }
 }
 
+/**
+ * Получить список всех пользовательских контейнеров
+ */
+async function getAllUserContainers() {
+    try {
+        const res = await execDocker(['ps', '-a', '--filter', 'name=sandbox-user-', '--format', '{{.ID}}|{{.Names}}|{{.Status}}|{{.Running}}']);
+        const lines = (res.stdout || '').trim().split('\n').filter(Boolean);
+        
+        const containers = [];
+        for (const line of lines) {
+            const [id, name, status, running] = line.split('|');
+            const chatId = name.replace('sandbox-user-', '');
+            containers.push({
+                containerId: id,
+                containerName: name,
+                chatId,
+                status: running === 'true' ? 'running' : 'stopped',
+                rawStatus: status,
+                uptime: running === 'true' ? status : null
+            });
+        }
+        return containers;
+    } catch (e) {
+        console.error('[DOCKER] Failed to get user containers:', e.message);
+        return [];
+    }
+}
+
 async function waitForContainer(containerId, timeoutMs) {
     const deadline = Date.now() + (timeoutMs || 15000);
     while (Date.now() < deadline) {
@@ -350,6 +378,7 @@ module.exports = {
     isContainerAlive: isContainerAlive,
     getContainerIdByName: getContainerIdByName,
     getContainerStatus: getContainerStatus,
+    getAllUserContainers: getAllUserContainers,
     waitForContainer: waitForContainer,
     startContainer: startContainer,
     createUserContainer: createUserContainer,
