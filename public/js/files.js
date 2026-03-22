@@ -511,30 +511,35 @@ async function loadDiskStats() {
         const response = await fetch(`${API_URL}/files/${chatId}/stats`);
         const data = await response.json();
         
-        const { diskStats, topFiles } = data;
-        
-        // Формируем HTML для статистики диска
+        const { diskStats, subDirs, topFiles } = data;
+
+        // Итого по workspace контейнера
         let html = `
             <div class="stats-grid">
-                <div class="stat-item">
-                    <div class="stat-label">💾 Всего</div>
-                    <div class="stat-value">${diskStats.total}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">📊 Занято</div>
-                    <div class="stat-value">${diskStats.used}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">✅ Доступно</div>
-                    <div class="stat-value">${diskStats.available}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">📈 Занято</div>
-                    <div class="stat-value">${diskStats.usedPercent}</div>
+                <div class="stat-item" style="grid-column: 1 / -1;">
+                    <div class="stat-label">📦 Занято в /workspace</div>
+                    <div class="stat-value" style="font-size: 1.6em;">${diskStats.used}</div>
                 </div>
             </div>
         `;
-        
+
+        // Разбивка по папкам
+        if (subDirs && subDirs.length > 0) {
+            html += `<h4 style="margin: 15px 0 8px 0; color: #333;">📁 По папкам:</h4>
+                <div class="top-files-list">`;
+            subDirs.forEach(dir => {
+                const name = dir.path.replace('/workspace/', '').replace('/workspace', '/');
+                const shortName = name.length > 45 ? '...' + name.slice(-42) : name;
+                html += `
+                    <div class="top-file-item">
+                        <span class="top-file-size">${dir.size}</span>
+                        <span class="top-file-path" title="${escapeHtml(dir.path)}">${escapeHtml(shortName)}</span>
+                    </div>
+                `;
+            });
+            html += `</div>`;
+        }
+
         // Топ 10 файлов
         if (topFiles && topFiles.length > 0) {
             html += `
@@ -542,11 +547,10 @@ async function loadDiskStats() {
                     <h4 style="margin: 15px 0 10px 0; color: #333;">📂 Топ 10 файлов по размеру:</h4>
                     <div class="top-files-list">
             `;
-            
+
             topFiles.forEach((file, index) => {
-                const fileName = file.path.split('/').pop();
-                const shortPath = file.path.length > 50 
-                    ? '...' + file.path.slice(-47) 
+                const shortPath = file.path.length > 50
+                    ? '...' + file.path.slice(-47)
                     : file.path;
                 html += `
                     <div class="top-file-item">
@@ -556,7 +560,7 @@ async function loadDiskStats() {
                     </div>
                 `;
             });
-            
+
             html += `</div></div>`;
         } else {
             html += `

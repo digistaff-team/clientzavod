@@ -11,7 +11,7 @@ const sessionService = require('../services/session.service');
 function requireAdminAuth(req, res, next) {
     const authHeader = req.headers.authorization;
     const password = req.body.password || req.query.password || req.headers['x-admin-password'];
-    
+
     // Проверка через Bearer токен
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.slice(7);
@@ -19,19 +19,24 @@ function requireAdminAuth(req, res, next) {
             return next();
         }
     }
-    
+
     // Проверка через password параметр
     if (password && password === process.env.ADMIN_PASSWORD) {
         return next();
     }
-    
+
     // Проверка через сессию админа
     if (req.session && req.session.isAdmin) {
         return next();
     }
-    
+
     return res.status(401).json({ error: 'Admin authentication required' });
 }
+
+// GET /admin - редирект на страницу контейнеров
+router.get('/', (req, res) => {
+    res.redirect('/admin/containers');
+});
 
 // GET /admin/login - страница входа
 router.get('/login', (req, res) => {
@@ -41,11 +46,11 @@ router.get('/login', (req, res) => {
 // POST /admin/login - проверка пароля
 router.post('/login', (req, res) => {
     const { password } = req.body;
-    
+
     if (!password) {
         return res.status(400).json({ error: 'Password is required' });
     }
-    
+
     if (password === process.env.ADMIN_PASSWORD) {
         if (req.session) {
             req.session.isAdmin = true;
@@ -64,11 +69,41 @@ router.post('/logout', (req, res) => {
     res.json({ success: true });
 });
 
-// GET /admin/containers - список всех контейнеров
-router.get('/containers', requireAdminAuth, async (req, res) => {
+// GET /admin/containers - страница со списком контейнеров
+router.get('/containers', requireAdminAuth, (req, res) => {
+    res.sendFile(require('path').resolve(__dirname, '../public/admin/containers.html'));
+});
+
+// GET /admin/containers - API для получения списка контейнеров
+router.get('/containers-api', requireAdminAuth, async (req, res) => {
     try {
         const containers = await dockerService.getAllUserContainers();
         res.json({ containers });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /admin/stats - API статистики
+router.get('/stats-api', requireAdminAuth, async (req, res) => {
+    try {
+        const containers = await dockerService.getAllUserContainers();
+        const running = containers.filter(c => c.status === 'running').length;
+        const stopped = containers.filter(c => c.status !== 'running').length;
+
+        const sessions = sessionService.getAllSessions();
+
+        res.json({
+            totalContainers: containers.length,
+            runningContainers: running,
+            stoppedContainers: stopped,
+            activeSessions: sessions.length,
+            containers: containers.map(c => ({
+                chatId: c.chatId,
+                status: c.status,
+                uptime: c.uptime
+            }))
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

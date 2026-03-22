@@ -56,7 +56,7 @@ function validatePostLength(text) {
 function validateHashtags(text) {
   const errors = [];
   const warnings = [];
-  const hashtags = (text || '').match(/[\p{L}\p{N}_]+/gu) || [];
+  const hashtags = (text || '').match(/#[\p{L}\p{N}_]+/gu) || [];
 
   if (hashtags.length === 0) {
     warnings.push('В посте нет хэштегов');

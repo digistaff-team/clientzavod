@@ -359,21 +359,21 @@ async function checkVideoStatus(chatId, generationId) {
     let paramIndex = 2;
 
     if (status.videoUrl) {
-      updateFields.push(`video_url = ${paramIndex++}`);
+      updateFields.push(`video_url = $${paramIndex++}`);
       updateValues.push(status.videoUrl);
     }
     if (status.error) {
-      updateFields.push(`error_text = ${paramIndex++}`);
+      updateFields.push(`error_text = $${paramIndex++}`);
       updateValues.push(status.error);
     }
     if (status.progress !== undefined) {
-      updateFields.push(`progress = ${paramIndex++}`);
+      updateFields.push(`progress = $${paramIndex++}`);
       updateValues.push(status.progress);
     }
 
     updateValues.push(generationId);
     await client.query(
-      `UPDATE video_generations SET ${updateFields.join(', ')} WHERE generation_id = ${paramIndex}`,
+      `UPDATE video_generations SET ${updateFields.join(', ')} WHERE generation_id = $${paramIndex}`,
       updateValues
     );
   });

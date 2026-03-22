@@ -21,7 +21,7 @@ const storage = multer.diskStorage({
     }
 });
 
-const upload = multer({ 
+const upload = multer({
     storage,
     limits: { fileSize: config.MAX_FILE_SIZE }
 });
@@ -151,27 +151,37 @@ router.get('/:chat_id/stats', async (req, res) => {
     }
     
     try {
-        // Получаем общую статистику диска
-        const dfResult = await dockerService.executeInContainer(
-            session.containerId,
-            `df -h /workspace | tail -1`
-        );
-        
-        // Парсим df вывод: Filesystem Size Used Avail Use% Mounted
-        const dfLines = dfResult.stdout.trim().split(/\s+/);
+        // Получаем размер workspace пользователя (только данные контейнера, не весь VPS)
+        const [duResult, subdirsResult, topFilesResult] = await Promise.all([
+            dockerService.executeInContainer(
+                session.containerId,
+                `du -sh /workspace 2>/dev/null | cut -f1`
+            ),
+            dockerService.executeInContainer(
+                session.containerId,
+                `du -sh /workspace/* 2>/dev/null | sort -rh`
+            ),
+            dockerService.executeInContainer(
+                session.containerId,
+                `find /workspace -type f -exec du -h {} + 2>/dev/null | sort -rh | head -10`
+            )
+        ]);
+
         const diskStats = {
-            total: dfLines[1] || 'N/A',
-            used: dfLines[2] || 'N/A',
-            available: dfLines[3] || 'N/A',
-            usedPercent: dfLines[4] || 'N/A'
+            used: duResult.stdout.trim() || '0'
         };
-        
-        // Получаем топ 10 файлов по размеру
-        const topFilesResult = await dockerService.executeInContainer(
-            session.containerId,
-            `find /workspace -type f -exec du -h {} + 2>/dev/null | sort -rh | head -10`
-        );
-        
+
+        const subDirs = subdirsResult.stdout.trim().split('\n')
+            .filter(line => line)
+            .map(line => {
+                const match = line.match(/^(\S+)\s+(.+)$/);
+                if (match) {
+                    return { size: match[1], path: match[2] };
+                }
+                return null;
+            })
+            .filter(f => f);
+
         const topFiles = topFilesResult.stdout.trim().split('\n')
             .filter(line => line)
             .map(line => {
@@ -182,8 +192,8 @@ router.get('/:chat_id/stats', async (req, res) => {
                 return null;
             })
             .filter(f => f);
-        
-        res.json({ diskStats, topFiles });
+
+        res.json({ diskStats, subDirs, topFiles });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

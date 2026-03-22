@@ -8,16 +8,31 @@ const sessionService = require('./services/session.service');
 const storageService = require('./services/storage.service');
 const snapshotService = require('./services/snapshot.service');
 const contentMvpService = require('./services/contentMvp.service');
+const session = require('express-session');
 
 const app = express();
 
 // Middleware
 app.use(express.json({ limit: '100mb' }));
 app.use(express.static('public'));
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'docker-claw-admin-secret-key-change-in-production',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { 
+        secure: false, // Set to true if using HTTPS
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    }
+}));
 
 // Sandbox Routes (без префикса /api)
 const sandboxRoutes = require('./routes/sandbox.routes');
 app.use('/sandbox', sandboxRoutes);
+
+// Admin Routes
+const adminRoutes = require('./routes/admin.routes');
+app.use('/admin', adminRoutes);
 
 // API Routes
 app.use('/api', routes);

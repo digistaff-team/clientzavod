@@ -547,17 +547,16 @@ async function generatePostText(chatId, topic, materialsText, personaText = '') 
 }
 
 async function generateImage(topic, text) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not set');
+  const apiKey = process.env.KIE_API_KEY;
+  if (!apiKey) throw new Error('KIE_API_KEY is not set');
   const prompt = `Сгенерируй изображение для поста Telegram. Тема: ${topic.topic}. Текст поста: ${text}. Стиль: чисто, коммерчески, без текста на изображении.`;
-  const resp = await fetch('https://api.openai.com/v1/images/generations', {
+  const resp = await fetch('https://api.kie.ai/v1/images/generations', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'gpt-image-1',
       prompt,
       size: '1024x1024'
     }),
@@ -734,7 +733,7 @@ async function handleGenerateJob(chatId, queueJob, bot, correlationId) {
   await repository.createPost(chatId, jobId, text, extractHashtags(text));
 
   // Создаём asset
-  await repository.createAsset(chatId, jobId, 'image', imagePath, 'openai:gpt-image-1');
+  await repository.createAsset(chatId, jobId, 'image', imagePath, 'kie:kie-image-1');
 
   // Обновляем sheet state
   await repository.setSheetState(chatId, topic.sheetRow, STATUS.READY, reason);
@@ -899,7 +898,7 @@ async function handleVideoGenerateJob(chatId, queueJob, bot, correlationId) {
       
       if (imagePath) {
         await repository.updateJob(chatId, jobId, { imagePath, status: STATUS.READY });
-        await repository.createAsset(chatId, jobId, 'image', imagePath, 'openai:gpt-image-1');
+        await repository.createAsset(chatId, jobId, 'image', imagePath, 'kie:kie-image-1');
         await repository.setSheetState(chatId, topic.sheetRow, STATUS.READY, `${reason}_fallback`);
         
         const draft = { jobId, topic, text, imagePath, correlationId, contentType: 'text+image' };
@@ -947,7 +946,7 @@ async function handleVideoGenerationComplete(chatId, job, bot, videoResult) {
             contentType: 'text+image',
             status: STATUS.READY 
           });
-          await repository.createAsset(chatId, jobId, 'image', imagePath, 'openai:gpt-image-1');
+          await repository.createAsset(chatId, jobId, 'image', imagePath, 'kie:kie-image-1');
           await repository.setSheetState(chatId, sheet_row, STATUS.READY, 'video_fallback');
           
           const draft = { jobId, topic, text: draft_text, imagePath, correlationId: correlation_id, contentType: 'text+image' };
@@ -1088,7 +1087,7 @@ async function generateDraft(chatId, reason = 'manual', correlationId = null) {
   });
 
   await repository.createPost(chatId, jobId, text, extractHashtags(text));
-  await repository.createAsset(chatId, jobId, 'image', imagePath, 'openai:gpt-image-1');
+  await repository.createAsset(chatId, jobId, 'image', imagePath, 'kie:kie-image-1');
   await repository.setSheetState(chatId, topic.sheetRow, STATUS.READY, reason);
 
   return { ok: true, jobId, topic, text, imagePath, correlationId: corrId };
