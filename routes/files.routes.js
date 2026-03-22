@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const sessionService = require('../services/session.service');
 const dockerService = require('../services/docker.service');
+const storageService = require('../services/storage.service');
 const projectCacheService = require('../services/projectCache.service');
 const config = require('../config');
 
@@ -152,42 +153,46 @@ router.get('/:chat_id/stats', async (req, res) => {
     
     try {
         // Получаем размер workspace пользователя (только данные контейнера, не весь VPS)
-        const [duResult, subdirsResult, topFilesResult] = await Promise.all([
-            dockerService.executeInContainer(
-                session.containerId,
-                `du -sh /workspace 2>/dev/null | cut -f1`
-            ),
-            dockerService.executeInContainer(
-                session.containerId,
-                `du -sh /workspace/* 2>/dev/null | sort -rh`
-            ),
-            dockerService.executeInContainer(
-                session.containerId,
-                `find /workspace -type f -exec du -h {} + 2>/dev/null | sort -rh | head -10`
-            )
+        // Измеряем на хосте — без bind-mount путаницы
+        const dataDir = storageService.getDataDir(chat_id);
+
+        const [totalUsed, subdirsResult, topFilesResult] = await Promise.all([
+            // Итоговый размер директории пользователя на хосте
+            storageService.getUserDataSize(chat_id),
+            // Разбивка по подпапкам на хосте
+            new Promise((resolve) => {
+                const { exec } = require('child_process');
+                exec(`du -sh ${dataDir}/* 2>/dev/null | sort -rh`, (err, stdout) => resolve(stdout || ''));
+            }),
+            // Топ файлов — тоже с хоста
+            new Promise((resolve) => {
+                const { exec } = require('child_process');
+                exec(`find ${dataDir} -type f -exec du -h {} + 2>/dev/null | sort -rh | head -10`, (err, stdout) => resolve(stdout || ''));
+            })
         ]);
 
-        const diskStats = {
-            used: duResult.stdout.trim() || '0'
-        };
+        const diskStats = { used: totalUsed || '0' };
 
-        const subDirs = subdirsResult.stdout.trim().split('\n')
+        const subDirs = subdirsResult.trim().split('\n')
             .filter(line => line)
             .map(line => {
                 const match = line.match(/^(\S+)\s+(.+)$/);
                 if (match) {
-                    return { size: match[1], path: match[2] };
+                    // Заменяем хостовый путь на путь внутри контейнера для читаемости
+                    const containerPath = match[2].replace(dataDir, '/workspace');
+                    return { size: match[1], path: containerPath };
                 }
                 return null;
             })
             .filter(f => f);
 
-        const topFiles = topFilesResult.stdout.trim().split('\n')
+        const topFiles = topFilesResult.trim().split('\n')
             .filter(line => line)
             .map(line => {
                 const match = line.match(/^(\S+)\s+(.+)$/);
                 if (match) {
-                    return { size: match[1], path: match[2] };
+                    const containerPath = match[2].replace(dataDir, '/workspace');
+                    return { size: match[1], path: containerPath };
                 }
                 return null;
             })
