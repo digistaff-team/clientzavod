@@ -258,39 +258,40 @@ router.get('/telegram-web-login', async (req, res) => {
 /**
  * Авторизация через Telegram ID из Telegram-бота
  * POST /api/auth/telegram-login
- * Body: { telegram_id: "123456789", username: "@username" }
- * 
+ * Body: { telegram_id: "123456789", username: "@username", first_name: "FirstName", last_name: "SurName" }
+ *
  * Вызывается при нажатии кнопки "Войти в аккаунт" в боте @clientzavod_bot
  */
 router.post('/telegram-login', async (req, res) => {
     const telegramId = String(req.body.telegram_id || '').trim();
     const username = req.body.username || null;
-    
+    const firstName = req.body.first_name || null;
+    const lastName = req.body.last_name || null;
+
     if (!telegramId) {
         return res.status(400).json({ error: 'telegram_id is required' });
     }
-    
-    console.log(`[AUTH-TELEGRAM-LOGIN] telegram_id=${telegramId}, username=${username}`);
-    
+
+    console.log(`[AUTH-TELEGRAM-LOGIN] telegram_id=${telegramId}, username=${username}, first_name=${firstName}, last_name=${lastName}`);
+
     // Сначала ищем прямую сессию (chatId = telegramId)
     const directState = manageStore.getState(telegramId);
-    
+
     if (directState) {
         // Сессия существует — входим
         try {
             const session = await sessionService.getOrCreateSession(telegramId);
-            
+
             // Если это первый вход и есть username — сохраняем
             if (username && !directState.verifiedUsername) {
-                if (!manageStore.getState(telegramId)) {
-                    // Инициализируем state если его нет
-                }
-                // Сохраняем username
+                // Сохраняем username, firstName, lastName
                 const state = manageStore.getState(telegramId) || {};
                 if (!state.verifiedTelegramId) {
                     // Автоматически верифицируем при входе через бота
                     state.verifiedTelegramId = telegramId;
                     state.verifiedUsername = username;
+                    if (firstName) state.verifiedFirstName = firstName;
+                    if (lastName) state.verifiedLastName = lastName;
                     await manageStore.persist(telegramId);
                 }
             }

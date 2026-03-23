@@ -410,7 +410,8 @@ async function handleTextMessage(ctx, chatId) {
         return ctx.reply('Сессия не найдена. Создайте сессию в панели (войдите по Chat ID).');
     }
 
-    if (data.aiAuthToken && data.aiModel) {
+    const hasCustomProvider = data.aiCustomApiKey && (data.aiProvider === 'openai' || data.aiProvider === 'openrouter');
+    if ((data.aiAuthToken || hasCustomProvider) && data.aiModel) {
         // AI ассистент mode
 
         if (data.aiBlocked) {

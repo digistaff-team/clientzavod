@@ -78,8 +78,8 @@ async function callAI(chatId, authToken, model, messages, tools, userEmail) {
         stream: false
     };
 
-    // Добавляем tools только для ProTalk и OpenRouter (поддерживают function calling)
-    if (tools && tools.length > 0 && (provider === 'protalk' || provider === 'openrouter')) {
+    // Добавляем tools (function calling поддерживается ProTalk, OpenRouter и OpenAI)
+    if (tools && tools.length > 0) {
         payload.tools = tools;
         payload.tool_choice = "auto";
     }

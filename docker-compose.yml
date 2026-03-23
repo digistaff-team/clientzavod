@@ -49,6 +49,12 @@ services:
     networks:
       - app-network
 
+  # Примечание: пользовательские контейнеры sandbox-user-* создаются динамически
+  # сервисом docker.service.js. Их лимиты задаются через переменные окружения:
+  #   CONTAINER_MEMORY=256m  (по умолчанию в config.js)
+  #   CONTAINER_CPUS=0.5
+  # Измените эти значения в .env файле для настройки лимитов контейнеров.
+
   app:
     build: .
     container_name: bash-executor

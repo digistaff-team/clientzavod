@@ -342,23 +342,27 @@ async function loadAIStatus() {
         if (!statusEl) return;
 
         if (data.hasAI) {
-            // Форматируем баланс
+            // Форматируем баланс (только для ProTalk)
             let balanceInfo = '';
-            if (data.balance !== null && data.balance !== undefined) {
+            const isProTalk = !data.aiProvider || data.aiProvider === 'protalk';
+            if (isProTalk && data.balance !== null && data.balance !== undefined) {
                 const balanceClass = data.balance < 0 ? 'color: #d00;' : 'color: #0a0;';
                 const expiredInfo = data.balanceExpired ? ` (до ${data.balanceExpired})` : '';
                 balanceInfo = `<br><span style="font-size: 12px; ${balanceClass}">💰 Баланс: ${Math.round(data.balance).toLocaleString()} токенов, ${expiredInfo}</span>`;
             }
-            
+
+            // Определяем имя провайдера для отображения
+            const providerLabel = data.aiProvider === 'openai' ? 'OpenAI' : data.aiProvider === 'openrouter' ? 'OpenRouter' : 'ProTalk';
+
             // Проверяем заблокирован ли AI
             if (data.aiBlocked) {
                 statusEl.innerHTML = `<span style="color: #d00;">⚠️ ИИ ассистент ЗАБЛОКИРОВАН</span>${balanceInfo}<br><span style="font-size: 13px; color: #666;">Модель: ${data.aiModel}. Продлите тариф для разблокировки.</span>`;
             } else {
-                statusEl.innerHTML = `<span style="color: #0a0;">✅ ИИ ассистент активен: <strong>${data.aiModel}</strong></span>${balanceInfo}`;
+                statusEl.innerHTML = `<span style="color: #0a0;">✅ ИИ ассистент активен: <strong>${providerLabel} / ${data.aiModel}</strong></span>${balanceInfo}`;
             }
-            
+
             if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
-            
+
             // Заполняем поля формы сохранёнными данными
             if (botIdInput) botIdInput.value = data.aiBotId || '';
             if (botTokenInput) botTokenInput.value = data.aiBotToken || ''; // Уже маскированный токен

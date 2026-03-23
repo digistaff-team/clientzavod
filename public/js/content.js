@@ -11,6 +11,18 @@ let selectedJobId = null;
 let editingTopicId = null;
 let editingMaterialId = null;
 
+const STATUS_RU = {
+    pending: 'В очереди',
+    used: 'Публикуется',
+    completed: 'Опубликована',
+    ready: 'Готов',
+    approved: 'Одобрен',
+    published: 'Опубликован',
+    failed: 'Ошибка',
+    draft: 'Черновик'
+};
+function statusRu(s) { return STATUS_RU[s] || s || '-'; }
+
 async function onLoginSuccess() {
     await loadDashboard();
 }
@@ -61,7 +73,6 @@ async function fetchJson(url, options = {}) {
 
 async function loadDashboard() {
     await Promise.all([
-        loadContentSettings(),
         loadMetrics(),
         loadTopics(),
         loadMaterials(),
@@ -70,54 +81,6 @@ async function loadDashboard() {
     ]);
 }
 
-function updateScheduleTime() {
-    const hour = document.getElementById('contentScheduleHour')?.value || '00';
-    const minute = document.getElementById('contentScheduleMinute')?.value || '00';
-    const timeField = document.getElementById('contentScheduleTime');
-    if (timeField) {
-        timeField.value = `${hour}:${minute.padStart(2, '0')}`;
-    }
-}
-
-function validateMinutes() {
-    const minuteInput = document.getElementById('contentScheduleMinute');
-    if (!minuteInput) return;
-    let val = minuteInput.value.replace(/[^0-9]/g, '');
-    if (val.length > 2) val = val.slice(0, 2);
-    if (val !== '' && parseInt(val, 10) > 59) val = '59';
-    minuteInput.value = val;
-    updateScheduleTime();
-}
-
-function setScheduleTimeInputs(timeValue) {
-    if (!timeValue) return;
-    const parts = timeValue.split(':');
-    if (parts.length < 2) return;
-    const hourSelect = document.getElementById('contentScheduleHour');
-    const minuteInput = document.getElementById('contentScheduleMinute');
-    if (hourSelect) hourSelect.value = parts[0].padStart(2, '0');
-    if (minuteInput) minuteInput.value = parts[1].padStart(2, '0');
-    updateScheduleTime();
-}
-
-function updateScheduleTz() {
-    return;
-}
-
-function setScheduleTzInput(tzValue) {
-    const tzSelect = document.getElementById('contentScheduleTz');
-    if (!tzSelect || !tzValue) return;
-    const optionExists = Array.from(tzSelect.options).some((opt) => opt.value === tzValue);
-    if (optionExists) {
-        tzSelect.value = tzValue;
-        return;
-    }
-    const newOption = document.createElement('option');
-    newOption.value = tzValue;
-    newOption.text = `${tzValue} (custom)`;
-    newOption.selected = true;
-    tzSelect.insertBefore(newOption, tzSelect.firstChild);
-}
 
 async function runNow() {
     const chatId = getChatId();
@@ -204,12 +167,12 @@ function renderTopicsTable(items) {
                 <td>${isEditing
                     ? `
                         <select id="topic-edit-status-${item.id}" class="content-inline-input">
-                            <option value="pending" ${item.status === 'pending' ? 'selected' : ''}>pending</option>
-                            <option value="used" ${item.status === 'used' ? 'selected' : ''}>used</option>
-                            <option value="completed" ${item.status === 'completed' ? 'selected' : ''}>completed</option>
+                            <option value="pending" ${item.status === 'pending' ? 'selected' : ''}>В очереди</option>
+                            <option value="used" ${item.status === 'used' ? 'selected' : ''}>Публикуется</option>
+                            <option value="completed" ${item.status === 'completed' ? 'selected' : ''}>Опубликована</option>
                         </select>
                     `
-                    : `<span class="content-status-badge">${escapeHtml(item.status || '-')}</span>`}</td>
+                    : `<span class="content-status-badge">${escapeHtml(statusRu(item.status))}</span>`}</td>
                 <td>${fmtDate(item.created_at)}</td>
                 <td>
                     <div class="content-actions">
@@ -268,18 +231,46 @@ function cancelTopicInline() {
 async function saveTopicInline(topicId) {
     const chatId = getChatId();
     if (!chatId) return;
+    
+    // Собираем только изменённые поля
+    const payload = {
+        chat_id: chatId
+    };
+    
+    const topicEl = document.getElementById(`topic-edit-topic-${topicId}`);
+    const focusEl = document.getElementById(`topic-edit-focus-${topicId}`);
+    const secondaryEl = document.getElementById(`topic-edit-secondary-${topicId}`);
+    const lsiEl = document.getElementById(`topic-edit-lsi-${topicId}`);
+    const statusEl = document.getElementById(`topic-edit-status-${topicId}`);
+    
+    if (topicEl) {
+        const val = topicEl.value.trim();
+        if (val) payload.topic = val;
+    }
+    if (focusEl) {
+        const val = focusEl.value.trim();
+        if (val) payload.focus = val;
+    }
+    if (secondaryEl) {
+        const val = secondaryEl.value.trim();
+        if (val) payload.secondary = val;
+    }
+    if (lsiEl) {
+        const val = lsiEl.value.trim();
+        if (val) payload.lsi = val;
+    }
+    if (statusEl) {
+        const val = statusEl.value.trim();
+        if (val && ['pending', 'used', 'completed'].includes(val)) {
+            payload.status = val;
+        }
+    }
+    
     try {
         await fetchJson(`${API_CONTENT}/topics/${topicId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: chatId,
-                topic: document.getElementById(`topic-edit-topic-${topicId}`).value.trim(),
-                focus: document.getElementById(`topic-edit-focus-${topicId}`).value.trim(),
-                secondary: document.getElementById(`topic-edit-secondary-${topicId}`).value.trim(),
-                lsi: document.getElementById(`topic-edit-lsi-${topicId}`).value.trim(),
-                status: document.getElementById(`topic-edit-status-${topicId}`).value.trim()
-            })
+            body: JSON.stringify(payload)
         });
         editingTopicId = null;
         showToast('Тема обновлена', 'success');
@@ -349,7 +340,7 @@ function renderSheetTopRows(data) {
             <td>${item.row}</td>
             <td>${escapeHtml(item.topic || '-')}</td>
             <td>${escapeHtml(item.focus || '-')}</td>
-            <td>${escapeHtml(item.status || '-')}</td>
+            <td>${escapeHtml(statusRu(item.status))}</td>
         </tr>
     `).join('');
 }
@@ -382,7 +373,7 @@ function renderImportPreview(data) {
                 <td>${item.row}</td>
                 <td>${escapeHtml(item.topic || '-')}</td>
                 <td>${escapeHtml(item.focus || '-')}</td>
-                <td>${escapeHtml(item.status || '-')}</td>
+                <td>${escapeHtml(statusRu(item.status))}</td>
                 <td>${item.duplicate ? 'yes' : 'no'}</td>
             </tr>
         `).join('') || '<tr><td colspan="5" class="content-empty-cell">Нет строк для импорта</td></tr>';
@@ -662,7 +653,7 @@ function renderJobsTable(items) {
         <tr>
             <td>${item.id}</td>
             <td>${escapeHtml(item.sheet_topic || '-')}</td>
-            <td><span class="content-status-badge">${escapeHtml(item.status || '-')}</span></td>
+            <td><span class="content-status-badge">${escapeHtml(statusRu(item.status))}</span></td>
             <td>${escapeHtml(item.publish_status || item.last_publish_status || '-')}</td>
             <td>${fmtDate(item.created_at)}</td>
             <td><button class="btn btn-primary" onclick="openJobDetails(${item.id})">Открыть</button></td>
@@ -731,45 +722,3 @@ async function moderateSelectedJob(action) {
     }
 }
 
-async function loadContentSettings() {
-    const chatId = getChatId();
-    if (!chatId) return;
-    try {
-        const data = await fetchJson(`${API_MANAGE}/content/settings?chat_id=${encodeURIComponent(chatId)}`);
-        const s = data.settings || {};
-        document.getElementById('contentChannelId').value = s.channelId || '';
-        document.getElementById('contentModeratorUserId').value = s.moderatorUserId || '';
-        document.getElementById('contentScheduleTime').value = s.scheduleTime || '';
-        if (s.scheduleTime) setScheduleTimeInputs(s.scheduleTime);
-        setScheduleTzInput(s.scheduleTz || 'Europe/Moscow');
-        document.getElementById('contentDailyLimit').value = s.dailyLimit || '';
-    } catch (e) {
-        setApiStatus(`Settings: ${e.message}`, 'error');
-    }
-}
-
-async function saveContentSettings() {
-    const chatId = getChatId();
-    if (!chatId) return;
-    updateScheduleTime();
-    try {
-        await fetchJson(`${API_MANAGE}/content/settings`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: chatId,
-                channel_id: document.getElementById('contentChannelId').value.trim(),
-                moderator_user_id: document.getElementById('contentModeratorUserId').value.trim(),
-                schedule_time: document.getElementById('contentScheduleTime').value.trim(),
-                schedule_tz: document.getElementById('contentScheduleTz').value.trim(),
-                daily_limit: document.getElementById('contentDailyLimit').value.trim()
-            })
-        });
-        showToast('Настройки сохранены', 'success');
-        setApiStatus('Настройки контента сохранены', 'ok');
-        await loadContentSettings();
-    } catch (e) {
-        showToast(e.message, 'error');
-        setApiStatus(e.message, 'error');
-    }
-}

@@ -1641,26 +1641,27 @@ async function createTopic(chatId, data = {}) {
 
 async function updateTopic(chatId, topicId, data = {}) {
   await repository.ensureSchema(chatId);
-  const topic = String(data.topic || '').trim();
-  const status = data.status === undefined ? undefined : String(data.status || '').trim().toLowerCase();
+  
+  const topic = data.topic ? String(data.topic).trim() : undefined;
+  const status = data.status ? String(data.status).trim().toLowerCase() : undefined;
   const allowedStatuses = new Set(['pending', 'used', 'completed']);
 
-  if (!topic) {
-    throw new Error('topic is required');
+  if (topic !== undefined && !topic) {
+    throw new Error('topic cannot be empty');
   }
   if (status !== undefined && !allowedStatuses.has(status)) {
-    throw new Error('invalid topic status');
+    throw new Error(`invalid status: ${data.status}. Allowed: pending, used, completed`);
   }
 
   const updated = await repository.updateTopic(chatId, topicId, {
     topic,
-    focus: String(data.focus || '').trim() || null,
+    focus: data.focus ? String(data.focus).trim() : null,
     secondary: Array.isArray(data.secondary)
       ? JSON.stringify(data.secondary)
-      : String(data.secondary || '').trim() || null,
+      : (data.secondary ? String(data.secondary).trim() : null),
     lsi: Array.isArray(data.lsi)
       ? JSON.stringify(data.lsi)
-      : String(data.lsi || '').trim() || null,
+      : (data.lsi ? String(data.lsi).trim() : null),
     status
   });
 

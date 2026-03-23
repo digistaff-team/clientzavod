@@ -2,8 +2,83 @@ const API_MANAGE = `${window.location.origin}/api/manage`;
 
 async function onLoginSuccess() {
     await loadSessionInfo();
+    await loadTelegramProfile();
     await loadConfigPath();
     await loadAIRouterLogs();
+}
+
+async function loadTelegramProfile() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    
+    try {
+        const res = await fetch(`${API_MANAGE}/telegram/status?chat_id=${encodeURIComponent(chatId)}`);
+        const data = await res.json();
+        
+        const blockEl = document.getElementById('telegramProfileBlock');
+        const infoEl = document.getElementById('telegramProfileInfo');
+        
+        if (!blockEl || !infoEl) return;
+        
+        // Показываем блок только если есть данные о пользователе
+        if (data.verified && (data.username || data.firstName)) {
+            blockEl.style.display = 'block';
+            
+            // Формируем строку вида "@username FirstName SurName"
+            const parts = [];
+            if (data.username) {
+                // Добавляем @ если нет
+                parts.push(data.username.startsWith('@') ? data.username : '@' + data.username);
+            }
+            if (data.firstName) {
+                parts.push(data.firstName);
+            }
+            if (data.lastName) {
+                parts.push(data.lastName);
+            }
+            
+            infoEl.textContent = parts.join(' ') || 'Профиль не найден';
+        } else {
+            // Пробуем загрузить через admin API
+            await loadTelegramProfileAdmin(chatId, blockEl, infoEl);
+        }
+    } catch (e) {
+        console.error('loadTelegramProfile error:', e);
+    }
+}
+
+async function loadTelegramProfileAdmin(chatId, blockEl, infoEl) {
+    try {
+        const ADMIN_PASSWORD = '8092697980'; // Можно вынести в настройки
+        const res = await fetch(
+            `${API_MANAGE}/telegram/user-info?chat_id=${encodeURIComponent(chatId)}&admin_password=${ADMIN_PASSWORD}`
+        );
+        const data = await res.json();
+        
+        if (data.success && (data.username || data.firstName)) {
+            blockEl.style.display = 'block';
+            
+            // Формируем строку вида "@username FirstName SurName"
+            const parts = [];
+            if (data.username) {
+                parts.push(data.username.startsWith('@') ? data.username : '@' + data.username);
+            }
+            if (data.firstName) {
+                parts.push(data.firstName);
+            }
+            if (data.lastName) {
+                parts.push(data.lastName);
+            }
+            
+            const source = data.fromCache ? '(из кэша)' : '(из Telegram)';
+            infoEl.textContent = `${parts.join(' ')} ${source}`;
+        } else {
+            blockEl.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('loadTelegramProfileAdmin error:', e);
+        blockEl.style.display = 'none';
+    }
 }
 
 async function loadConfigPath() {
@@ -47,6 +122,7 @@ async function loadSessionInfo() {
 
 async function refreshAll() {
     await loadSessionInfo();
+    await loadTelegramProfile();
     await loadConfigPath();
     showToast('Обновлено', 'success');
 }

@@ -3,6 +3,7 @@ const API_MANAGE = `${window.location.origin}/api/manage`;
 async function onLoginSuccess() {
     await loadTelegramStatus();
     await loadEmailStatus();
+    await loadContentSettings();
 }
 
 // Специальная инициализация для страницы каналов
@@ -338,4 +339,105 @@ async function disconnectEmail() {
     }
 }
 
+// === Контент-настройки ===
 
+function updateScheduleTime() {
+    const hour = document.getElementById('contentScheduleHour')?.value || '00';
+    const minute = document.getElementById('contentScheduleMinute')?.value || '00';
+    const timeField = document.getElementById('contentScheduleTime');
+    if (timeField) {
+        timeField.value = `${hour}:${minute.padStart(2, '0')}`;
+    }
+}
+
+function validateMinutes() {
+    const minuteInput = document.getElementById('contentScheduleMinute');
+    if (!minuteInput) return;
+    let val = minuteInput.value.replace(/[^0-9]/g, '');
+    if (val.length > 2) val = val.slice(0, 2);
+    if (val !== '' && parseInt(val, 10) > 59) val = '59';
+    minuteInput.value = val;
+    updateScheduleTime();
+}
+
+function setScheduleTimeInputs(timeValue) {
+    if (!timeValue) return;
+    const parts = timeValue.split(':');
+    if (parts.length < 2) return;
+    const hourSelect = document.getElementById('contentScheduleHour');
+    const minuteInput = document.getElementById('contentScheduleMinute');
+    if (hourSelect) hourSelect.value = parts[0].padStart(2, '0');
+    if (minuteInput) minuteInput.value = parts[1].padStart(2, '0');
+    updateScheduleTime();
+}
+
+function updateScheduleTz() {
+    return;
+}
+
+function setScheduleTzInput(tzValue) {
+    const tzSelect = document.getElementById('contentScheduleTz');
+    if (!tzSelect || !tzValue) return;
+    const optionExists = Array.from(tzSelect.options).some((opt) => opt.value === tzValue);
+    if (optionExists) {
+        tzSelect.value = tzValue;
+        return;
+    }
+    const newOption = document.createElement('option');
+    newOption.value = tzValue;
+    newOption.text = `${tzValue} (custom)`;
+    newOption.selected = true;
+    tzSelect.insertBefore(newOption, tzSelect.firstChild);
+}
+
+async function loadContentSettings() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        const res = await fetch(`${API_MANAGE}/content/settings?chat_id=${encodeURIComponent(chatId)}`);
+        const data = await res.json();
+        const s = data.settings || {};
+        const channelEl = document.getElementById('contentChannelId');
+        const moderatorEl = document.getElementById('contentModeratorUserId');
+        const timeEl = document.getElementById('contentScheduleTime');
+        const limitEl = document.getElementById('contentDailyLimit');
+        if (channelEl) channelEl.value = s.channelId || '';
+        // По умолчанию подставляем chatId пользователя как Moderator User ID
+        if (moderatorEl) moderatorEl.value = s.moderatorUserId || chatId;
+        if (timeEl) timeEl.value = s.scheduleTime || '';
+        if (s.scheduleTime) setScheduleTimeInputs(s.scheduleTime);
+        setScheduleTzInput(s.scheduleTz || 'Europe/Moscow');
+        if (limitEl) limitEl.value = s.dailyLimit || '';
+    } catch (e) {
+        console.error('loadContentSettings', e);
+    }
+}
+
+async function saveContentSettings() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    updateScheduleTime();
+    try {
+        const res = await fetch(`${API_MANAGE}/content/settings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                channel_id: (document.getElementById('contentChannelId')?.value || '').trim(),
+                moderator_user_id: (document.getElementById('contentModeratorUserId')?.value || '').trim(),
+                schedule_time: (document.getElementById('contentScheduleTime')?.value || '').trim(),
+                schedule_tz: (document.getElementById('contentScheduleTz')?.value || '').trim(),
+                daily_limit: (document.getElementById('contentDailyLimit')?.value || '').trim()
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            showToast('Контент-настройки сохранены', 'success');
+            await loadContentSettings();
+        } else {
+            showToast(data.error || 'Ошибка сохранения', 'error');
+        }
+    } catch (e) {
+        showToast('Ошибка сети', 'error');
+    }
+}

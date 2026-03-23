@@ -45,17 +45,87 @@ router.get('/telegram/status', (req, res) => {
     const verified = !!(data && data.verifiedTelegramId);
     const username = data && data.verifiedUsername ? data.verifiedUsername : null;
     const pending = !!(data && data.pending);
-    
+
     // Возвращаем полный токен (пользователь авторизован по Chat ID)
     const fullToken = hasToken && data.token ? data.token : null;
-    
+
     res.json({
         hasToken,
         verified,
         username,
         pending,
-        token: fullToken // Полный токен для отображения в форме
+        token: fullToken, // Полный токен для отображения в форме
+        telegramId: data && data.verifiedTelegramId ? data.verifiedTelegramId : null,
+        firstName: data && data.verifiedFirstName ? data.verifiedFirstName : null,
+        lastName: data && data.verifiedLastName ? data.verifiedLastName : null
     });
+});
+
+/**
+ * GET /api/manage/telegram/user-info - Получить информацию о пользователе Telegram по chat_id
+ * Требует ADMIN_PASSWORD
+ * Возвращает: username, first_name, last_name, language_code
+ */
+router.get('/telegram/user-info', async (req, res) => {
+    const chatId = req.query.chat_id;
+    const adminPassword = req.headers['x-admin-password'] || req.query.admin_password;
+    
+    if (!chatId) {
+        return res.status(400).json({ error: 'chat_id is required' });
+    }
+    
+    // Проверка админского пароля
+    if (adminPassword !== process.env.ADMIN_PASSWORD) {
+        return res.status(401).json({ error: 'Admin authentication required' });
+    }
+    
+    try {
+        // Сначала пробуем получить из сохранённых данных
+        const data = manageStore.getState(chatId);
+        if (data && data.verifiedTelegramId) {
+            return res.json({
+                success: true,
+                telegramId: data.verifiedTelegramId,
+                username: data.verifiedUsername || null,
+                firstName: data.verifiedFirstName || null,
+                lastName: data.verifiedLastName || null,
+                fromCache: true
+            });
+        }
+        
+        // Если нет сохранённых данных - пробуем получить через Bot API
+        // Используем AUTH_BOT_TOKEN для запроса
+        const botToken = process.env.AUTH_BOT_TOKEN;
+        if (!botToken) {
+            return res.status(500).json({ error: 'AUTH_BOT_TOKEN not configured' });
+        }
+        
+        // Запрашиваем информацию о пользователе через getChat
+        const botApiUrl = `https://api.telegram.org/bot${botToken}/getChat?chat_id=${encodeURIComponent(chatId)}`;
+        const botResponse = await fetch(botApiUrl);
+        const botResult = await botResponse.json();
+        
+        if (botResult.ok) {
+            const chat = botResult.result;
+            return res.json({
+                success: true,
+                telegramId: chat.id,
+                username: chat.username || null,
+                firstName: chat.first_name || null,
+                lastName: chat.last_name || null,
+                languageCode: chat.language_code || null,
+                fromCache: false
+            });
+        } else {
+            return res.status(404).json({ 
+                error: 'User not found or bot cannot access this chat',
+                telegramError: botResult.description 
+            });
+        }
+    } catch (e) {
+        console.error('[TELEGRAM-USER-INFO] Error:', e.message);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 router.delete('/telegram', (req, res) => {
@@ -122,12 +192,17 @@ router.get('/ai/status', (req, res) => {
     // Это нужно для корректного отображения при смене модели
     const fullBotToken = data && data.aiBotToken ? data.aiBotToken : null;
     
+    // AI считается настроенным если есть ProTalk (aiAuthToken) ИЛИ OpenAI/OpenRouter (aiCustomApiKey)
+    const hasProTalk = !!(data && data.aiAuthToken);
+    const hasCustomProvider = !!(data && data.aiCustomApiKey && (data.aiProvider === 'openai' || data.aiProvider === 'openrouter'));
+
     res.json({
-        hasAI: !!(data && data.aiAuthToken),
+        hasAI: hasProTalk || hasCustomProvider,
         aiBotId: data && data.aiBotId ? data.aiBotId : null,
         aiBotToken: fullBotToken, // Полный токен для отображения в форме
         aiUserEmail: data && data.aiUserEmail ? data.aiUserEmail : null,
         aiModel: data && data.aiModel ? data.aiModel : null,
+        aiProvider: data && data.aiProvider ? data.aiProvider : null,
         aiBlocked: data && data.aiBlocked ? data.aiBlocked : false,
         balance: data && data.aiBalance !== undefined ? data.aiBalance : null,
         balanceExpired: data && data.aiBalanceExpired ? data.aiBalanceExpired : null

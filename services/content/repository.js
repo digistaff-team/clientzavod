@@ -4,10 +4,10 @@
 const { Client } = require('pg');
 const config = require('../../config');
 const { JOB_STATUS, POST_STATUS, PUBLISH_LOG_STATUS, validateJobStatusTransition } = require('./status');
+const postgresService = require('../postgres.service');
 
-function getDbName(chatId) {
-  return `db_${String(chatId).replace(/[^a-z0-9_]/gi, '_').toLowerCase()}`;
-}
+// Используем единую функцию getDbName из postgres.service
+const { getDbName, databaseExists, createUserDatabase } = postgresService;
 
 function getDbClient(chatId) {
   return new Client({
@@ -22,6 +22,12 @@ function getDbClient(chatId) {
 }
 
 async function withClient(chatId, fn) {
+  // Проверяем и создаём БД если не существует
+  const dbExists = await postgresService.databaseExists(chatId);
+  if (!dbExists) {
+    await postgresService.createUserDatabase(chatId);
+  }
+  
   const client = getDbClient(chatId);
   await client.connect();
   try {
@@ -819,6 +825,7 @@ async function updateTopic(chatId, topicId, data) {
     }
 
     if (!fields.length) {
+      // Нет полей для обновления - просто возвращаем текущее значение
       return getTopicById(chatId, topicId);
     }
 

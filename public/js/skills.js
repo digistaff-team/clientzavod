@@ -4,7 +4,6 @@ const MYSQL_API_KEY = 'mysql-VTJGc2RHVmtYMS9PQ09iSlgycDZrRWVWVWt5bWR1azQ4bkVqK0J
 
 let allSkills = [];
 let userSelectedSkills = new Set();
-let currentUserEmail = null;
 
 // === MySQL API Helpers ===
 async function mysqlQuery(sql, params = []) {
@@ -30,25 +29,10 @@ async function mysqlQuery(sql, params = []) {
 
 // === Инициализация ===
 async function onLoginSuccess() {
-    // Получаем email пользователя из настроек AI
-    await loadUserEmail();
     await loadSkills();
     // Важно: перерисовать после загрузки выбранных навыков
     await loadUserSelectedSkills();
     renderSkills(); // Перерисовываем с учётом выбранных навыков
-}
-
-async function loadUserEmail() {
-    const chatId = getChatId();
-    if (!chatId) return;
-    
-    try {
-        const res = await fetch(`/api/manage/ai/status?chat_id=${encodeURIComponent(chatId)}`);
-        const data = await res.json();
-        currentUserEmail = data.aiUserEmail || null;
-    } catch (e) {
-        console.error('loadUserEmail error:', e);
-    }
 }
 
 // === Работа с навыками ===
@@ -72,8 +56,12 @@ async function loadSkills() {
 }
 
 async function loadUserSelectedSkills() {
-    if (!currentUserEmail) return;
-    
+    const chatId = getChatId();
+    if (!chatId) return;
+
+    // Всегда используем chatId как идентификатор
+    const userIdentifier = `chat_${chatId}`;
+
     try {
         // Проверяем существование таблицы
         await mysqlQuery(`
@@ -86,13 +74,13 @@ async function loadUserSelectedSkills() {
                 FOREIGN KEY (skill_id) REFERENCES ai_skills(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
-        
+
         // Загружаем выбранные навыки
         const result = await mysqlQuery(
             `SELECT skill_id FROM user_selected_skills WHERE user_email = %s`,
-            [currentUserEmail]
+            [userIdentifier]
         );
-        
+
         userSelectedSkills = new Set((result.data || []).map(row => row.skill_id));
         updateSelectedCount();
     } catch (e) {
@@ -137,8 +125,10 @@ function renderSkills() {
     }
     
     // Разделяем на свои и чужие навыки
-    const mySkills = filtered.filter(s => currentUserEmail && s.user_email === currentUserEmail);
-    const otherSkills = filtered.filter(s => !currentUserEmail || s.user_email !== currentUserEmail);
+    const chatId = getChatId();
+    const userIdentifier = `chat_${chatId}`;
+    const mySkills = filtered.filter(s => userIdentifier && s.user_email === userIdentifier);
+    const otherSkills = filtered.filter(s => !userIdentifier || s.user_email !== userIdentifier);
     
     // Сортируем по usage_count (DESC)
     mySkills.sort((a, b) => (b.usage_count || 0) - (a.usage_count || 0));
@@ -296,18 +286,22 @@ function updateSelectedCount() {
 
 // === Выбор навыков ===
 async function toggleSkillSelection(skillId) {
-    if (!currentUserEmail) {
-        showToast('Сначала настройте email в разделе ИИ', 'error');
-        await loadSkills(); // Перерисовать
+    // Всегда используем chatId как идентификатор пользователя
+    const chatId = getChatId();
+    if (!chatId) {
+        showToast('Пользователь не авторизован', 'error');
+        await loadSkills();
         return;
     }
-    
+
+    const userIdentifier = `chat_${chatId}`;
+
     try {
         if (userSelectedSkills.has(skillId)) {
             // Удаляем выбор
             await mysqlQuery(
                 `DELETE FROM user_selected_skills WHERE user_email = %s AND skill_id = %s`,
-                [currentUserEmail, skillId]
+                [userIdentifier, skillId]
             );
             userSelectedSkills.delete(skillId);
             showToast('Навык убран из выбранных', 'success');
@@ -315,12 +309,12 @@ async function toggleSkillSelection(skillId) {
             // Добавляем выбор
             await mysqlQuery(
                 `INSERT INTO user_selected_skills (user_email, skill_id) VALUES (%s, %s)`,
-                [currentUserEmail, skillId]
+                [userIdentifier, skillId]
             );
             userSelectedSkills.add(skillId);
             showToast('Навык добавлен в контекст AI', 'success');
         }
-        
+
         updateSelectedCount();
         renderSkills();
     } catch (e) {
@@ -385,11 +379,12 @@ function closeViewModal() {
 
 // === Добавление/редактирование навыка ===
 function openAddSkillModal() {
-    if (!currentUserEmail) {
-        showToast('Сначала настройте email в разделе ИИ', 'error');
+    const chatId = getChatId();
+    if (!chatId) {
+        showToast('Пользователь не авторизован', 'error');
         return;
     }
-    
+
     document.getElementById('skillForm').reset();
     document.getElementById('skillId').value = '';
     document.getElementById('modalTitle').textContent = '➕ Добавить навык';
@@ -399,9 +394,12 @@ function openAddSkillModal() {
 function editSkill(skillId) {
     const skill = allSkills.find(s => s.id === skillId);
     if (!skill) return;
-    
+
+    const chatId = getChatId();
+    const userIdentifier = `chat_${chatId}`;
+
     // Проверяем права
-    if (currentUserEmail !== skill.user_email) {
+    if (userIdentifier !== skill.user_email) {
         showToast('Вы можете редактировать только свои навыки', 'error');
         return;
     }
@@ -428,12 +426,16 @@ function closeSkillModal() {
 
 async function saveSkill(event) {
     event.preventDefault();
-    
-    if (!currentUserEmail) {
-        showToast('Сначала настройте email в разделе ИИ', 'error');
+
+    const chatId = getChatId();
+    if (!chatId) {
+        showToast('Пользователь не авторизован', 'error');
         return;
     }
-    
+
+    // Всегда используем chatId как идентификатор пользователя
+    const userIdentifier = `chat_${chatId}`;
+
     const skillId = document.getElementById('skillId').value;
     const name = document.getElementById('skillName').value.trim();
     const slug = document.getElementById('skillSlug').value.trim().toLowerCase();
@@ -445,19 +447,19 @@ async function saveSkill(event) {
     const tags = document.getElementById('skillTags').value.trim();
     const metadataText = document.getElementById('skillMetadata').value.trim();
     const isPublic = document.getElementById('skillIsPublic').checked ? 1 : 0;
-    
+
     try {
         if (skillId) {
             // Обновление
             await mysqlQuery(`
-                UPDATE ai_skills SET 
+                UPDATE ai_skills SET
                     name = %s, slug = %s, category_slug = %s, category_name = %s,
                     short_desc = %s, system_prompt = %s, examples_text = %s,
                     tags = %s, metadata_text = %s, is_public = %s
                 WHERE id = %s AND user_email = %s
-            `, [name, slug, categorySlug, categoryName, shortDesc, systemPrompt, 
-                examplesText, tags, metadataText, isPublic, skillId, currentUserEmail]);
-            
+            `, [name, slug, categorySlug, categoryName, shortDesc, systemPrompt,
+                examplesText, tags, metadataText, isPublic, skillId, userIdentifier]);
+
             showToast('Навык обновлён', 'success');
         } else {
             // Создание
@@ -466,12 +468,12 @@ async function saveSkill(event) {
                     user_email, name, slug, category_slug, category_name,
                     short_desc, system_prompt, examples_text, tags, metadata_text, is_public
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            `, [currentUserEmail, name, slug, categorySlug, categoryName, 
+            `, [userIdentifier, name, slug, categorySlug, categoryName,
                 shortDesc, systemPrompt, examplesText, tags, metadataText, isPublic]);
-            
+
             showToast('Навык создан (ID: ' + result.insert_id + ')', 'success');
         }
-        
+
         closeSkillModal();
         await loadSkills();
     } catch (e) {
@@ -489,30 +491,33 @@ function filterSkills() {
 async function deleteSkill(skillId) {
     const skill = allSkills.find(s => s.id === skillId);
     if (!skill) return;
-    
+
+    const chatId = getChatId();
+    const userIdentifier = `chat_${chatId}`;
+
     // Подтверждение удаления
     if (!confirm(`Вы уверены, что хотите удалить навык "${skill.name}"?\n\nЭто действие нельзя отменить.`)) {
         return;
     }
-    
+
     try {
         await mysqlQuery(
             `DELETE FROM ai_skills WHERE id = %s AND user_email = %s`,
-            [skillId, currentUserEmail]
+            [skillId, userIdentifier]
         );
-        
+
         showToast('Навык удалён', 'success');
-        
+
         // Убираем из выбранных, если был
         if (userSelectedSkills.has(skillId)) {
             await mysqlQuery(
                 `DELETE FROM user_selected_skills WHERE user_email = %s AND skill_id = %s`,
-                [currentUserEmail, skillId]
+                [userIdentifier, skillId]
             );
             userSelectedSkills.delete(skillId);
             updateSelectedCount();
         }
-        
+
         // Перезагружаем список
         await loadSkills();
     } catch (e) {

@@ -10,7 +10,7 @@ const sessions = new Map();
 const initStatuses = new Map();
 
 /**
- * Проверяет наличие python3 в контейнере
+ * Проверяет наличие python3 в контейнере и создаёт БД пользователя
  */
 async function verifyContainerDeps(chatId) {
     const result = await executeCommand(chatId, 'which python3 && python3 --version', 5);
@@ -22,6 +22,17 @@ async function verifyContainerDeps(chatId) {
         } else {
             session.hasPython3 = true;
         }
+    }
+    
+    // Создаём БД пользователя для контента
+    try {
+        const dbExists = await postgresService.databaseExists(chatId);
+        if (!dbExists) {
+            await postgresService.createUserDatabase(chatId);
+            console.log(`[SESSION] База данных создана для chatId: ${chatId}`);
+        }
+    } catch (err) {
+        console.error(`[SESSION] Ошибка создания БД для ${chatId}:`, err.message);
     }
 }
 

@@ -25,7 +25,7 @@ module.exports = {
     
     // Docker
     DOCKER_IMAGE: process.env.DOCKER_IMAGE || 'sandbox-python:latest',
-    CONTAINER_MEMORY: process.env.CONTAINER_MEMORY || '1g',
+    CONTAINER_MEMORY: process.env.CONTAINER_MEMORY || '256m', // Лимит для sandbox-user-* контейнеров
     CONTAINER_CPUS: process.env.CONTAINER_CPUS || '2.0',
     CONTAINER_TIMEOUT: parseInt(process.env.CONTAINER_TIMEOUT) || 86400,
     
