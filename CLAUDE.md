@@ -56,7 +56,7 @@ Server runs on port 3015 by default. Config loaded from `.env` + `.env.local` (o
 - **Alerts disabled** — `checkAndAlert()` removed from scheduler; no automatic error notifications sent
 
 **AI Integration:**
-- `services/ai_router_service.js` — LLM routing (ProTalk integration)
+- `services/ai_router_service.js` — LLM routing
 - `manage/prompts.js` — system prompts for AI agent
 - `manage/context.js` — context builder for LLM calls
 
@@ -83,6 +83,63 @@ Static files in `public/`. Each page is a standalone HTML file with correspondin
 - `index.html` — landing/marketing page (no auth required)
 - `auth.html` — entry point after Telegram login; calls `initAuth()` to process `tg_login_token` from bot; shows login form if not authenticated
 - `console.html`, `ai.html`, `files.html`, etc. — authenticated pages with user interface
+
+## Database Schema
+
+The project uses a **two-tier database architecture**:
+
+### Central Database (`clientzavod`)
+Global database shared across all users. Contains:
+- `content_queue` — main content items for generation and publishing (50+ columns, indexed on status/channel/pending/scheduled)
+- `content_channels` — publishing channel configs per user (Telegram, Facebook, Instagram, Pinterest, YouTube, etc.) with auth tokens, rate limits
+- `content_analytics` — metrics: views, likes, shares, clicks, conversions (linked to content_queue)
+- `content_templates` — reusable content templates per channel/content-type
+- `content_assets` — media files (images, videos) with storage paths (local, S3, GCS)
+- `content_workflow` — audit log of status transitions with action metadata
+- `content_import_sources` — configs for importing from Excel, Google Sheets, CSV, RSS feeds
+
+**Key tables:**
+- `content_queue` tracks the full lifecycle: `draft → pending → processing → generated → waiting_approval → approved → scheduled → publishing → published`
+- `content_analytics` collects metrics hourly/daily via external APIs
+- `content_channels` stores encrypted access tokens for multi-platform publishing
+
+### Per-User Database (`db_{chatId}`)
+Separate PostgreSQL database created for each authenticated user. Isolated data per user. Contains:
+- `content_jobs` — individual content generation tasks (main entity, linked to content_queue)
+- `content_posts` — generated posts ready for publishing
+- `content_assets` — media files for jobs (images, generated videos)
+- `content_job_queue` — async task queue with exponential backoff retry (FIFO, status: queued/processing/done/failed)
+- `publish_logs` — audit trail of publish attempts to each channel
+- `content_topics` — content ideas/topics for generation from import
+- `content_materials` — source materials for content generation
+- `content_sheet_state` — tracking state of imported spreadsheet rows
+- `content_config` — key-value user configuration
+- `pinterest_jobs` — Pinterest-specific pin generation tasks
+- `pinterest_publish_logs` — Pinterest publication audit
+- `video_generations` — Runway/video provider task tracking with polling (status: pending/processing/completed/failed/timeout)
+
+**Initialization:** Automatic via `repository.ensureSchema()` called during user session creation. Uses `CREATE TABLE IF NOT EXISTS` for idempotency. Full schema definition in `content_schema.sql`.
+
+**Data Flow:**
+```
+Spreadsheet (Excel/Google Sheets)
+  ↓
+content_topics (import)
+  ↓
+content_jobs (one job per topic)
+  ↓
+content_posts (after generation: draft → ready)
+  ↓
+publish_logs (after publishing to channels)
+```
+
+**Key Relations:**
+- Central DB `content_queue` ← Per-user DB `content_jobs` (one-to-one mapping via uuid/external_id)
+- `content_job_queue` → `content_jobs` (task polling, retry logic in queue.repository.js)
+- `content_jobs` → `content_posts` (generation → publication)
+- `content_posts` → `publish_logs` (multi-channel audit)
+- `content_queue` → `content_workflow` (status audit trail, triggered by row update)
+- `content_queue` → `content_analytics` (metrics collection, daily aggregation)
 
 ## Testing
 
