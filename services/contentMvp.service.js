@@ -2012,10 +2012,7 @@ module.exports = {
   checkQuota: limits.checkQuota,
   getUsageStats: limits.getUsageStats,
   QUOTA_TYPES: limits.QUOTA_TYPES,
-  
-  // Алерты (TASK-014)
-  checkAndAlert: alerts.checkAndAlert,
-  
+
   // Очередь (для прямого доступа)
   enqueue: queueRepo.enqueue,
   getQueueStats: queueRepo.getQueueStats,

@@ -53,11 +53,7 @@ module.exports = {
   limits,
   checkQuota: limits.checkQuota,
   getUsageStats: limits.getUsageStats,
-  
-  // Алерты (TASK-014)
-  alerts,
-  checkAndAlert: alerts.checkAndAlert,
-  
+
   // Удобные алиасы
   ensureSchema: repository.ensureSchema,
   withClient: repository.withClient,
