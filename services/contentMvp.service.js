@@ -71,7 +71,11 @@ function getContentSettings(chatId) {
     scheduleTime: cfg?.scheduleTime || SCHEDULE_TIME,
     scheduleTz: cfg?.scheduleTz || SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.dailyLimit) ? cfg.dailyLimit : DAILY_LIMIT,
-    contentType: cfg?.contentType || DEFAULT_CONTENT_TYPE // TASK-015: 'text+image' | 'text+video'
+    contentType: cfg?.contentType || DEFAULT_CONTENT_TYPE, // TASK-015: 'text+image' | 'text+video'
+    publishIntervalHours: Number.isFinite(cfg?.publishIntervalHours) ? cfg.publishIntervalHours : 24,
+    allowedWeekdays: Array.isArray(cfg?.allowedWeekdays) ? cfg.allowedWeekdays : [1, 2, 3, 4, 5],
+    randomPublish: !!cfg?.randomPublish,
+    premoderationEnabled: cfg?.premoderationEnabled !== false
   };
 }
 
@@ -345,10 +349,17 @@ async function loadGoogleSheetRows(data = {}) {
   }
 
   const gid = parseSheetGid(sheetUrl, data.gid);
-  const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${encodeURIComponent(gid)}`;
-  const response = await fetch(exportUrl, { timeout: 20000 });
+  const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${encodeURIComponent(gid)}`;
+  const response = await fetch(exportUrl, {
+    timeout: 20000,
+    redirect: 'follow',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; DockerClaw/3.0)',
+      'Accept': 'text/csv, text/plain, */*'
+    }
+  });
   if (!response.ok) {
-    throw new Error(`Google Sheets import failed: ${response.status}`);
+    throw new Error(`Google Sheets import failed: ${response.status}. Убедитесь, что таблица открыта по ссылке (доступ "Все, у кого есть ссылка")`);
   }
 
   const csv = await response.text();
@@ -564,7 +575,7 @@ async function generateImage(topic, text) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'z-image',
+      model: 'grok-imagine/text-to-image',
       input: {
         prompt,
         aspect_ratio: '1:1',
@@ -771,9 +782,9 @@ async function handleGenerateJob(chatId, queueJob, bot, correlationId) {
   // Обновляем sheet state
   await repository.setSheetState(chatId, topic.sheetRow, STATUS.READY, reason);
 
-  // Отправляем модератору
+  // Отправляем модератору или сразу публикуем
   const draft = { jobId, topic, text, imagePath, correlationId };
-  await sendDraftToModerator(chatId, bot, draft);
+  await routeDraft(chatId, bot, draft);
 
   return { success: true, data: { jobId } };
 }
@@ -935,8 +946,8 @@ async function handleVideoGenerateJob(chatId, queueJob, bot, correlationId) {
         await repository.setSheetState(chatId, topic.sheetRow, STATUS.READY, `${reason}_fallback`);
         
         const draft = { jobId, topic, text, imagePath, correlationId, contentType: 'text+image' };
-        await sendDraftToModerator(chatId, bot, draft);
-        
+        await routeDraft(chatId, bot, draft);
+
         return { success: true, data: { jobId, fallbackUsed: true } };
       }
     }
@@ -983,7 +994,7 @@ async function handleVideoGenerationComplete(chatId, job, bot, videoResult) {
           await repository.setSheetState(chatId, sheet_row, STATUS.READY, 'video_fallback');
           
           const draft = { jobId, topic, text: draft_text, imagePath, correlationId: correlation_id, contentType: 'text+image' };
-          await sendDraftToModerator(chatId, bot, draft);
+          await routeDraft(chatId, bot, draft);
           return;
         }
       } catch (e) {
@@ -1017,8 +1028,8 @@ async function handleVideoGenerationComplete(chatId, job, bot, videoResult) {
       contentType: 'text+video' 
     };
     
-    // Для модератора отправляем текст + уведомление о видео
-    await sendVideoDraftToModerator(chatId, bot, draft);
+    // Отправляем модератору или сразу публикуем
+    await routeDraft(chatId, bot, draft);
     
     console.log(`[CONTENT-MVP] Video job ${jobId} completed successfully`);
   } catch (e) {
@@ -1124,6 +1135,29 @@ async function generateDraft(chatId, reason = 'manual', correlationId = null) {
   await repository.setSheetState(chatId, topic.sheetRow, STATUS.READY, reason);
 
   return { ok: true, jobId, topic, text, imagePath, correlationId: corrId };
+}
+
+/**
+ * Маршрутизация черновика: при включённой премодерации — модератору,
+ * при выключенной — сразу публикация в канал.
+ */
+async function routeDraft(chatId, bot, draft) {
+  const settings = getContentSettings(chatId);
+  if (settings.premoderationEnabled) {
+    if (draft.contentType === 'text+video') {
+      await sendVideoDraftToModerator(chatId, bot, draft);
+    } else {
+      await sendDraftToModerator(chatId, bot, draft);
+    }
+  } else {
+    // Без премодерации — сразу публикуем
+    await setDraft(chatId, String(draft.jobId), {
+      ...draft,
+      rejectedCount: draft.rejectedCount || 0
+    });
+    const correlationId = draft.correlationId || generateCorrelationId();
+    await publishDraft(chatId, bot, draft, correlationId);
+  }
 }
 
 async function sendDraftToModerator(chatId, bot, draft) {
@@ -1558,46 +1592,122 @@ async function runNow(chatId, bot, reason = 'manual') {
   const settings = getContentSettings(chatId);
   const now = getNowInTz(settings.scheduleTz);
   const publishedToday = await repository.countPublishedToday(chatId, now.date, settings.scheduleTz);
-  
+
   if (publishedToday >= settings.dailyLimit) {
     return { ok: false, message: `Лимит публикаций на сегодня исчерпан (${publishedToday}/${settings.dailyLimit}).` };
   }
 
   const correlationId = generateCorrelationId();
 
-  // TASK-007: Ставим задачу в очередь вместо синхронного выполнения
+  // При ручном запуске выполняем генерацию напрямую, минуя очередь,
+  // чтобы не зависеть от worker'а и расписания бота
+  if (reason !== 'schedule') {
+    try {
+      const result = await handleGenerateJob(chatId, {
+        payload: { reason },
+        correlation_id: correlationId
+      }, bot, correlationId);
+
+      if (result.success) {
+        return { ok: true, message: 'Генерация выполнена успешно.', correlationId };
+      } else {
+        return { ok: false, message: result.error || 'Генерация не удалась.', correlationId };
+      }
+    } catch (e) {
+      return { ok: false, message: `Ошибка генерации: ${e.message}`, correlationId };
+    }
+  }
+
+  // Для запуска по расписанию — ставим в очередь для worker'а
   const queueJobId = await queueRepo.enqueue(chatId, {
     jobType: 'generate',
-    priority: reason === 'schedule' ? 0 : 5, // Выше приоритет для ручного запуска
+    priority: 0,
     payload: { reason },
     correlationId
   });
 
-  return { 
-    ok: true, 
-    message: `Задача генерации #${queueJobId} поставлена в очередь.`, 
+  return {
+    ok: true,
+    message: `Задача генерации #${queueJobId} поставлена в очередь.`,
     queueJobId,
-    correlationId 
+    correlationId
   };
 }
 
 async function tickScheduleForChat(chatId, bot) {
   const settings = getContentSettings(chatId);
   const now = getNowInTz(settings.scheduleTz);
-  
-  if (now.time !== settings.scheduleTime) return;
+
+  // Проверяем день недели (0=Вс, 1=Пн, ..., 6=Сб)
+  const dateObj = new Date(now.date + 'T' + now.time + ':00');
+  const weekday = dateObj.getDay();
+  if (!settings.allowedWeekdays.includes(weekday)) return;
+
+  const [startH, startM] = (settings.scheduleTime || '12:00').split(':').map(Number);
+  const [nowH, nowM] = now.time.split(':').map(Number);
+  const startMinutes = startH * 60 + startM;
+  const nowMinutes = nowH * 60 + nowM;
+  const intervalMinutes = Math.round((settings.publishIntervalHours || 24) * 60);
 
   const data = manageStore.getState(chatId) || {};
-  const key = `contentLastRunDate:${settings.scheduleTime}`;
-  
-  if (data[key] === now.date) return;
-  
-  data[key] = now.date;
-  if (!manageStore.getState(chatId)) {
-    manageStore.getAllStates()[chatId] = data;
+
+  if (settings.randomPublish) {
+    // Рандомный режим: при наступлении каждого слота генерируем случайное
+    // время следующей публикации в диапазоне 25%-100% от интервала.
+    // Слот используется как «окно», внутри которого срабатывает одна публикация.
+
+    // Определяем текущий слот (ближайший прошедший)
+    let currentSlot = -1;
+    for (let slot = startMinutes; slot < 24 * 60; slot += intervalMinutes) {
+      if (nowMinutes >= slot) currentSlot = slot;
+    }
+    if (currentSlot < 0) return;
+
+    const slotKey = `contentRandomSlot:${currentSlot}`;
+    const runKey = `contentRandomRun:${currentSlot}`;
+
+    // Если в этом слоте сегодня уже публиковали — пропускаем
+    if (data[runKey] === now.date) return;
+
+    // Генерируем случайную минуту для этого слота, если ещё не сгенерирована
+    if (!data[slotKey] || data[slotKey].split('|')[0] !== now.date) {
+      const minOffset = Math.round(intervalMinutes * 0.25);
+      const randomOffset = minOffset + Math.floor(Math.random() * (intervalMinutes - minOffset + 1));
+      const targetMinute = currentSlot + randomOffset;
+      data[slotKey] = `${now.date}|${targetMinute}`;
+      if (!manageStore.getState(chatId)) {
+        manageStore.getAllStates()[chatId] = data;
+      }
+      await manageStore.persist(chatId);
+    }
+
+    const targetMinute = parseInt(data[slotKey].split('|')[1], 10);
+    if (nowMinutes < targetMinute) return;
+
+    // Время наступило — публикуем
+    data[runKey] = now.date;
+    if (!manageStore.getState(chatId)) {
+      manageStore.getAllStates()[chatId] = data;
+    }
+    await manageStore.persist(chatId);
+  } else {
+    // Фиксированный режим: публикация строго по слотам
+    let isSlot = false;
+    for (let slot = startMinutes; slot < 24 * 60; slot += intervalMinutes) {
+      if (nowMinutes === slot) { isSlot = true; break; }
+    }
+    if (!isSlot) return;
+
+    const key = `contentLastRun:${now.time}`;
+    if (data[key] === now.date) return;
+
+    data[key] = now.date;
+    if (!manageStore.getState(chatId)) {
+      manageStore.getAllStates()[chatId] = data;
+    }
+    await manageStore.persist(chatId);
   }
-  await manageStore.persist(chatId);
-  
+
   await runNow(chatId, bot, 'schedule');
 }
 
@@ -1836,16 +1946,6 @@ function startScheduler(getBots) {
       const bots = getBots();
       for (const [chatId, entry] of bots.entries()) {
         await tickScheduleForChat(chatId, entry.bot);
-        
-        // TASK-014: Проверка алертов раз в час
-        const now = new Date();
-        if (now.getMinutes() < 5) { // Первые 5 минут каждого часа
-          const settings = getContentSettings(chatId);
-          await alerts.checkAndAlert(chatId, {
-            bot: entry.bot,
-            moderatorUserId: settings.moderatorUserId
-          });
-        }
       }
     } catch (e) {
       console.error('[CONTENT-MVP-SCHEDULER]', e.message);
