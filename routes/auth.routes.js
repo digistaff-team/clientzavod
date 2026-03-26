@@ -51,18 +51,18 @@ function consumeTelegramWebLoginToken(token) {
  */
 router.get('/check', async (req, res) => {
     const telegramId = String(req.query.telegram_id || '').trim();
-    
+
     if (!telegramId) {
         return res.status(400).json({ error: 'telegram_id is required' });
     }
-    
+
     // Сначала проверяем, есть ли сессия с chatId = telegramId
     const directState = manageStore.getState(telegramId);
-    
+
     if (directState) {
         // Сессия существует
         const session = sessionService.getSession(telegramId);
-        
+
         return res.json({
             authorized: true,
             chatId: telegramId,
@@ -73,21 +73,21 @@ router.get('/check', async (req, res) => {
             containerId: session?.containerId || null
         });
     }
-    
+
     // Если нет прямой сессии - ищем по verifiedTelegramId
     const allStates = manageStore.getAllStates();
     let foundSession = null;
-    
+
     for (const [chatId, state] of Object.entries(allStates)) {
         if (state.verifiedTelegramId === telegramId) {
             foundSession = { chatId, state };
             break;
         }
     }
-    
+
     if (foundSession) {
         const session = sessionService.getSession(foundSession.chatId);
-        
+
         return res.json({
             authorized: true,
             chatId: foundSession.chatId,
@@ -98,10 +98,25 @@ router.get('/check', async (req, res) => {
             containerId: session?.containerId || null
         });
     }
-    
+
+    // Если сессия не найдена - проверяем, есть ли активная сессия в памяти
+    const session = sessionService.getSession(telegramId);
+    if (session) {
+        // Сессия есть в памяти (например, создана админом)
+        return res.json({
+            authorized: true,
+            chatId: telegramId,
+            username: null,
+            verified: false,
+            hasBot: false,
+            sessionActive: true,
+            containerId: session.containerId || null
+        });
+    }
+
     // Сессия не найдена
-    res.json({ 
-        authorized: false, 
+    res.json({
+        authorized: false,
         message: 'Telegram ID не найден. Сначала подключите бота в разделе "Каналы".',
         needCreate: true
     });

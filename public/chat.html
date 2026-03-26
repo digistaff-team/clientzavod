@@ -39,7 +39,9 @@
   #input-row button { padding: 0 20px; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 18px; }
   #input-row button:disabled { opacity: 0.4; cursor: default; }
   
-  #logout { background: none; border: 1px solid #333; color: #666; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  #logout, #admin-link { background: none; border: 1px solid #333; color: #666; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; text-decoration: none; display: inline-block; }
+  #admin-link { margin-right: 8px; }
+  #logout:hover, #admin-link:hover { color: #aaa; border-color: #555; }
 </style>
 </head>
 <body>
@@ -64,6 +66,7 @@
       <button onclick="setMode('WORKSPACE')" id="btn-WORKSPACE">📁 Workspace</button>
       <button onclick="setMode('TERMINAL')" id="btn-TERMINAL">⚡ Терминал</button>
     </div>
+    <a id="admin-link" href="/admin/containers">⚙️ Админ</a>
     <button id="logout" onclick="logout()">Выйти</button>
   </div>
   <div id="messages"></div>

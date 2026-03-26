@@ -257,6 +257,47 @@ async function ensureSchema(chatId) {
       CREATE INDEX IF NOT EXISTS idx_vk_jobs_status
       ON vk_jobs(status, created_at);
     `);
+
+    // OK (Odnoklassniki) tables
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ok_jobs (
+        id BIGSERIAL PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        community_id TEXT,
+        post_text TEXT,
+        hook_text TEXT,
+        image_prompt TEXT,
+        image_path TEXT,
+        video_path TEXT,
+        ok_content_type TEXT NOT NULL DEFAULT 'photo' CHECK (ok_content_type IN ('photo', 'video')),
+        link TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        error_text TEXT,
+        image_attempts INT NOT NULL DEFAULT 0,
+        rejected_count INT NOT NULL DEFAULT 0,
+        ok_post_id TEXT,
+        correlation_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ok_publish_logs (
+        id BIGSERIAL PRIMARY KEY,
+        job_id BIGINT REFERENCES ok_jobs(id) ON DELETE SET NULL,
+        community_id TEXT NOT NULL,
+        ok_post_id TEXT,
+        status TEXT NOT NULL,
+        error_text TEXT,
+        correlation_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_ok_jobs_status
+      ON ok_jobs(status, created_at);
+    `);
   });
 }
 

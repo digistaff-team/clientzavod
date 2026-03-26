@@ -171,7 +171,10 @@ async function completeWebLogin(chatId, telegramId) {
         chatIdInput.value = telegramId;
     }
     if (authSection) authSection.style.display = 'none';
-    if (logoutBtn) logoutBtn.style.display = 'block';
+    if (logoutBtn) {
+        logoutBtn.style.display = 'block';
+        injectAdminButton();
+    }
 
     const initRes = await fetch(`${API_URL}/session/init-status/${encodeURIComponent(chatId)}`);
     const initData = initRes.ok ? await initRes.json() : { status: 'ready' };
@@ -226,8 +229,11 @@ async function login() {
             
             document.getElementById('authSection').style.display = 'none';
             const logoutBtn = document.getElementById('logoutButton');
-            if (logoutBtn) logoutBtn.style.display = 'block';
-            
+            if (logoutBtn) {
+                logoutBtn.style.display = 'block';
+                injectAdminButton();
+            }
+
             // Проверяем статус сессии
             const initRes = await fetch(`${API_URL}/session/init-status/${encodeURIComponent(checkData.chatId)}`);
             const initData = initRes.ok ? await initRes.json() : { status: 'ready' };
@@ -263,8 +269,11 @@ async function login() {
                 
                 document.getElementById('authSection').style.display = 'none';
                 const logoutBtn = document.getElementById('logoutButton');
-                if (logoutBtn) logoutBtn.style.display = 'block';
-                
+                if (logoutBtn) {
+                    logoutBtn.style.display = 'block';
+                    injectAdminButton();
+                }
+
                 // Проверяем статус сессии
                 const initRes = await fetch(`${API_URL}/session/init-status/${encodeURIComponent(telegramId)}`);
                 const initData = initRes.ok ? await initRes.json() : { status: 'ready' };
@@ -289,6 +298,42 @@ async function login() {
         setApiStatus('Ошибка подключения к серверу', 'error');
         showToast('Ошибка сети', 'error');
     }
+}
+
+// Добавить кнопку "Админ" рядом с кнопкой "Выйти"
+// Показывает только если админ авторизован под пользователем через admin_auth токен
+function injectAdminButton() {
+    const container = document.getElementById('logoutButton');
+    if (!container || document.getElementById('adminNavButton')) return;
+
+    // Проверяем, авторизован ли админ под пользователем
+    const urlParams = new URLSearchParams(window.location.search);
+    let adminAuth = urlParams.get('admin_auth');
+    let chatIdFromUrl = urlParams.get('chatId');
+    
+    // Если в URL нет параметров, пробуем восстановить из sessionStorage
+    if (!adminAuth || !chatIdFromUrl) {
+        adminAuth = sessionStorage.getItem('admin_auth_token');
+        chatIdFromUrl = sessionStorage.getItem('admin_auth_chatId');
+    }
+    
+    // Кнопка Админ показывается только если есть admin_auth токен
+    const isAdminAuth = adminAuth && chatIdFromUrl;
+    
+    if (!isAdminAuth) {
+        // Не показываем кнопку Админ для обычных пользователей
+        return;
+    }
+
+    const link = document.createElement('a');
+    link.id = 'adminNavButton';
+    link.href = `/admin/container/${encodeURIComponent(chatIdFromUrl)}/manage`;
+    link.textContent = '⚙️ Админ';
+    link.className = 'btn btn-secondary';
+    link.style.cssText = 'padding: 10px 20px; font-size: 14px; text-decoration: none; display: inline-block; margin-right: 8px; cursor: pointer;';
+    link.title = 'Вернуться к управлению контейнером';
+
+    container.insertBefore(link, container.firstChild);
 }
 
 function logout() {
@@ -444,9 +489,22 @@ function escapeHtml(str) {
  * Рендерит навигационное меню
  * @param {string} currentPage - URL текущей страницы (например, '/' или '/tasks.html')
  */
-function renderMenu(currentPage) {
+async function renderMenu(currentPage) {
     const menuContainer = document.getElementById('mainMenu');
     if (!menuContainer) return;
+
+    // Проверяем статус админа
+    let isAdmin = false;
+    try {
+        const res = await fetch(`${API_URL}/admin/check-auth`);
+        if (res.ok) {
+            const data = await res.json();
+            isAdmin = data.isAdmin;
+        }
+    } catch (e) {
+        // Ошибка проверки админа - скрываем консоль по умолчанию
+        isAdmin = false;
+    }
 
     const menuItems = [
         { href: '/auth.html', label: '🎭 Личность' },
@@ -454,10 +512,10 @@ function renderMenu(currentPage) {
         { href: '/channels.html', label: '📡 Каналы' },
         { href: '/content.html', label: '📝 Контент' },
         { href: '/ai.html', label: '🤖 ИИ' },
-        { href: '/skills.html', label: '🎯 Навыки' },
         { href: '/tasks.html', label: '📋 Задачи' },
         { href: '/apps.html', label: '🚀 Приложения' },
-        { href: '/console.html', label: '💻 Консоль' },
+        // Консоль доступна только админу
+        ...(isAdmin ? [{ href: '/console.html', label: '💻 Консоль' }] : []),
         { href: '/info.html', label: '📊 Инфо' }
     ];
 

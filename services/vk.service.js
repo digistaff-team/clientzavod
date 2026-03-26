@@ -66,6 +66,15 @@ async function retryRequest(url, options, retries = MAX_RETRIES) {
 // --- VK API methods ---
 
 /**
+ * Нормализовать group_id: убрать минус, преобразовать в число
+ */
+function normalizeGroupId(groupId) {
+    const id = Math.abs(parseInt(String(groupId).replace(/[^0-9-]/g, ''), 10));
+    if (!id || !Number.isFinite(id)) throw new Error(`Invalid group_id: ${groupId}`);
+    return id;
+}
+
+/**
  * Вызов VK API метода
  */
 async function callVkApi(method, params, serviceKey) {
@@ -85,6 +94,7 @@ async function callVkApi(method, params, serviceKey) {
 
     if (res.json?.error) {
         const err = res.json.error;
+        console.error(`[VK-API] ${method} error: code=${err.error_code}, msg="${err.error_msg}", params=${JSON.stringify(params)}`);
         throw new Error(`VK API ${method} error ${err.error_code}: ${err.error_msg}`);
     }
 
@@ -146,29 +156,57 @@ async function saveWallPhoto(serviceKey, groupId, uploadResult) {
 }
 
 /**
+ * Загрузить фото через стандартный flow:
+ * getWallUploadServer → upload → saveWallPhoto
+ */
+async function uploadWallPhoto(serviceKey, groupId, imageBuffer) {
+    const gid = normalizeGroupId(groupId);
+    console.log(`[VK-PHOTO] uploadWallPhoto: group_id=${gid} (type=${typeof gid}), imageSize=${imageBuffer.length}`);
+
+    console.log(`[VK-PHOTO] Step 1: photos.getWallUploadServer...`);
+    const server = await getWallUploadServer(serviceKey, gid);
+    console.log(`[VK-PHOTO] Step 1 OK: upload_url=${server.upload_url?.substring(0, 60)}...`);
+
+    console.log(`[VK-PHOTO] Step 2: uploading photo to VK server...`);
+    const uploadResult = await uploadPhoto(server.upload_url, imageBuffer);
+    console.log(`[VK-PHOTO] Step 2 OK: server=${uploadResult.server}, photo=${(uploadResult.photo || '').substring(0, 30)}..., hash=${uploadResult.hash}`);
+
+    console.log(`[VK-PHOTO] Step 3: photos.saveWallPhoto...`);
+    const saved = await saveWallPhoto(serviceKey, gid, uploadResult);
+    console.log(`[VK-PHOTO] Step 3 OK: saved=${JSON.stringify(saved?.[0] ? { owner_id: saved[0].owner_id, id: saved[0].id } : null)}`);
+
+    if (saved && saved.length > 0) {
+        const attachment = `photo${saved[0].owner_id}_${saved[0].id}`;
+        console.log(`[VK-PHOTO] Result: ${attachment}`);
+        return attachment;
+    }
+    return '';
+}
+
+/**
  * Опубликовать пост на стене группы с фото
+ * Стандартный flow: getWallUploadServer → upload → saveWallPhoto → wall.post
  */
 async function publishPhotoPost({ serviceKey, groupId, text, imageBuffer, params = {} }) {
     if (!serviceKey) throw new Error('VK service_key отсутствует');
     if (!groupId) throw new Error('VK group_id отсутствует');
 
+    const gid = normalizeGroupId(groupId);
     let attachments = '';
+    let photoSkipReason = null;
 
     if (imageBuffer) {
-        // 1. Получить upload URL
-        const server = await getWallUploadServer(serviceKey, groupId);
-        // 2. Загрузить фото
-        const uploadResult = await uploadPhoto(server.upload_url, imageBuffer);
-        // 3. Сохранить фото
-        const saved = await saveWallPhoto(serviceKey, groupId, uploadResult);
-        if (saved && saved.length > 0) {
-            attachments = `photo${saved[0].owner_id}_${saved[0].id}`;
+        try {
+            attachments = await uploadWallPhoto(serviceKey, gid, imageBuffer);
+        } catch (e) {
+            console.error(`[VK] Photo upload failed: ${e.message}`);
+            photoSkipReason = `Фото не прикреплено: ${e.message}`;
         }
     }
 
-    // 4. Опубликовать пост
+    // Опубликовать пост
     const postParams = {
-        owner_id: `-${groupId}`,
+        owner_id: `-${gid}`,
         from_group: 1,
         message: text || '',
     };
@@ -176,10 +214,13 @@ async function publishPhotoPost({ serviceKey, groupId, text, imageBuffer, params
     if (attachments) postParams.attachments = attachments;
     if (params.signed) postParams.signed = 1;
 
+    console.log(`[VK] wall.post: owner_id=${postParams.owner_id}, attachments="${attachments || 'none'}"`);
     const result = await callVkApi('wall.post', postParams, serviceKey);
     return {
         post_id: result?.post_id,
-        full_id: `-${groupId}_${result?.post_id}`
+        full_id: `-${gid}_${result?.post_id}`,
+        hasPhoto: !!attachments,
+        photoSkipReason
     };
 }
 
@@ -217,9 +258,11 @@ function getServiceKey(chatId) {
 
 module.exports = {
     callVkApi,
+    normalizeGroupId,
     getWallUploadServer,
     uploadPhoto,
     saveWallPhoto,
+    uploadWallPhoto,
     publishPhotoPost,
     getGroupInfo,
     validateVkParams,

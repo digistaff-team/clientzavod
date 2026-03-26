@@ -216,9 +216,45 @@
     <script src="/js/common.js"></script>
     <script src="/js/skills.js"></script>
     <script>
-        window.addEventListener('load', () => {
+        // Проверка доступа: только администраторы могут видеть этот раздел
+        async function checkAdminAccess() {
+            try {
+                const response = await fetch('/admin/stats-api');
+                if (response.status === 401) {
+                    // Не администратор - редирект на админ-логин
+                    window.location.href = '/admin/login';
+                    return false;
+                }
+                return true;
+            } catch (e) {
+                // Ошибка при проверке - редирект
+                window.location.href = '/admin/login';
+                return false;
+            }
+        }
+
+        window.addEventListener('load', async () => {
+            // Проверяем права администратора
+            const isAdmin = await checkAdminAccess();
+            if (!isAdmin) return;
+
             renderMenu('/skills.html');
-            initAuth();
+
+            // Для администратора загружаем навыки напрямую, без ожидания пользовательской авторизации
+            document.getElementById('mainContent').style.display = 'block';
+            document.getElementById('authSection').style.display = 'none';
+
+            // Показываем кнопку выхода
+            const logoutBtn = document.getElementById('logoutButton');
+            if (logoutBtn) {
+                logoutBtn.style.display = 'block';
+                injectAdminButton();
+            }
+
+            // Загружаем навыки напрямую (не требуют пользовательской сессии)
+            await loadSkills();
+            await loadUserSelectedSkills(); // безопасно обрабатывает отсутствие chatId
+            renderSkills();
         });
     </script>
 </body>

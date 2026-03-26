@@ -25,6 +25,7 @@ async function onLoginSuccess() {
     await loadPinterestConfig();
     await loadInstagramConfig();
     await loadVkStatus();
+    await loadOkStatus();
 }
 
 // Специальная инициализация для страницы каналов
@@ -41,7 +42,10 @@ async function initChannelsAuth() {
         // Уже авторизован - показываем контент
         currentChatId = savedChatId;
         if (chatIdInput) chatIdInput.value = savedTelegramId;
-        if (logoutBtn) logoutBtn.style.display = 'block';
+        if (logoutBtn) {
+            logoutBtn.style.display = 'block';
+            injectAdminButton(); // Добавляем кнопку Админ
+        }
         if (authSection) authSection.style.display = 'none';
         if (mainContent) mainContent.style.display = 'block';
         await onLoginSuccess();
@@ -58,12 +62,12 @@ async function loginForChannels() {
     const chatIdInput = document.getElementById('chatIdInput');
     if (!chatIdInput) return;
     const telegramId = chatIdInput.value.trim();
-    
+
     if (!telegramId) {
         showToast('Введите ваш Telegram ID', 'error');
         return;
     }
-    
+
     if (!/^\d+$/.test(telegramId)) {
         showToast('Telegram ID должен быть числом (например: 123456789)', 'error');
         return;
@@ -83,14 +87,17 @@ async function loginForChannels() {
             currentChatId = telegramId;
             localStorage.setItem('chatId', telegramId);
             localStorage.setItem('telegramId', telegramId);
-            
+
             setApiStatus('', '');
-            
+
             document.getElementById('authSection').style.display = 'none';
             document.getElementById('mainContent').style.display = 'block';
             const logoutBtn = document.getElementById('logoutButton');
-            if (logoutBtn) logoutBtn.style.display = 'block';
-            
+            if (logoutBtn) {
+                logoutBtn.style.display = 'block';
+                injectAdminButton(); // Добавляем кнопку Админ
+            }
+
             showToast('Сессия создана. Теперь подключите бота.', 'success');
             await onLoginSuccess();
         } else {
@@ -971,7 +978,7 @@ async function saveVkToken() {
     const serviceKey = document.getElementById('vkServiceKey')?.value?.trim();
 
     if (!groupId || !serviceKey) {
-        showToast('Введите Group ID и Service Key', 'error');
+        showToast('Введите Group ID и User access token', 'error');
         return;
     }
 
@@ -1050,16 +1057,273 @@ async function runVkNow() {
     const chatId = getChatId();
     if (!chatId) return;
     const btn = document.getElementById('vkRunNowBtn');
+    const statusEl = document.getElementById('vkSettingsStatus');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
+    if (statusEl) { statusEl.innerHTML = '<span style="color:#888;">Генерация VK-поста... Это может занять 2-3 минуты.</span>'; }
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 минуты
+        const res = await fetch(`${API_CONTENT}/vk/run-now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = { error: text || `HTTP ${res.status}` }; }
+        if (res.ok && data.ok) {
+            showToast(data.message || 'Задача в очереди', 'success');
+            if (statusEl) { statusEl.innerHTML = '<span style="color:#0a0;">✅ ' + (data.message || 'Задача в очереди') + '. Черновик придёт в Telegram.</span>'; }
+        } else {
+            const errMsg = data.error || data.message || `HTTP ${res.status}`;
+            showToast(errMsg, 'error');
+            if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
+        }
+    } catch (e) {
+        const errMsg = e.name === 'AbortError' ? 'Таймаут (3 мин). Проверьте логи сервера.' : ('Ошибка сети: ' + e.message);
+        showToast(errMsg, 'error');
+        if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '▶️ Сгенерировать сейчас'; }
+    }
+}
+
+// === Одноклассники ===
+
+function updateOkScheduleTime() {
+    const hour = document.getElementById('okScheduleHour')?.value || '00';
+    const minute = document.getElementById('okScheduleMinute')?.value || '00';
+    const timeField = document.getElementById('okScheduleTime');
+    if (timeField) {
+        timeField.value = `${hour}:${minute.padStart(2, '0')}`;
+    }
+}
+
+function validateOkMinutes() {
+    const minuteInput = document.getElementById('okScheduleMinute');
+    if (!minuteInput) return;
+    let val = minuteInput.value.replace(/[^0-9]/g, '');
+    if (val.length > 2) val = val.slice(0, 2);
+    if (val !== '' && parseInt(val, 10) > 59) val = '59';
+    minuteInput.value = val;
+    updateOkScheduleTime();
+}
+
+function setOkScheduleTimeInputs(timeValue) {
+    if (!timeValue) return;
+    const parts = timeValue.split(':');
+    if (parts.length < 2) return;
+    const hourSelect = document.getElementById('okScheduleHour');
+    const minuteInput = document.getElementById('okScheduleMinute');
+    if (hourSelect) hourSelect.value = parts[0].padStart(2, '0');
+    if (minuteInput) minuteInput.value = parts[1].padStart(2, '0');
+    updateOkScheduleTime();
+}
+
+async function loadOkStatus() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        const res = await fetch(`${API_MANAGE}/channels/ok?chat_id=${encodeURIComponent(chatId)}`);
+        const data = await res.json();
+        const statusEl = document.getElementById('okStatus');
+        const disconnectBtn = document.getElementById('disconnectOkBtn');
+        const settingsBlock = document.getElementById('okSettingsBlock');
+        if (!statusEl) return;
+
+        if (data.connected) {
+            statusEl.innerHTML = '<span style="color: #0a0;">✅ ОК подключён</span>';
+            if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
+            if (settingsBlock) settingsBlock.style.display = 'block';
+
+            const cfg = data.config || {};
+            if (cfg.group_id) document.getElementById('okGroupId').value = cfg.group_id;
+            if (cfg.access_token) document.getElementById('okAccessToken').value = cfg.access_token;
+            if (cfg.session_secret) document.getElementById('okSessionSecret').value = cfg.session_secret;
+            if (cfg.public_key) document.getElementById('okPublicKey').value = cfg.public_key;
+
+            const s = data.settings || {};
+            if (s.schedule_time) {
+                document.getElementById('okScheduleTime').value = s.schedule_time;
+                setOkScheduleTimeInputs(s.schedule_time);
+            }
+            const tzSelect = document.getElementById('okScheduleTz');
+            if (tzSelect && s.schedule_tz) {
+                const optionExists = Array.from(tzSelect.options).some((opt) => opt.value === s.schedule_tz);
+                if (optionExists) {
+                    tzSelect.value = s.schedule_tz;
+                } else {
+                    const newOption = document.createElement('option');
+                    newOption.value = s.schedule_tz;
+                    newOption.text = `${s.schedule_tz} (custom)`;
+                    newOption.selected = true;
+                    tzSelect.insertBefore(newOption, tzSelect.firstChild);
+                }
+            }
+            if (s.daily_limit) document.getElementById('okDailyLimit').value = s.daily_limit;
+            const intervalEl = document.getElementById('okPublishInterval');
+            if (intervalEl) intervalEl.value = String(s.publish_interval_hours ?? 24);
+            const randomEl = document.getElementById('okRandomPublish');
+            if (randomEl) randomEl.checked = !!s.random_publish;
+            const premoderEl = document.getElementById('okPremoderation');
+            if (premoderEl) premoderEl.checked = s.premoderation_enabled !== false;
+            const postTypeEl = document.getElementById('okPostType');
+            if (postTypeEl) postTypeEl.value = s.post_type || 'post';
+
+            const weekdays = Array.isArray(s.allowed_weekdays) ? s.allowed_weekdays : [1, 2, 3, 4, 5];
+            for (let d = 0; d <= 6; d++) {
+                const cb = document.getElementById('okWeekday' + d);
+                if (cb) cb.checked = weekdays.includes(d);
+            }
+        } else {
+            statusEl.textContent = '';
+            if (disconnectBtn) disconnectBtn.style.display = 'none';
+            if (settingsBlock) settingsBlock.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('loadOkStatus', e);
+    }
+}
+
+async function saveOkToken() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const groupId = document.getElementById('okGroupId')?.value?.trim();
+    const accessToken = document.getElementById('okAccessToken')?.value?.trim();
+    const sessionSecret = document.getElementById('okSessionSecret')?.value?.trim();
+    const publicKey = document.getElementById('okPublicKey')?.value?.trim();
+
+    if (!groupId || !accessToken || !sessionSecret) {
+        showToast('Введите Group ID, Access Token и Session Secret', 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_MANAGE}/channels/ok`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                group_id: groupId,
+                access_token: accessToken,
+                session_secret: sessionSecret,
+                public_key: publicKey
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            showToast('ОК подключён', 'success');
+            await loadOkStatus();
+        } else {
+            showToast(data.error || 'Ошибка подключения', 'error');
+        }
+    } catch (e) {
+        showToast('Ошибка сети', 'error');
+    }
+}
+
+async function disconnectOk() {
+    const chatId = getChatId();
+    if (!chatId || !confirm('Отключить Одноклассники для этого окружения?')) return;
+    try {
+        const res = await fetch(`${API_MANAGE}/channels/ok?chat_id=${encodeURIComponent(chatId)}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('ОК отключён', 'success');
+            await loadOkStatus();
+        } else {
+            showToast('Ошибка отключения', 'error');
+        }
+    } catch (e) {
+        showToast('Ошибка сети', 'error');
+    }
+}
+
+async function saveOkSettings() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    updateOkScheduleTime();
+
+    try {
+        const res = await fetch(`${API_MANAGE}/channels/ok/settings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                schedule_time: (document.getElementById('okScheduleTime')?.value || '').trim(),
+                schedule_tz: (document.getElementById('okScheduleTz')?.value || '').trim(),
+                daily_limit: (document.getElementById('okDailyLimit')?.value || '').trim(),
+                publish_interval_hours: parseFloat(document.getElementById('okPublishInterval')?.value || '24'),
+                random_publish: !!document.getElementById('okRandomPublish')?.checked,
+                premoderation_enabled: !!document.getElementById('okPremoderation')?.checked,
+                post_type: (document.getElementById('okPostType')?.value || 'post').trim(),
+                allowed_weekdays: [0,1,2,3,4,5,6].filter(d => document.getElementById('okWeekday' + d)?.checked)
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            showToast('Настройки ОК сохранены', 'success');
+            await loadOkStatus();
+        } else {
+            showToast(data.error || 'Ошибка сохранения', 'error');
+        }
+    } catch (e) {
+        showToast('Ошибка сети', 'error');
+    }
+}
+
+async function runOkNow() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const btn = document.getElementById('okRunNowBtn');
+    const statusEl = document.getElementById('okSettingsStatus');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
+    if (statusEl) { statusEl.innerHTML = '<span style="color:#888;">Генерация ОК-поста... Это может занять 2-3 минуты.</span>'; }
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 180000);
+        const res = await fetch(`${API_CONTENT}/ok/run-now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = { error: text || `HTTP ${res.status}` }; }
+        if (res.ok && data.ok) {
+            showToast(data.message || 'Задача в очереди', 'success');
+            if (statusEl) { statusEl.innerHTML = '<span style="color:#0a0;">✅ ' + (data.message || 'Задача в очереди') + '. Черновик придёт в Telegram.</span>'; }
+        } else {
+            const errMsg = data.error || data.message || `HTTP ${res.status}`;
+            showToast(errMsg, 'error');
+            if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
+        }
+    } catch (e) {
+        const errMsg = e.name === 'AbortError' ? 'Таймаут (3 мин). Проверьте логи сервера.' : ('Ошибка сети: ' + e.message);
+        showToast(errMsg, 'error');
+        if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '▶️ Сгенерировать сейчас'; }
+    }
+}
+
+async function runTelegramNow() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const btn = document.getElementById('telegramRunNowBtn');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
     try {
-        const res = await fetch(`${API_CONTENT}/vk/run-now`, {
+        const res = await fetch(`${API_CONTENT}/run-now`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' })
         });
         const data = await res.json().catch(() => ({}));
-        if (res.ok && data.ok) {
-            showToast(data.message || 'VK-пост сгенерирован', 'success');
+        if (res.ok) {
+            showToast(data.message || 'Контент сгенерирован', 'success');
         } else {
             showToast(data.error || data.message || 'Ошибка генерации', 'error');
         }

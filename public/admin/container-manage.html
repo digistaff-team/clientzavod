@@ -200,7 +200,9 @@
 <body>
     <div class="header">
         <h1>🐳 Container Management: <span id="chatId"></span></h1>
-        <div>
+        <div style="display: flex; gap: 20px; align-items: center;">
+            <a href="/admin/containers" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">📦 Контейнеры</a>
+            <a href="/admin/skills" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">🎯 Навыки</a>
             <button class="back-btn" onclick="goBack()">← Back</button>
             <button class="logout-btn" onclick="logout()">Logout</button>
         </div>
@@ -233,6 +235,7 @@
         <div class="actions-panel">
             <h3>⚡ Quick Actions</h3>
             <div class="action-buttons">
+                <button class="action-btn success" onclick="authAndOpenConsole()">🔑 Auth & Open Console</button>
                 <button class="action-btn primary" onclick="runCommand('ls -la /workspace')">📁 List Workspace</button>
                 <button class="action-btn primary" onclick="runCommand('df -h')">💾 Disk Usage</button>
                 <button class="action-btn primary" onclick="runCommand('free -m')">🧠 Memory Usage</button>
@@ -374,6 +377,36 @@
         async function logout() {
             await fetch('/admin/logout', { method: 'POST' });
             window.location.href = '/admin/login';
+        }
+
+        // Авторизация и открытие консоли пользователя
+        async function authAndOpenConsole() {
+            try {
+                appendToTerminal('Generating auth token...', true);
+                
+                const res = await fetch(`/admin/container/${chatId}/auth`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (!res.ok) {
+                    const err = await res.json();
+                    appendToTerminal(`Error: ${err.error}`, false);
+                    return;
+                }
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    appendToTerminal(`Auth token generated. Redirecting...`, false);
+                    // Редирект на консоль с токеном авторизации
+                    window.location.href = `/console.html?admin_auth=${data.token}&chatId=${chatId}`;
+                } else {
+                    appendToTerminal('Failed to generate auth token', false);
+                }
+            } catch (err) {
+                appendToTerminal(`Error: ${err.message}`, false);
+            }
         }
 
         // Initial load

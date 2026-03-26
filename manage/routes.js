@@ -420,43 +420,41 @@ router.get('/ai/skills', async (req, res) => {
     
     const data = manageStore.getState(chatId);
     const userEmail = data && data.aiUserEmail ? data.aiUserEmail : null;
-    
+
     if (!userEmail) {
         return res.json({ skills: [] });
     }
-    
+
     try {
-        // MySQL API для получения навыков
-        const MYSQL_API_URL = 'https://ai.memory.api.atiks.org/mysql_full_proxy_api';
-        const MYSQL_API_KEY = 'mysql-VTJGc2RHVmtYMS9PQ09iSlgycDZrRWVWVWt5bWR1azQ4bkVqK0JkeXlvSjhpMGg0UW1YSUFlbjRycmM3ZWIzZmkxOVZ1bDNQZ2NITVVtZE9iWGp2R0FiSFRUKzU3YjJEdzMvKzRoR0VaM0htNWtsM2pCOU5rK29VcElGZHRFaXpaa0N5UGVmN2hwdk9aeWdZMkIrcnNCVnRpdWFyaDV1RXVFSFpTK2JJM0hZeHBwZ2dEUGgrQ0pJV3Biem9RdHBGQlhOZ0hkbXhkZDRHSCtXUkpUTnQxYjI5T3VuQklVbUJPdE91Z1VYdm02K2lsL3lHSUpacCtSOWlzQ0xBcktLUQ==';
-        
-        const response = await fetch(MYSQL_API_URL, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${MYSQL_API_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                sql: `SELECT s.* FROM ai_skills s 
-                      INNER JOIN user_selected_skills us ON s.id = us.skill_id 
-                      WHERE us.user_email = %s AND s.is_active = 1`,
-                params: [userEmail]
-            })
-        });
-        
-        if (!response.ok) {
-            throw new Error(`MySQL API error: ${response.status}`);
-        }
-        
-        const result = await response.json();
-        if (result.error) {
-            throw new Error(result.error);
-        }
-        
-        res.json({ skills: result.data || [] });
+        // Используем локальный MySQL сервис
+        const mysqlService = require('../services/mysql.service');
+        const skills = await mysqlService.getUserSkills(userEmail);
+        res.json({ skills });
     } catch (e) {
         console.error('[AI-SKILLS-ERROR]', e.message);
         res.json({ skills: [], error: e.message });
+    }
+});
+
+// ===========================================
+// MySQL Query Endpoint (для клиентских запросов)
+// ===========================================
+router.post('/mysql/query', async (req, res) => {
+    try {
+        const { sql, params = [] } = req.body;
+        
+        if (!sql) {
+            return res.status(400).json({ error: 'SQL query is required' });
+        }
+        
+        // Используем локальный MySQL сервис
+        const mysqlService = require('../services/mysql.service');
+        const result = await mysqlService.query(sql, params);
+        
+        res.json(result);
+    } catch (e) {
+        console.error('[MYSQL-QUERY-ERROR]', e.message);
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -739,6 +737,105 @@ router.post('/channels/vk/settings', async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         console.error('POST /api/manage/channels/vk/settings', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// === Odnoklassniki Channel ===
+
+router.get('/channels/ok', async (req, res) => {
+    try {
+        const chatId = req.query.chat_id;
+        if (!chatId) {
+            return res.status(400).json({ error: 'chat_id is required' });
+        }
+
+        const okConfig = manageStore.getOkConfig(chatId);
+        const okSettings = manageStore.getOkSettings(chatId);
+
+        res.json({
+            connected: !!okConfig?.group_id,
+            config: okConfig || {},
+            settings: okSettings || {}
+        });
+    } catch (e) {
+        console.error('GET /api/manage/channels/ok', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/channels/ok', async (req, res) => {
+    try {
+        const { chat_id, group_id, access_token, session_secret, public_key } = req.body;
+        if (!chat_id || !group_id || !access_token || !session_secret) {
+            return res.status(400).json({ error: 'chat_id, group_id, access_token, and session_secret are required' });
+        }
+
+        manageStore.setOkConfig(chat_id, {
+            group_id,
+            access_token,
+            session_secret,
+            public_key: public_key || null,
+            is_active: true,
+            connected_at: new Date().toISOString()
+        });
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('POST /api/manage/channels/ok', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.delete('/channels/ok', async (req, res) => {
+    try {
+        const chatId = req.query.chat_id;
+        if (!chatId) {
+            return res.status(400).json({ error: 'chat_id is required' });
+        }
+
+        manageStore.setOkConfig(chatId, {});
+        manageStore.setOkSettings(chatId, {});
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('DELETE /api/manage/channels/ok', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/channels/ok/settings', async (req, res) => {
+    try {
+        const {
+            chat_id,
+            schedule_time,
+            schedule_tz,
+            daily_limit,
+            publish_interval_hours,
+            random_publish,
+            premoderation_enabled,
+            post_type,
+            allowed_weekdays
+        } = req.body;
+
+        if (!chat_id) {
+            return res.status(400).json({ error: 'chat_id is required' });
+        }
+
+        manageStore.setOkSettings(chat_id, {
+            schedule_time,
+            schedule_tz,
+            daily_limit,
+            publish_interval_hours,
+            random_publish,
+            premoderation_enabled,
+            post_type,
+            allowed_weekdays
+        });
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('POST /api/manage/channels/ok/settings', e);
         res.status(500).json({ error: e.message });
     }
 });

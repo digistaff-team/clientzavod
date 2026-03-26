@@ -1,25 +1,27 @@
 const API_MANAGE = `${window.location.origin}/api/manage`;
 
-// MySQL API конфигурация
-const MYSQL_API_URL = 'https://ai.memory.api.atiks.org/mysql_full_proxy_api';
-const MYSQL_API_KEY = 'mysql-VTJGc2RHVmtYMS9PQ09iSlgycDZrRWVWVWt5bWR1azQ4bkVqK0JkeXlvSjhpMGg0UW1YSUFlbjRycmM3ZWIzZmkxOVZ1bDNQZ2NITVVtZE9iWGp2R0FiSFRUKzU3YjJEdzMvKzRoR0VaM0htNWtsM2pCOU5rK29VcElGZHRFaXpaa0N5UGVmN2hwdk9aeWdZMkIrcnNCVnRpdWFyaDV1RXVFSFpTK2JJM0hZeHBwZ2dEUGgrQ0pJV3Biem9RdHBGQlhOZ0hkbXhkZDRHSCtXUkpUTnQxYjI5T3VuQklVbUJPdE91Z1VYdm02K2lsL3lHSUpacCtSOWlzQ0xBcktLUQ==';
-
 let currentUserEmail = null;
 
+/**
+ * Выполняет запрос к MySQL через локальный API
+ * @param {string} sql - SQL запрос с плейсхолдерами %s
+ * @param {array} params - Параметры запроса
+ * @returns {Promise<{data: array, insert_id?: number}>}
+ */
 async function mysqlQuery(sql, params = []) {
-    const response = await fetch(MYSQL_API_URL, {
+    const response = await fetch(`${API_MANAGE}/mysql/query`, {
         method: 'POST',
         headers: {
-            'Authorization': `Bearer ${MYSQL_API_KEY}`,
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({ sql, params })
     });
-    
+
     if (!response.ok) {
-        throw new Error(`MySQL API error: ${response.status}`);
+        const error = await response.text();
+        throw new Error(`MySQL API error: ${response.status} - ${error}`);
     }
-    
+
     const result = await response.json();
     if (result.error) {
         throw new Error(result.error);

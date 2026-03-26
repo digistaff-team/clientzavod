@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Консоль - AI Агент</title>
     <link rel="stylesheet" href="/css/main.css">
+    <style>
+        .admin-only-notice {
+            display: none;
+            text-align: center;
+            padding: 60px 20px;
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            border-radius: 10px;
+            margin: 40px auto;
+            max-width: 600px;
+        }
+        .admin-only-notice h2 {
+            color: #856404;
+            margin-bottom: 15px;
+        }
+        .admin-only-notice p {
+            color: #856404;
+            margin-bottom: 20px;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -28,7 +48,15 @@
             <button onclick="login()">Войти</button>
         </div>
 
-        <div class="main-content" id="mainContent">
+        <!-- Уведомление для не-админов -->
+        <div class="admin-only-notice" id="adminOnlyNotice">
+            <h2>🔒 Доступ ограничен</h2>
+            <p>Раздел «Консоль» доступен только администраторам.</p>
+            <p>Если вы администратор, войдите через <a href="/admin/containers">панель админа</a> и используйте кнопку «Auth» для входа в контейнер пользователя.</p>
+            <a href="/" class="btn btn-primary">Вернуться на главную</a>
+        </div>
+
+        <div class="main-content" id="mainContent" style="display: none;">
             <nav class="nav-tabs" id="mainMenu"></nav>
 
             <div class="panel full-width">
@@ -40,11 +68,11 @@
                         <button class="btn btn-primary" onclick="downloadHistory()">📥 Скачать историю</button>
                     </div>
                 </div>
-                
+
                 <div class="console-info">
-                    <strong>ℹ️ Информация:</strong> 
-                    Вы работаете в изолированном Docker-контейнере. 
-                    Команды выполняются в bash-оболочке. 
+                    <strong>ℹ️ Информация:</strong>
+                    Вы работаете в изолированном Docker-контейнере.
+                    Команды выполняются в bash-оболочке.
                     Рабочая директория: <code>/workspace</code>
                 </div>
 
@@ -64,9 +92,9 @@
                         </div>
                         <div class="terminal-input-line">
                             <span class="terminal-prompt" id="terminalPrompt">user@container:~$</span>
-                            <input type="text" 
-                                   class="terminal-input" 
-                                   id="terminalInput" 
+                            <input type="text"
+                                   class="terminal-input"
+                                   id="terminalInput"
                                    placeholder="Введите команду..."
                                    autocomplete="off"
                                    spellcheck="false"
@@ -85,8 +113,53 @@
     <script src="/js/common.js"></script>
     <script src="/js/console.js"></script>
     <script>
-        window.addEventListener('load', () => {
-            renderMenu('/console.html');
+        window.addEventListener('load', async () => {
+            // Проверяем наличие admin_auth токена в URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const adminAuthToken = urlParams.get('admin_auth');
+            const chatIdFromUrl = urlParams.get('chatId');
+            
+            // Если есть токен админа - обрабатываем его
+            if (adminAuthToken && chatIdFromUrl) {
+                try {
+                    // Устанавливаем сессию через API
+                    const res = await fetch(`/?admin_auth=${adminAuthToken}&chatId=${chatIdFromUrl}`, {
+                        method: 'GET',
+                        redirect: 'manual'
+                    });
+                    
+                    // Очищаем URL от токена
+                    const cleanUrl = window.location.pathname;
+                    window.history.replaceState({}, '', cleanUrl);
+                } catch (e) {
+                    console.error('Error processing admin auth:', e);
+                }
+            }
+            
+            // Проверяем статус админа перед отображением консоли
+            let isAdmin = false;
+            try {
+                const res = await fetch(`${API_URL}/admin/check-auth`);
+                if (res.ok) {
+                    const data = await res.json();
+                    isAdmin = data.isAdmin;
+                }
+            } catch (e) {
+                isAdmin = false;
+            }
+
+            if (!isAdmin) {
+                // Показываем уведомление о доступе только для админов
+                document.getElementById('adminOnlyNotice').style.display = 'block';
+                document.getElementById('mainContent').style.display = 'none';
+                document.getElementById('logoutButton').style.display = 'block';
+            } else {
+                // Админ - показываем консоль
+                document.getElementById('adminOnlyNotice').style.display = 'none';
+                document.getElementById('mainContent').style.display = 'block';
+                document.getElementById('logoutButton').style.display = 'block';
+                renderMenu('/console.html');
+            }
             initAuth();
         });
     </script>

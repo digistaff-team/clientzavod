@@ -699,6 +699,115 @@ function setVkSettings(chatId, patch = {}) {
     return persist(chatId);
 }
 
+// === OK Config ===
+
+function getOkConfig(chatId) {
+    const data = statesCache[chatId];
+    return data?.okConfig || null;
+}
+
+function setOkConfig(chatId, patch = {}) {
+    if (!statesCache[chatId]) statesCache[chatId] = {};
+    const current = statesCache[chatId].okConfig || {};
+    const next = { ...current };
+
+    if (patch.group_id !== undefined) next.group_id = String(patch.group_id || '').trim() || null;
+    if (patch.access_token !== undefined) next.access_token = patch.access_token || null;
+    if (patch.session_secret !== undefined) next.session_secret = patch.session_secret || null;
+    if (patch.app_id !== undefined) next.app_id = String(patch.app_id || '').trim() || null;
+    if (patch.public_key !== undefined) next.public_key = patch.public_key || null;
+    if (patch.secret_key !== undefined) next.secret_key = patch.secret_key || null;
+    if (patch.is_active !== undefined) next.is_active = !!patch.is_active;
+    if (patch.connected_at !== undefined) next.connected_at = patch.connected_at;
+    if (patch.stats !== undefined) next.stats = { ...(next.stats || {}), ...patch.stats };
+
+    statesCache[chatId].okConfig = next;
+    return persist(chatId);
+}
+
+function clearOkConfig(chatId) {
+    if (statesCache[chatId]) {
+        delete statesCache[chatId].okConfig;
+        return persist(chatId);
+    }
+}
+
+// === OK Settings ===
+
+function getOkSettings(chatId) {
+    const data = statesCache[chatId];
+    return data?.okSettings || null;
+}
+
+function setOkSettings(chatId, patch = {}) {
+    if (!statesCache[chatId]) statesCache[chatId] = {};
+    const current = statesCache[chatId].okSettings || {};
+    const next = { ...current };
+
+    if (patch.schedule_time !== undefined) {
+        const scheduleTime = String(patch.schedule_time || '').trim();
+        if (scheduleTime && !/^\d{2}:\d{2}$/.test(scheduleTime)) {
+            throw new Error('schedule_time must be in HH:MM format');
+        }
+        next.schedule_time = scheduleTime || null;
+    }
+
+    if (patch.schedule_tz !== undefined) {
+        next.schedule_tz = String(patch.schedule_tz || '').trim() || null;
+    }
+
+    if (patch.daily_limit !== undefined) {
+        if (patch.daily_limit === null || patch.daily_limit === '') {
+            next.daily_limit = null;
+        } else {
+            const parsedLimit = parseInt(patch.daily_limit, 10);
+            if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+                throw new Error('daily_limit must be a positive integer');
+            }
+            next.daily_limit = parsedLimit;
+        }
+    }
+
+    if (patch.random_publish !== undefined) {
+        next.random_publish = !!patch.random_publish;
+    }
+
+    if (patch.premoderation_enabled !== undefined) {
+        next.premoderation_enabled = !!patch.premoderation_enabled;
+    }
+
+    if (patch.publish_interval_hours !== undefined) {
+        const allowed = [0.5, 1, 3, 5, 12, 24];
+        const val = parseFloat(patch.publish_interval_hours);
+        if (!allowed.includes(val)) {
+            throw new Error('publish_interval_hours must be one of: ' + allowed.join(', '));
+        }
+        next.publish_interval_hours = val;
+    }
+
+    if (patch.allowed_weekdays !== undefined) {
+        if (!Array.isArray(patch.allowed_weekdays)) {
+            throw new Error('allowed_weekdays must be an array');
+        }
+        const days = patch.allowed_weekdays
+            .map(d => parseInt(d, 10))
+            .filter(d => Number.isFinite(d) && d >= 0 && d <= 6);
+        next.allowed_weekdays = [...new Set(days)].sort();
+    }
+
+    if (patch.post_type !== undefined) {
+        const allowedTypes = ['post', 'article', 'video'];
+        const postType = String(patch.post_type || '').trim().toLowerCase();
+        if (!allowedTypes.includes(postType)) {
+            throw new Error('post_type must be one of: ' + allowedTypes.join(', '));
+        }
+        next.post_type = postType;
+    }
+
+    statesCache[chatId].okSettings = next;
+    return persist(chatId);
+}
+
 function addAIMessage(chatId, channel = 'telegram', role, content) {
     const key = `${chatId}:${channel}`;
     if (!statesCache[chatId]) statesCache[chatId] = {};
@@ -970,6 +1079,11 @@ module.exports = {
     setVkConfig,
     getVkSettings,
     setVkSettings,
+    getOkConfig,
+    setOkConfig,
+    clearOkConfig,
+    getOkSettings,
+    setOkSettings,
     getContextSettings,
     setContextSettings,
     addAIMessage,

@@ -227,7 +227,7 @@ async function loadApps(silent = false) {
                         <div class="apps-empty" style="grid-column:1/-1">
                             <span class="apps-empty-icon">🔌</span>
                             <p>Контейнер не запущен</p>
-                            <small>Перейдите в <a href="/console.html" style="color:#667eea">Консоль</a> — она автоматически запустит контейнер.</small>
+                            <small>Запустите контейнер через веб-интерфейс или Telegram.</small>
                         </div>`;
                 }
                 if (badge) badge.textContent = '— процессов';

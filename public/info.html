@@ -31,22 +31,44 @@
         <div class="main-content" id="mainContent">
             <nav class="nav-tabs" id="mainMenu"></nav>
 
-            <div class="panel full-width">
-                <h2>📊 Информация о сессии</h2>
-                <div class="session-info" id="sessionInfo">Загрузка...</div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">
+                <div class="panel">
+                    <h2>📊 Информация о сессии</h2>
+                    <div class="session-info" id="sessionInfo">Загрузка...</div>
 
-                <div id="telegramProfileBlock" style="background: #e8f5e9; border-left: 4px solid #4CAF50; padding: 12px 16px; margin: 20px 0; border-radius: 4px; display: none;">
-                    <div style="font-weight: 600; color: #2E7D32; margin-bottom: 6px;">👤 Telegram профиль</div>
-                    <div id="telegramProfileInfo" style="font-size: 14px; color: #1b5e20;"></div>
-                </div>
-
-                <div style="background: #f0f8ff; border-left: 4px solid #2196F3; padding: 12px 16px; margin: 20px 0; border-radius: 4px;">
-                    <div style="font-weight: 600; color: #1976D2; margin-bottom: 6px;">📁 Конфигурационный файл</div>
-                    <div style="font-family: monospace; font-size: 13px; color: #555; background: #fff; padding: 8px 12px; border-radius: 3px; word-break: break-all;">
-                        <span id="configPath">Загрузка...</span>
+                    <div style="background: #f0f8ff; border-left: 4px solid #2196F3; padding: 12px 16px; margin: 20px 0; border-radius: 4px;">
+                        <div style="font-weight: 600; color: #1976D2; margin-bottom: 6px;">📁 Конфигурационный файл</div>
+                        <div style="font-family: monospace; font-size: 13px; color: #555; background: #fff; padding: 8px 12px; border-radius: 3px; word-break: break-all;">
+                            <span id="configPath">Загрузка...</span>
+                        </div>
+                        <div style="font-size: 12px; color: #666; margin-top: 6px;">Все настройки (токены, email, параметры ИИ) хранятся в этом файле</div>
                     </div>
-                    <div style="font-size: 12px; color: #666; margin-top: 6px;">Все настройки (токены, email, параметры ИИ) хранятся в этом файле</div>
                 </div>
+
+                <div class="panel">
+                    <h2>📈 Метрики</h2>
+                    <div class="content-metrics-grid">
+                        <div class="content-metric-card">
+                            <div class="content-metric-label">24h published</div>
+                            <div class="content-metric-value" id="metricPublished24h">-</div>
+                        </div>
+                        <div class="content-metric-card">
+                            <div class="content-metric-label">24h failed</div>
+                            <div class="content-metric-value" id="metricFailed24h">-</div>
+                        </div>
+                        <div class="content-metric-card">
+                            <div class="content-metric-label">24h success rate</div>
+                            <div class="content-metric-value" id="metricSuccess24h">-</div>
+                        </div>
+                        <div class="content-metric-card">
+                            <div class="content-metric-label">7d published</div>
+                            <div class="content-metric-value" id="metricPublished7d">-</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel full-width" style="margin-top: 20px;">
                 
                 <div style="background: #f5f5f5; border-left: 4px solid #9C27B0; padding: 12px 16px; margin: 20px 0; border-radius: 4px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">

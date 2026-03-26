@@ -1,6 +1,6 @@
 /**
- * VK MVP Service — генерация, модерация, публикация VK-постов
- * Самостоятельный пайплайн, аналог pinterestMvp.service.js
+ * OK MVP Service — генерация, модерация, публикация ОК-постов
+ * Самостоятельный пайплайн, аналог vkMvp.service.js
  */
 const path = require('path');
 const os = require('os');
@@ -12,9 +12,9 @@ const manageStore = require('../manage/store');
 const sessionService = require('./session.service');
 const dockerService = require('./docker.service');
 const storageService = require('./storage.service');
-const vkService = require('./vk.service');
+const okService = require('./ok.service');
 const imageService = require('./image.service');
-const vkRepo = require('./content/vk.repository');
+const okRepo = require('./content/ok.repository');
 
 const contentModules = require('./content/index');
 const {
@@ -27,9 +27,18 @@ const {
 const SCHEDULE_TZ = process.env.CONTENT_MVP_TZ || 'Europe/Moscow';
 const MAX_IMAGE_ATTEMPTS = 3;
 const MAX_REJECT_ATTEMPTS = 3;
-const DAILY_VK_LIMIT = parseInt(process.env.VK_DAILY_LIMIT || '5', 10);
+const DAILY_OK_LIMIT = parseInt(process.env.OK_DAILY_LIMIT || '5', 10);
 const PROFILE_FILES = ['IDENTITY.md', 'SOUL.md'];
-const VK_MODERATION_TIMEOUT_HOURS = parseInt(process.env.VK_MODERATION_TIMEOUT_HOURS || '24', 10);
+const OK_MODERATION_TIMEOUT_HOURS = parseInt(process.env.OK_MODERATION_TIMEOUT_HOURS || '24', 10);
+
+const OK_RULES = {
+  textMin: 400,
+  textMax: 600,
+  textHardMax: 700,
+  emojiMax: 3,
+  hashtagMin: 2,
+  hashtagMax: 4
+};
 
 let schedulerHandle = null;
 let botsGetter = null;
@@ -60,19 +69,19 @@ function isValidTz(tz) {
   } catch { return false; }
 }
 
-function getVkSettings(chatId) {
-  const cfg = manageStore.getVkConfig(chatId);
-  const settings = manageStore.getVkSettings(chatId) || {};
+function getOkSettings(chatId) {
+  const cfg = manageStore.getOkConfig(chatId);
+  const settings = manageStore.getOkSettings(chatId) || {};
   return {
     isActive: !!cfg?.is_active,
-    groupId: cfg?.group_id || null,
-    serviceKey: cfg?.service_key || null,
+    groupId: cfg?.group_id || config.OK_GROUP_ID || null,
+    accessToken: cfg?.access_token || config.OK_ACCESS_TOKEN || null,
     scheduleTime: settings.schedule_time || '10:00',
     scheduleTz: isValidTz(settings.schedule_tz) ? settings.schedule_tz : SCHEDULE_TZ,
-    dailyLimit: settings.daily_limit || DAILY_VK_LIMIT,
+    dailyLimit: settings.daily_limit || DAILY_OK_LIMIT,
     publishIntervalHours: Number.isFinite(settings.publish_interval_hours) ? settings.publish_interval_hours : 4,
     randomPublish: !!settings.random_publish,
-    premoderationEnabled: settings.premoderation_enabled !== false, // по умолчанию включена
+    premoderationEnabled: settings.premoderation_enabled !== false,
     postType: settings.post_type || 'post',
     allowedWeekdays: Array.isArray(settings.allowed_weekdays) ? settings.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
     stats: cfg?.stats || { total_posts: 0, posts_today: 0, last_post_date: null }
@@ -117,19 +126,19 @@ async function loadUserPersona(chatId) {
 }
 
 // ============================================
-// AI-генерация для VK
+// AI-генерация для ОК
 // ============================================
 
-async function generateVkPostText(chatId, topic, materialsText, personaText) {
+async function generateOkPostText(chatId, topic, materialsText, personaText) {
   const data = manageStore.getState(chatId);
   const hasApiKey = data?.aiCustomApiKey || data?.aiAuthToken;
   if (!hasApiKey || !data?.aiModel) {
     throw new Error('AI model is not configured');
   }
 
-  const prompt = `Ты SMM-маркетолог ВКонтакте. Создай контент для поста в группе VK.
+  const prompt = `Ты — копирайтер, который пишет посты для социальной сети «Одноклассники».
 
-Тема: ${topic.topic}
+Тема поста: ${topic.topic}
 ${topic.focus ? `Фокус: ${topic.focus}` : ''}
 
 ${personaText ? `--- ПЕРСОНА ---\n${personaText}\n---` : ''}
@@ -137,19 +146,28 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 
 Ответь строго в формате JSON:
 {
-  "postText": "текст поста для VK (до 2000 символов, вовлекающий, с абзацами)",
+  "postText": "текст поста для Одноклассников",
   "hookText": "хук — цепляющая фраза 4-6 слов для наложения на изображение",
-  "imagePrompt": "промпт для генерации изображения на английском (стиль: яркий, профессиональный, без текста)"
+  "imagePrompt": "промпт для генерации изображения на английском"
 }
 
-Требования:
-- postText: до 2000 символов, информативный, с призывом к действию, с эмодзи
-- hookText: короткая цепляющая фраза для наложения на картинку (4-6 слов, русский)
-- imagePrompt: на английском, описание визуала для поста, без текста на изображении
-- Язык: русский (кроме imagePrompt)`;
+Требования к postText:
+- Длина: 400–600 символов (не длиннее 700)
+- Тон: дружелюбный, человеческий, профессиональный
+- Без клише вроде "купите прямо сейчас" и "лучшее на рынке"
+- Допускается лёгкий юмор, живой язык, но без жаргона
+- В начале: человеческая подача, вопрос, факт или мини-история
+- В основной части: естественно подведи к теме
+- В конце: мягкий призыв к действию ("Загляните к нам", "Попробуйте сами!", "Сохраняйте идею!")
+- Эмодзи: 1-3 штуки, не в начале текста
+- Обязательно 2-4 релевантных хештега
+
+Требования к hookText: короткая цепляющая фраза для наложения на картинку (4-6 слов, русский)
+Требования к imagePrompt: на английском, описание визуала, формат 1:1, без текста на изображении
+Язык: русский (кроме imagePrompt)`;
 
   const messages = [
-    { role: 'system', content: 'Ты SMM-маркетолог ВКонтакте. Отвечай только JSON.' },
+    { role: 'system', content: 'Ты копирайтер для Одноклассников. Отвечай только JSON.' },
     { role: 'user', content: prompt }
   ];
 
@@ -163,18 +181,49 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
   }
 
   const parsed = JSON.parse(jsonMatch[0]);
+  const postText = String(parsed.postText || '').slice(0, OK_RULES.textHardMax);
+
   return {
-    postText: String(parsed.postText || '').slice(0, 2000),
+    postText,
     hookText: String(parsed.hookText || '').slice(0, 100),
     imagePrompt: String(parsed.imagePrompt || '').slice(0, 800)
   };
 }
 
-async function generateVkImage(topic, imagePrompt) {
+/**
+ * Валидация текста поста по правилам ОК
+ */
+function validateOkContent(text) {
+  const warnings = [];
+
+  if (text.length < OK_RULES.textMin) {
+    warnings.push(`Текст короткий: ${text.length} < ${OK_RULES.textMin}`);
+  }
+  if (text.length > OK_RULES.textHardMax) {
+    warnings.push(`Текст длинный: ${text.length} > ${OK_RULES.textHardMax}`);
+  }
+
+  const emojiCount = (text.match(/\p{Emoji_Presentation}/gu) || []).length;
+  if (emojiCount > OK_RULES.emojiMax) {
+    warnings.push(`Эмодзи: ${emojiCount} > ${OK_RULES.emojiMax}`);
+  }
+
+  const hashtagCount = (text.match(/#[\wа-яА-ЯёЁ]+/g) || []).length;
+  if (hashtagCount < OK_RULES.hashtagMin) {
+    warnings.push(`Хештегов мало: ${hashtagCount} < ${OK_RULES.hashtagMin}`);
+  }
+  if (hashtagCount > OK_RULES.hashtagMax) {
+    warnings.push(`Хештегов много: ${hashtagCount} > ${OK_RULES.hashtagMax}`);
+  }
+
+  return { valid: warnings.length === 0, warnings };
+}
+
+async function generateOkImage(topic, imagePrompt) {
   const apiKey = process.env.KIE_API_KEY;
   if (!apiKey) throw new Error('KIE_API_KEY is not set');
 
-  const prompt = (imagePrompt || `VK post image. Topic: ${topic.topic}. Style: bright, professional, eye-catching, no text overlay, social media optimized.`).slice(0, 800);
+  const prompt = (imagePrompt || `OK social media post image. Topic: ${topic.topic}. Style: bright, professional, eye-catching, no text overlay, 1:1 ratio.`).slice(0, 800);
 
   const createResp = await fetch('https://api.kie.ai/api/v1/jobs/createTask', {
     method: 'POST',
@@ -231,9 +280,9 @@ async function generateVkImage(topic, imagePrompt) {
 
 async function saveImageToContainer(chatId, buffer, jobId) {
   const session = await sessionService.getOrCreateSession(chatId);
-  const localTmp = path.join(os.tmpdir(), `vk-image-${chatId}-${jobId}.png`);
+  const localTmp = path.join(os.tmpdir(), `ok-image-${chatId}-${jobId}.png`);
   await fs.writeFile(localTmp, buffer);
-  const containerPath = `/workspace/output/content/vk_${jobId}.png`;
+  const containerPath = `/workspace/output/content/ok_${jobId}.png`;
   await sessionService.executeCommand(chatId, 'mkdir -p /workspace/output/content', 10);
   await dockerService.copyToContainer(localTmp, session.containerId, containerPath);
   await fs.unlink(localTmp).catch(() => {});
@@ -246,13 +295,13 @@ async function saveImageToContainer(chatId, buffer, jobId) {
 
 function getDrafts(chatId) {
   const data = manageStore.getState(chatId) || {};
-  return data.vkDrafts || {};
+  return data.okDrafts || {};
 }
 
 function setDraft(chatId, draftId, draft) {
   const data = manageStore.getState(chatId) || {};
-  data.vkDrafts = data.vkDrafts || {};
-  data.vkDrafts[draftId] = draft;
+  data.okDrafts = data.okDrafts || {};
+  data.okDrafts[draftId] = draft;
   if (!manageStore.getState(chatId)) {
     manageStore.getAllStates()[chatId] = data;
   }
@@ -261,26 +310,26 @@ function setDraft(chatId, draftId, draft) {
 
 async function removeDraft(chatId, draftId) {
   const data = manageStore.getState(chatId) || {};
-  if (data.vkDrafts && data.vkDrafts[draftId]) {
-    delete data.vkDrafts[draftId];
+  if (data.okDrafts && data.okDrafts[draftId]) {
+    delete data.okDrafts[draftId];
     await manageStore.persist(chatId);
   }
 }
 
 // ============================================
-// Генерация VK поста
+// Генерация ОК поста
 // ============================================
 
-async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
-  console.log(`[VK-GENERATE] ${chatId} starting generation, corr=${correlationId}`);
-  const settings = getVkSettings(chatId);
+async function handleOkGenerateJob(chatId, queueJob, bot, correlationId) {
+  console.log(`[OK-GENERATE] ${chatId} starting generation, corr=${correlationId}`);
+  const settings = getOkSettings(chatId);
 
   await repository.ensureSchema(chatId);
 
   // Дневной лимит
-  const publishedToday = await vkRepo.countPublishedToday(chatId, settings.scheduleTz);
+  const publishedToday = await okRepo.countPublishedToday(chatId, settings.scheduleTz);
   if (publishedToday >= settings.dailyLimit) {
-    return { success: false, error: `Дневной лимит VK-постов исчерпан (${publishedToday}/${settings.dailyLimit})`, retry: false };
+    return { success: false, error: `Дневной лимит ОК-постов исчерпан (${publishedToday}/${settings.dailyLimit})`, retry: false };
   }
 
   // Проверка дня недели (с учётом таймзоны)
@@ -291,7 +340,7 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
     const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
     dayOfWeek = weekdayMap[weekdayStr] ?? now.getDay();
   } catch {
-    console.warn(`[VK-GENERATE] ${chatId} invalid timezone "${settings.scheduleTz}", fallback to getDay()`);
+    console.warn(`[OK-GENERATE] ${chatId} invalid timezone "${settings.scheduleTz}", fallback to getDay()`);
     dayOfWeek = now.getDay();
   }
   if (!settings.allowedWeekdays.includes(dayOfWeek)) {
@@ -299,13 +348,13 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
   }
 
   // Выбор темы
-  console.log(`[VK-GENERATE] ${chatId} selecting topic...`);
+  console.log(`[OK-GENERATE] ${chatId} selecting topic...`);
   const topicRow = await repository.reserveNextTopic(chatId);
   if (!topicRow) {
-    console.log(`[VK-GENERATE] ${chatId} no pending topics available`);
+    console.log(`[OK-GENERATE] ${chatId} no pending topics available`);
     return { success: false, error: 'Нет доступных тем', retry: false };
   }
-  console.log(`[VK-GENERATE] ${chatId} topic selected: id=${topicRow.id}, "${topicRow.topic}"`);
+  console.log(`[OK-GENERATE] ${chatId} topic selected: id=${topicRow.id}, "${topicRow.topic}"`);
   const topic = {
     sheetRow: topicRow.id,
     topic: topicRow.topic,
@@ -321,26 +370,32 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
   ]);
 
   // Генерация текста поста
-  console.log(`[VK-GENERATE] ${chatId} generating text...`);
-  let vkText;
+  console.log(`[OK-GENERATE] ${chatId} generating text...`);
+  let okText;
   try {
-    vkText = await generateVkPostText(chatId, topic, materialsText, personaText);
-    console.log(`[VK-GENERATE] ${chatId} text generated (${(vkText.postText || '').length} chars)`);
+    okText = await generateOkPostText(chatId, topic, materialsText, personaText);
+    console.log(`[OK-GENERATE] ${chatId} text generated (${(okText.postText || '').length} chars)`);
+
+    // Валидация контента по правилам ОК
+    const validation = validateOkContent(okText.postText);
+    if (validation.warnings.length > 0) {
+      console.log(`[OK-GENERATE] ${chatId} content warnings: ${validation.warnings.join('; ')}`);
+    }
   } catch (e) {
-    console.error(`[VK-GENERATE] ${chatId} text generation failed: ${e.message}`);
-    await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `vk_text_failed: ${e.message}`);
-    return { success: false, error: `VK text generation failed: ${e.message}`, retry: true };
+    console.error(`[OK-GENERATE] ${chatId} text generation failed: ${e.message}`);
+    await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `ok_text_failed: ${e.message}`);
+    return { success: false, error: `OK text generation failed: ${e.message}`, retry: true };
   }
 
   // Генерация изображения
-  console.log(`[VK-GENERATE] ${chatId} generating image...`);
+  console.log(`[OK-GENERATE] ${chatId} generating image...`);
   let imagePath = '';
   let imageAttempts = 0;
   let imageErr = '';
   for (let i = 1; i <= MAX_IMAGE_ATTEMPTS; i++) {
     try {
       imageAttempts = i;
-      const imageBuffer = await generateVkImage(topic, vkText.imagePrompt);
+      const imageBuffer = await generateOkImage(topic, okText.imagePrompt);
       const tempId = `${topic.sheetRow}_${Date.now()}`;
       imagePath = await saveImageToContainer(chatId, imageBuffer, tempId);
       imageErr = '';
@@ -350,21 +405,21 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
     }
   }
   if (!imagePath) {
-    console.error(`[VK-GENERATE] ${chatId} image generation failed after ${imageAttempts} attempts: ${imageErr}`);
-    await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `vk_image_failed: ${imageErr}`);
-    return { success: false, error: `VK image generation failed: ${imageErr}`, retry: true };
+    console.error(`[OK-GENERATE] ${chatId} image generation failed after ${imageAttempts} attempts: ${imageErr}`);
+    await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `ok_image_failed: ${imageErr}`);
+    return { success: false, error: `OK image generation failed: ${imageErr}`, retry: true };
   }
-  console.log(`[VK-GENERATE] ${chatId} image saved: ${imagePath} (attempts: ${imageAttempts})`);
+  console.log(`[OK-GENERATE] ${chatId} image saved: ${imagePath} (attempts: ${imageAttempts})`);
 
   // Запись в БД
-  const jobId = await vkRepo.createJob(chatId, {
+  const jobId = await okRepo.createJob(chatId, {
     topic: topic.topic,
-    groupId: settings.groupId,
-    postText: vkText.postText,
-    hookText: vkText.hookText,
-    imagePrompt: vkText.imagePrompt,
+    communityId: settings.groupId,
+    postText: okText.postText,
+    hookText: okText.hookText,
+    imagePrompt: okText.imagePrompt,
     imagePath,
-    vkContentType: 'photo',
+    okContentType: 'photo',
     status: 'ready',
     imageAttempts,
     correlationId
@@ -373,10 +428,10 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
   const draft = {
     jobId,
     topic,
-    groupId: settings.groupId,
-    postText: vkText.postText,
-    hookText: vkText.hookText,
-    imagePrompt: vkText.imagePrompt,
+    communityId: settings.groupId,
+    postText: okText.postText,
+    hookText: okText.hookText,
+    imagePrompt: okText.imagePrompt,
     imagePath,
     correlationId,
     rejectedCount: 0
@@ -385,83 +440,80 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
   // Маршрутизация: модерация или автопубликация
   if (!settings.premoderationEnabled) {
     await setDraft(chatId, String(jobId), draft);
-    await publishVkPost(chatId, bot, jobId, correlationId);
+    await publishOkPost(chatId, bot, jobId, correlationId);
   } else {
-    await sendVkToModerator(chatId, bot, draft);
+    await sendOkToModerator(chatId, bot, draft);
   }
 
   return { success: true, data: { jobId } };
 }
 
 // ============================================
-// Публикация VK поста
+// Публикация ОК поста
 // ============================================
 
-async function publishVkPost(chatId, bot, jobId, correlationId) {
+async function publishOkPost(chatId, bot, jobId, correlationId) {
   const corrId = correlationId || generateCorrelationId();
-  const job = await vkRepo.getJobById(chatId, jobId);
-  if (!job) throw new Error(`VK job ${jobId} not found`);
+  const job = await okRepo.getJobById(chatId, jobId);
+  if (!job) throw new Error(`OK job ${jobId} not found`);
 
-  const cfg = manageStore.getVkConfig(chatId);
-  if (!cfg) throw new Error('VK не настроен');
+  const cfg = manageStore.getOkConfig(chatId);
+  const communityId = job.community_id || cfg?.group_id || config.OK_GROUP_ID;
 
-  const groupId = job.group_id || cfg.group_id;
-  const serviceKey = cfg.service_key;
-
-  if (!groupId || !serviceKey) {
-    throw new Error('VK group_id или service_key не настроен');
+  if (!communityId) {
+    throw new Error('OK group_id не настроен');
   }
 
   // Копируем изображение из контейнера
   let imageBuffer = null;
   if (job.image_path) {
     const session = await sessionService.getOrCreateSession(chatId);
-    const tempPath = path.join(os.tmpdir(), `vk-publish-${chatId}-${jobId}.png`);
+    const tempPath = path.join(os.tmpdir(), `ok-publish-${chatId}-${jobId}.png`);
     await dockerService.copyFromContainer(session.containerId, job.image_path, tempPath);
     imageBuffer = await fs.readFile(tempPath);
     await fs.unlink(tempPath).catch(() => {});
 
     // Водяной знак
     const logoPath = '/workspace/brand/logo.png';
-    const logoLocalPath = path.join(os.tmpdir(), `vk-logo-${chatId}.png`);
+    const logoLocalPath = path.join(os.tmpdir(), `ok-logo-${chatId}.png`);
     try {
       await dockerService.copyFromContainer(session.containerId, logoPath, logoLocalPath);
       imageBuffer = await imageService.overlayWatermark(imageBuffer, logoLocalPath);
       await fs.unlink(logoLocalPath).catch(() => {});
     } catch (e) {
-      console.log(`[VK-MVP] Watermark skipped: ${e.message}`);
+      console.log(`[OK-MVP] Watermark skipped: ${e.message}`);
     }
   }
 
-  // Публикация через VK API
-  const result = await vkService.publishPhotoPost({
-    serviceKey,
-    groupId,
+  // Публикация через OK API
+  const result = await okService.publishPhotoPost({
+    chatId,
+    groupId: communityId,
     text: job.post_text || '',
     imageBuffer,
     params: {}
   });
 
   // Запись в лог
-  await vkRepo.addPublishLog(chatId, {
+  await okRepo.addPublishLog(chatId, {
     jobId,
-    groupId,
-    vkPostId: result.post_id ? String(result.post_id) : null,
+    communityId,
+    okPostId: result.post_id ? String(result.post_id) : null,
     status: 'published',
     correlationId: corrId
   });
 
   // Обновить статус
-  await vkRepo.updateJob(chatId, jobId, {
+  await okRepo.updateJob(chatId, jobId, {
     status: 'published',
-    vkPostId: result.full_id || String(result.post_id || '')
+    okPostId: result.full_id || String(result.post_id || '')
   });
 
   // Обновить статистику
-  const stats = cfg.stats || {};
+  const stats = cfg?.stats || {};
   const today = getNowInTz(SCHEDULE_TZ).date;
   const postsToday = stats.last_post_date === today ? (stats.posts_today || 0) + 1 : 1;
-  await manageStore.setVkConfig(chatId, {
+  await manageStore.setOkConfig(chatId, {
     stats: {
       total_posts: (stats.total_posts || 0) + 1,
       posts_today: postsToday,
@@ -474,8 +526,8 @@ async function publishVkPost(chatId, bot, jobId, correlationId) {
 
   // Уведомление
   if (bot?.telegram) {
-    const postUrl = `https://vk.com/wall${result.full_id}`;
-    let msg = `📢 VK пост опубликован!\n${(job.post_text || '').slice(0, 100)}...\n→ ${postUrl}`;
+    const postUrl = `https://ok.ru/group/${communityId}/topic/${result.post_id}`;
+    let msg = `📢 ОК пост опубликован!\n${(job.post_text || '').slice(0, 100)}...\n→ ${postUrl}`;
     if (result.photoSkipReason) {
       msg += `\n\n⚠️ ${result.photoSkipReason}`;
     }
@@ -489,11 +541,19 @@ async function publishVkPost(chatId, bot, jobId, correlationId) {
 // Модерация
 // ============================================
 
-async function sendVkToModerator(chatId, bot, draft) {
+/**
+ * Отправка черновика ОК-поста на модерацию в Telegram
+ * @param {string} chatId - ID чата пользователя
+ * @param {Object} bot - Экземпляр Telegraf бота
+ * @param {Object} draft - Объект черновика
+ */
+async function sendOkToModerator(chatId, bot, draft) {
   const moderatorId = manageStore.getContentSettings?.(chatId)?.moderatorUserId || chatId;
+  
+  console.log(`[OK-MODERATION] Sending draft to moderator ${moderatorId}, jobId=${draft.jobId}, corr=${draft.correlationId || 'n/a'}`);
 
   const caption = [
-    `📢 VK → Группа ${draft.groupId || '?'}`,
+    `📢 ОК → Группа ${draft.communityId || '?'}`,
     '',
     `🪝 Хук: ${draft.hookText || '—'}`,
     '',
@@ -502,7 +562,7 @@ async function sendVkToModerator(chatId, bot, draft) {
     draft.correlationId ? `📋 ${draft.correlationId}` : ''
   ].filter(Boolean).join('\n').slice(0, 1024);
 
-  const callbackBase = `vk_mod:${draft.jobId}`;
+  const callbackBase = `ok_mod:${draft.jobId}`;
   const kb = {
     inline_keyboard: [
       [
@@ -516,43 +576,63 @@ async function sendVkToModerator(chatId, bot, draft) {
     ]
   };
 
-  if (draft.imagePath) {
-    const session = await sessionService.getOrCreateSession(chatId);
-    const tempPath = path.join(os.tmpdir(), `vk-mod-${chatId}-${draft.jobId}.png`);
-    await dockerService.copyFromContainer(session.containerId, draft.imagePath, tempPath);
-    const sent = await bot.telegram.sendPhoto(moderatorId, { source: tempPath }, { caption, reply_markup: kb });
-    await fs.unlink(tempPath).catch(() => {});
+  console.log(`[OK-MODERATION] Caption length: ${caption.length}, hasImage: ${!!draft.imagePath}`);
 
-    await setDraft(chatId, String(draft.jobId), {
-      ...draft,
-      moderationMessageId: sent.message_id
-    });
+  if (draft.imagePath) {
+    try {
+      const session = await sessionService.getOrCreateSession(chatId);
+      const tempPath = path.join(os.tmpdir(), `ok-mod-${chatId}-${draft.jobId}.png`);
+      
+      console.log(`[OK-MODERATION] Copying image from container: ${draft.imagePath} → ${tempPath}`);
+      await dockerService.copyFromContainer(session.containerId, draft.imagePath, tempPath);
+      
+      console.log(`[OK-MODERATION] Sending photo to Telegram...`);
+      const sent = await bot.telegram.sendPhoto(moderatorId, { source: tempPath }, { caption, reply_markup: kb });
+      console.log(`[OK-MODERATION] Photo sent, messageId=${sent.message_id}`);
+      
+      await fs.unlink(tempPath).catch(() => {});
+
+      await setDraft(chatId, String(draft.jobId), {
+        ...draft,
+        moderationMessageId: sent.message_id
+      });
+      console.log(`[OK-MODERATION] Draft saved with moderationMessageId=${sent.message_id}`);
+    } catch (e) {
+      console.error(`[OK-MODERATION] Error sending photo: ${e.message}`);
+      throw e;
+    }
   } else {
+    console.log(`[OK-MODERATION] Sending text message to Telegram...`);
     const sent = await bot.telegram.sendMessage(moderatorId, caption, { reply_markup: kb });
+    console.log(`[OK-MODERATION] Message sent, messageId=${sent.message_id}`);
+    
     await setDraft(chatId, String(draft.jobId), {
       ...draft,
       moderationMessageId: sent.message_id
     });
+    console.log(`[OK-MODERATION] Draft saved with moderationMessageId=${sent.message_id}`);
   }
+  
+  console.log(`[OK-MODERATION] Draft sent to moderator successfully`);
 }
 
-async function handleVkModerationAction(chatId, bot, jobId, action) {
+async function handleOkModerationAction(chatId, bot, jobId, action) {
   const draft = getDrafts(chatId)[String(jobId)];
-  if (!draft) return { ok: false, message: 'Черновик VK-поста не найден.' };
+  if (!draft) return { ok: false, message: 'Черновик ОК-поста не найден.' };
 
   const correlationId = draft.correlationId || generateCorrelationId();
 
   if (action === 'approve') {
     try {
-      await publishVkPost(chatId, bot, jobId, correlationId);
-      return { ok: true, message: `📢 VK пост #${jobId} опубликован.` };
+      await publishOkPost(chatId, bot, jobId, correlationId);
+      return { ok: true, message: `📢 ОК пост #${jobId} опубликован.` };
     } catch (e) {
-      await vkRepo.addPublishLog(chatId, {
-        jobId, groupId: draft.groupId || '', status: 'failed',
+      await okRepo.addPublishLog(chatId, {
+        jobId, communityId: draft.communityId || '', status: 'failed',
         errorText: e.message, correlationId
       });
-      await vkRepo.updateJob(chatId, jobId, { status: 'failed', errorText: e.message });
-      return { ok: false, message: `Ошибка публикации VK: ${e.message}` };
+      await okRepo.updateJob(chatId, jobId, { status: 'failed', errorText: e.message });
+      return { ok: false, message: `Ошибка публикации ОК: ${e.message}` };
     }
   }
 
@@ -562,17 +642,17 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
         loadMaterialsText(chatId, 12),
         loadUserPersona(chatId)
       ]);
-      const vkText = await generateVkPostText(chatId, draft.topic, materialsText, personaText);
-      draft.postText = vkText.postText;
-      draft.hookText = vkText.hookText;
-      draft.imagePrompt = vkText.imagePrompt;
-      await vkRepo.updateJob(chatId, jobId, {
-        postText: vkText.postText,
-        hookText: vkText.hookText,
-        imagePrompt: vkText.imagePrompt
+      const okText = await generateOkPostText(chatId, draft.topic, materialsText, personaText);
+      draft.postText = okText.postText;
+      draft.hookText = okText.hookText;
+      draft.imagePrompt = okText.imagePrompt;
+      await okRepo.updateJob(chatId, jobId, {
+        postText: okText.postText,
+        hookText: okText.hookText,
+        imagePrompt: okText.imagePrompt
       });
-      await sendVkToModerator(chatId, bot, draft);
-      return { ok: true, message: 'Текст VK-поста перегенерирован.' };
+      await sendOkToModerator(chatId, bot, draft);
+      return { ok: true, message: 'Текст ОК-поста перегенерирован.' };
     } catch (e) {
       return { ok: false, message: `Ошибка перегенерации текста: ${e.message}` };
     }
@@ -580,12 +660,12 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
 
   if (action === 'regen_image') {
     try {
-      const imageBuffer = await generateVkImage(draft.topic, draft.imagePrompt);
+      const imageBuffer = await generateOkImage(draft.topic, draft.imagePrompt);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
-      await vkRepo.updateJob(chatId, jobId, { imagePath });
-      await sendVkToModerator(chatId, bot, draft);
-      return { ok: true, message: 'Изображение VK-поста перегенерировано.' };
+      await okRepo.updateJob(chatId, jobId, { imagePath });
+      await sendOkToModerator(chatId, bot, draft);
+      return { ok: true, message: 'Изображение ОК-поста перегенерировано.' };
     } catch (e) {
       return { ok: false, message: `Ошибка перегенерации изображения: ${e.message}` };
     }
@@ -596,9 +676,9 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
     await setDraft(chatId, String(jobId), draft);
 
     if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
-      await vkRepo.updateJob(chatId, jobId, { status: 'failed', errorText: `Rejected ${MAX_REJECT_ATTEMPTS} times` });
+      await okRepo.updateJob(chatId, jobId, { status: 'failed', errorText: `Rejected ${MAX_REJECT_ATTEMPTS} times` });
       await removeDraft(chatId, String(jobId));
-      return { ok: true, message: `VK-пост отклонен ${MAX_REJECT_ATTEMPTS} раза. Задача закрыта.` };
+      return { ok: true, message: `ОК-пост отклонен ${MAX_REJECT_ATTEMPTS} раза. Задача закрыта.` };
     }
 
     // Полная перегенерация
@@ -607,25 +687,25 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
         loadMaterialsText(chatId, 12),
         loadUserPersona(chatId)
       ]);
-      const vkText = await generateVkPostText(chatId, draft.topic, materialsText, personaText);
-      const imageBuffer = await generateVkImage(draft.topic, vkText.imagePrompt);
+      const okText = await generateOkPostText(chatId, draft.topic, materialsText, personaText);
+      const imageBuffer = await generateOkImage(draft.topic, okText.imagePrompt);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
 
-      draft.postText = vkText.postText;
-      draft.hookText = vkText.hookText;
-      draft.imagePrompt = vkText.imagePrompt;
+      draft.postText = okText.postText;
+      draft.hookText = okText.hookText;
+      draft.imagePrompt = okText.imagePrompt;
       draft.imagePath = imagePath;
 
-      await vkRepo.updateJob(chatId, jobId, {
-        postText: vkText.postText,
-        hookText: vkText.hookText,
-        imagePrompt: vkText.imagePrompt,
+      await okRepo.updateJob(chatId, jobId, {
+        postText: okText.postText,
+        hookText: okText.hookText,
+        imagePrompt: okText.imagePrompt,
         imagePath,
         rejectedCount: draft.rejectedCount
       });
 
-      await sendVkToModerator(chatId, bot, draft);
-      return { ok: true, message: `VK-пост перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
+      await sendOkToModerator(chatId, bot, draft);
+      return { ok: true, message: `ОК-пост перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
     } catch (e) {
       return { ok: false, message: `Ошибка перегенерации: ${e.message}` };
     }
@@ -638,25 +718,25 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
 // Планировщик
 // ============================================
 
-async function tickVkSchedule(chatId, bot) {
-  const cfg = manageStore.getVkConfig(chatId);
+async function tickOkSchedule(chatId, bot) {
+  const cfg = manageStore.getOkConfig(chatId);
   if (!cfg || !cfg.is_active) return;
 
-  const settings = getVkSettings(chatId);
+  const settings = getOkSettings(chatId);
   const tz = settings.scheduleTz;
   const now = getNowInTz(tz);
 
   // Дневной лимит
-  const publishedToday = await vkRepo.countPublishedToday(chatId, tz);
+  const publishedToday = await okRepo.countPublishedToday(chatId, tz);
   if (publishedToday >= settings.dailyLimit) {
-    console.log(`[VK-SCHEDULE] ${chatId} skip: daily limit reached (${publishedToday}/${settings.dailyLimit})`);
+    console.log(`[OK-SCHEDULE] ${chatId} skip: daily limit reached (${publishedToday}/${settings.dailyLimit})`);
     return;
   }
 
   // День недели
   const dayOfWeek = new Date().getDay();
   if (!settings.allowedWeekdays.includes(dayOfWeek)) {
-    console.log(`[VK-SCHEDULE] ${chatId} skip: weekday ${dayOfWeek} not in allowed ${JSON.stringify(settings.allowedWeekdays)}`);
+    console.log(`[OK-SCHEDULE] ${chatId} skip: weekday ${dayOfWeek} not in allowed ${JSON.stringify(settings.allowedWeekdays)}`);
     return;
   }
 
@@ -674,14 +754,13 @@ async function tickVkSchedule(chatId, bot) {
     if (nowMinutes === slot) { isSlot = true; break; }
   }
   if (!isSlot) {
-    // Логируем раз в 10 минут, чтобы не засорять
     if (nowMinutes % 10 === 0) {
-      console.log(`[VK-SCHEDULE] ${chatId} waiting: now=${now.time}, start=${settings.scheduleTime}, interval=${settings.publishIntervalHours}h`);
+      console.log(`[OK-SCHEDULE] ${chatId} waiting: now=${now.time}, start=${settings.scheduleTime}, interval=${settings.publishIntervalHours}h`);
     }
     return;
   }
 
-  const key = `vkLastRun:${now.time}`;
+  const key = `okLastRun:${now.time}`;
   if (data[key] === now.date) return;
 
   data[key] = now.date;
@@ -690,12 +769,12 @@ async function tickVkSchedule(chatId, bot) {
   }
   await manageStore.persist(chatId);
 
-  console.log(`[VK-SCHEDULE] ${chatId} slot matched ${now.time}, enqueueing vk_generate`);
+  console.log(`[OK-SCHEDULE] ${chatId} slot matched ${now.time}, enqueueing ok_generate`);
 
   // Ставим в очередь
   await queueRepo.ensureQueueSchema(chatId);
   await queueRepo.enqueue(chatId, {
-    jobType: 'vk_generate',
+    jobType: 'ok_generate',
     priority: 0,
     payload: { reason: 'schedule' },
     correlationId: generateCorrelationId()
@@ -705,24 +784,23 @@ async function tickVkSchedule(chatId, bot) {
 async function runNow(chatId, bot, reason = 'manual') {
   await repository.ensureSchema(chatId);
 
-  const settings = getVkSettings(chatId);
-  const publishedToday = await vkRepo.countPublishedToday(chatId, settings.scheduleTz);
+  const settings = getOkSettings(chatId);
+  const publishedToday = await okRepo.countPublishedToday(chatId, settings.scheduleTz);
   if (publishedToday >= settings.dailyLimit) {
-    return { ok: false, message: `Дневной лимит VK-постов исчерпан (${publishedToday}/${settings.dailyLimit}).` };
+    return { ok: false, message: `Дневной лимит ОК-постов исчерпан (${publishedToday}/${settings.dailyLimit}).` };
   }
 
   const correlationId = generateCorrelationId();
 
-  // Всегда ставим в очередь — генерация занимает 1-3 минуты и может не уложиться в таймаут nginx
   await queueRepo.ensureQueueSchema(chatId);
   const queueJobId = await queueRepo.enqueue(chatId, {
-    jobType: 'vk_generate',
+    jobType: 'ok_generate',
     priority: 0,
     payload: { reason },
     correlationId
   });
 
-  return { ok: true, message: `VK-задача #${queueJobId} в очереди.`, queueJobId, correlationId };
+  return { ok: true, message: `ОК-задача #${queueJobId} в очереди.`, queueJobId, correlationId };
 }
 
 // ============================================
@@ -732,33 +810,33 @@ async function runNow(chatId, bot, reason = 'manual') {
 function startScheduler(getBots) {
   botsGetter = getBots;
 
-  // Регистрируем обработчики задач VK
-  worker.registerJobHandler('vk_generate', handleVkGenerateJob);
-  worker.registerJobHandler('vk_publish', async (chatId, queueJob, bot, correlationId) => {
+  // Регистрируем обработчики задач OK
+  worker.registerJobHandler('ok_generate', handleOkGenerateJob);
+  worker.registerJobHandler('ok_publish', async (chatId, queueJob, bot, correlationId) => {
     const jobId = queueJob.job_id || queueJob.payload?.jobId;
     if (!jobId) return { success: false, error: 'No jobId', retry: false };
     try {
-      await publishVkPost(chatId, bot, jobId, correlationId);
+      await publishOkPost(chatId, bot, jobId, correlationId);
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message, retry: true };
     }
   });
 
-  // Планировщик VK (раз в минуту)
+  // Планировщик OK (раз в минуту)
   if (schedulerHandle) clearInterval(schedulerHandle);
   schedulerHandle = setInterval(async () => {
     try {
       const bots = getBots();
       for (const [chatId, entry] of bots.entries()) {
-        await tickVkSchedule(chatId, entry.bot);
+        await tickOkSchedule(chatId, entry.bot);
       }
     } catch (e) {
-      console.error('[VK-MVP-SCHEDULER]', e.message);
+      console.error('[OK-MVP-SCHEDULER]', e.message);
     }
   }, 60 * 1000);
 
-  console.log('[VK-MVP] Scheduler started');
+  console.log('[OK-MVP] Scheduler started');
 }
 
 function stopScheduler() {
@@ -766,7 +844,7 @@ function stopScheduler() {
     clearInterval(schedulerHandle);
     schedulerHandle = null;
   }
-  console.log('[VK-MVP] Scheduler stopped');
+  console.log('[OK-MVP] Scheduler stopped');
 }
 
 // ============================================
@@ -777,12 +855,13 @@ module.exports = {
   startScheduler,
   stopScheduler,
   runNow,
-  handleVkGenerateJob,
-  publishVkPost,
-  sendVkToModerator,
-  handleVkModerationAction,
-  tickVkSchedule,
-  getVkSettings,
-  listJobs: (chatId, opts) => vkRepo.listJobs(chatId, opts),
-  getJobById: (chatId, jobId) => vkRepo.getJobById(chatId, jobId)
+  handleOkGenerateJob,
+  publishOkPost,
+  sendOkToModerator,
+  handleOkModerationAction,
+  tickOkSchedule,
+  getOkSettings,
+  validateOkContent,
+  listJobs: (chatId, opts) => okRepo.listJobs(chatId, opts),
+  getJobById: (chatId, jobId) => okRepo.getJobById(chatId, jobId)
 };

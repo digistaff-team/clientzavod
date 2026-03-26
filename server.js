@@ -9,13 +9,59 @@ const storageService = require('./services/storage.service');
 const snapshotService = require('./services/snapshot.service');
 const contentMvpService = require('./services/contentMvp.service');
 const session = require('express-session');
+const FileStore = require('session-file-store')(session);
 
 const app = express();
+
+// Middleware для обработки admin_auth токена (должен быть ДО express.static!)
+app.use(async (req, res, next) => {
+    const { admin_auth, chatId } = req.query;
+
+    if (admin_auth && chatId) {
+        try {
+            const manageStore = require('./manage/store');
+            await manageStore.load();
+
+            const state = manageStore.getState(chatId);
+            if (state && state.adminAuthToken === admin_auth && state.adminAuthExpires > Date.now()) {
+                // Токен валиден - устанавливаем сессию
+                const session = await sessionService.getOrCreateSession(chatId);
+
+                // Устанавливаем chatId в сессию для последующего использования
+                if (req.session) {
+                    req.session.chatId = chatId;
+                    req.session.authorizedByAdmin = true;
+                }
+
+                // Очищаем токен после использования
+                state.adminAuthToken = null;
+                state.adminAuthExpires = null;
+
+                // Обновляем cache
+                const allStates = manageStore.getAllStates();
+                allStates[chatId] = state;
+                await manageStore.persist(chatId);
+
+                // Редирект на страницу авторизации с chatId для автовхода
+                return res.redirect('/auth.html?chat_id=' + encodeURIComponent(chatId));
+            }
+        } catch (e) {
+            console.error('[ADMIN_AUTH] Error:', e.message);
+        }
+    }
+    next();
+});
 
 // Middleware
 app.use(express.json({ limit: '100mb' }));
 app.use(express.static('public'));
 app.use(session({
+    store: new FileStore({
+        path: '/var/sandbox-data/.admin-sessions',
+        ttl: 86400, // 24 часа в секундах
+        retries: 0,
+        logFn: () => {} // отключить лишние логи
+    }),
     secret: process.env.SESSION_SECRET || 'docker-claw-admin-secret-key-change-in-production',
     resave: false,
     saveUninitialized: false,
@@ -25,45 +71,6 @@ app.use(session({
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
 }));
-
-// Middleware для обработки admin_auth токена
-app.use(async (req, res, next) => {
-    const { admin_auth, chatId } = req.query;
-    
-    if (admin_auth && chatId) {
-        try {
-            const manageStore = require('./manage/store');
-            await manageStore.load();
-            
-            const state = manageStore.getState(chatId);
-            if (state && state.adminAuthToken === admin_auth && state.adminAuthExpires > Date.now()) {
-                // Токен валиден - устанавливаем сессию
-                const session = await sessionService.getOrCreateSession(chatId);
-                
-                // Устанавливаем chatId в сессию для последующего использования
-                if (req.session) {
-                    req.session.chatId = chatId;
-                    req.session.authorizedByAdmin = true;
-                }
-                
-                // Очищаем токен после использования
-                state.adminAuthToken = null;
-                state.adminAuthExpires = null;
-                
-                // Обновляем cache
-                const allStates = manageStore.getAllStates();
-                allStates[chatId] = state;
-                await manageStore.persist(chatId);
-                
-                // Редирект на главную
-                return res.redirect('/');
-            }
-        } catch (e) {
-            console.error('[ADMIN_AUTH] Error:', e.message);
-        }
-    }
-    next();
-});
 
 // Sandbox Routes (без префикса /api)
 const sandboxRoutes = require('./routes/sandbox.routes');
@@ -82,15 +89,28 @@ async function startServer() {
     console.log('\n' + '='.repeat(60));
     console.log('🚀 AI BASH EXECUTOR v3 - MODULAR');
     console.log('='.repeat(60));
-    
+
     // Инициализация хранилища
     await storageService.initStorage();
-    
+
     // Инициализация снапшотов
     await snapshotService.initSnapshots();
-    
+
     // Восстановление существующих сессий
     await sessionService.recoverAllSessions();
+
+    // Инициализация MySQL для навыков (проверка и сидирование)
+    try {
+        const mysqlService = require('./services/mysql.service');
+        const isConnected = await mysqlService.checkConnection();
+        if (isConnected) {
+            console.log('[MYSQL] ✅ Connected and initialized');
+        } else {
+            console.warn('[MYSQL] ⚠️  Connection check failed, will retry on first use');
+        }
+    } catch (e) {
+        console.warn('[MYSQL] ⚠️  Initialization skipped:', e.message);
+    }
     
     // Управление: загрузка состояния и запуск Telegram-ботов
     const manageStore = require('./manage/store');
@@ -137,6 +157,10 @@ async function startServer() {
     // Запуск VK-планировщика
     const vkMvpService = require('./services/vkMvp.service');
     vkMvpService.startScheduler(() => telegramRunner.bots);
+
+    // Запуск OK-планировщика
+    const okMvpService = require('./services/okMvp.service');
+    okMvpService.startScheduler(() => telegramRunner.bots);
 
     // Подключение Webhook API
     const webhookRoutes = require('./routes/webhook.routes');
@@ -217,9 +241,11 @@ async function gracefulShutdown() {
         // ignore
     }
     
-    // Бэкап перед выключением
-    const chatIds = sessions.map(s => s.chatId);
-    await storageService.backupAllUsers(chatIds);
+    // Бэкап перед выключением (только не при перезапуске nodemon)
+    if (process.env.NODE_ENV !== 'development') {
+        const chatIds = sessions.map(s => s.chatId);
+        await storageService.backupAllUsers(chatIds);
+    }
     
     console.log('[SHUTDOWN] Goodbye!');
     process.exit(0);

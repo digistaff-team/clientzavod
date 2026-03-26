@@ -49,15 +49,160 @@ function startAuthBot(token) {
         ctx.reply('Произошла ошибка. Попробуйте позже.').catch(() => {});
     });
 
+    /**
+     * Обрабатывает процесс авторизации пользователя
+     */
+    async function handleAuthFlow(ctx, fromId, username, firstName) {
+        await ctx.answerCbQuery?.('Авторизация...').catch(() => {});
+
+        try {
+            // Вызываем API авторизации
+            const apiUrl = process.env.API_URL || 'https://claw.pro-talk.ru';
+            console.log(`[AUTH-BOT] Using API URL: ${apiUrl}`);
+
+            const response = await fetch(`${apiUrl}/api/auth/telegram-login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    telegram_id: fromId,
+                    username: username,
+                    first_name: firstName
+                })
+            });
+
+            console.log(`[AUTH-BOT] Response status: ${response.status}`);
+            const result = await response.json();
+            console.log(`[AUTH-BOT] Response:`, JSON.stringify(result));
+
+            // Удаляем стартовое сообщение с кнопкой после нажатия
+            try {
+                await ctx.deleteMessage();
+            } catch (e) {
+                try {
+                    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+                } catch (_) {
+                    // ignore
+                }
+            }
+
+            if (result.success) {
+                // Формируем приветственное сообщение
+                let welcomeMsg;
+                const keyboard = Markup.inlineKeyboard([
+                    [Markup.button.url('🚀 Открыть панель · 10 мин', result.redirectUrl)]
+                ]);
+
+                if (result.isNewUser) {
+                    // Новый пользователь — аккаунт создан
+                    welcomeMsg = `🎉 <b>Добро пожаловать${firstName ? ', ' + firstName : ''}!</b>\n\n`;
+                    welcomeMsg += `✅ Ваш аккаунт успешно создан!\n\n`;
+                    welcomeMsg += `<b>📝 Ваш Chat ID:</b> <code>${result.chatId}</code>\n\n`;
+                    welcomeMsg += `<b>Вам доступно:</b>\n`;
+                    welcomeMsg += `• 🐍 Python 3 с основными библиотеками\n`;
+                    welcomeMsg += `• 📦 Node.js + npm\n`;
+                    welcomeMsg += `• 🗄️ PostgreSQL база данных\n`;
+                    welcomeMsg += `• 📁 Персональное рабочее пространство\n\n`;
+                    welcomeMsg += `⏱ Вход по кнопке ниже доступен 10 минут.\n\n`;
+                    welcomeMsg += `<i>💡 Совет: подключите AI-ассистента в разделе "Каналы связи" для работы с кодом через чат.</i>`;
+                } else {
+                    // Существующий пользователь
+                    welcomeMsg = `✅ <b>С возвращением${firstName ? ', ' + (result.username || firstName) : ''}!</b>\n\n`;
+                    welcomeMsg += `Вы успешно вошли в свой аккаунт.\n\n`;
+                    welcomeMsg += `<b>📝 Ваш Chat ID:</b> <code>${result.chatId}</code>\n\n`;
+
+                    // Статус сервисов
+                    const services = [];
+                    if (result.hasAI) services.push('🤖 AI-ассистент');
+                    if (result.hasBot) services.push('🤖 Telegram бот');
+                    if (result.sessionActive) services.push('🐳 Docker контейнер');
+
+                    if (services.length > 0) {
+                        welcomeMsg += `<b>Активные сервисы:</b>\n`;
+                        services.forEach(s => welcomeMsg += `• ${s}\n`);
+                        welcomeMsg += `\n`;
+                    }
+
+                    welcomeMsg += `⏱ Кнопка входа действует 10 минут.\n`;
+                }
+
+                console.log(`[AUTH-BOT] Sending reply message to ${fromId}...`);
+
+                try {
+                    const sentMessage = await ctx.reply(welcomeMsg, {
+                        parse_mode: 'HTML',
+                        disable_web_page_preview: true,
+                        ...keyboard
+                    });
+                    scheduleMessageDeletion(bot, ctx.chat?.id, sentMessage?.message_id);
+                    console.log(`[AUTH-BOT] Reply sent successfully`);
+                } catch (replyErr) {
+                    console.error(`[AUTH-BOT] Reply error:`, replyErr);
+                }
+
+                console.log(`[AUTH-BOT] Login success for ${fromId}, chatId=${result.chatId}, isNew=${result.isNewUser || false}`);
+            } else {
+                // Ошибка авторизации
+                const errorMsg = result.error || 'Неизвестная ошибка';
+
+                let errMsg = `❌ <b>Ошибка авторизации</b>\n\n${errorMsg}\n\n`;
+
+                if (result.needRegister) {
+                    errMsg += `<i>Если это ваш первый вход, попробуйте ещё раз или обратитесь в поддержку.</i>`;
+                }
+
+                console.log(`[AUTH-BOT] Sending error reply to ${fromId}...`);
+                try {
+                    await ctx.reply(errMsg, {
+                        parse_mode: 'HTML'
+                    });
+                    console.log(`[AUTH-BOT] Error reply sent`);
+                } catch (replyErr) {
+                    console.error(`[AUTH-BOT] Error reply failed:`, replyErr);
+                }
+
+                console.error(`[AUTH-BOT] Login failed for ${fromId}:`, errorMsg);
+            }
+        } catch (e) {
+            const apiUrl = process.env.API_URL || 'https://claw.pro-talk.ru';
+            console.error('[AUTH-BOT] Login error:', e.message);
+            console.error('[AUTH-BOT] API URL:', apiUrl);
+            console.error('[AUTH-BOT] Full error:', e);
+
+            // Более подробное сообщение об ошибке для отладки
+            let errorMsg = '❌ Ошибка соединения с сервером. Попробуйте позже.';
+
+            if (e.code === 'ECONNREFUSED') {
+                errorMsg = '❌ Сервер недоступен. Убедитесь, что сервер запущен.';
+            } else if (e.code === 'ENOTFOUND') {
+                errorMsg = '❌ Неверный адрес сервера. Проверьте API_URL.';
+            } else if (e.message.includes('fetch')) {
+                errorMsg = `❌ Ошибка: ${e.message}`;
+            }
+
+            await ctx.reply(errorMsg).catch(() => {});
+        }
+    }
+
     // Команда /start - приветствие и кнопка входа
+    // Поддерживает deeplink: https://t.me/clientzavod_bot?start=auth
     bot.command('start', async (ctx) => {
         const fromId = ctx.from?.id;
         const username = ctx.from?.username ? `@${ctx.from.username}` : null;
         const firstName = ctx.from?.first_name || '';
         
-        console.log(`[AUTH-BOT] /start from ${fromId} (${username})`);
-        
-        // Формируем приветственное сообщение
+        // Получаем параметр startPayload (для deeplink ?start=auth)
+        const startPayload = ctx.startPayload || '';
+
+        console.log(`[AUTH-BOT] /start from ${fromId} (${username}), payload="${startPayload}"`);
+
+        // Если это deeplink с ?start=auth, сразу начинаем процесс авторизации
+        if (startPayload === 'auth') {
+            console.log(`[AUTH-BOT] Deeplink auth detected for ${fromId}`);
+            await handleAuthFlow(ctx, fromId, username, firstName);
+            return;
+        }
+
+        // Обычный /start без параметров - показываем приветствие
         let message = `👋 <b>Привет${firstName ? ', ' + firstName : ''}!</b>\n\n`;
         message += `Я — бот для авторизации на платформе <b>Контент Завод</b>.\n\n`;
         message += `🔐 Нажмите кнопку ниже, чтобы войти в свой аккаунт или создать новый.\n\n`;
@@ -67,10 +212,13 @@ function startAuthBot(token) {
             [Markup.button.callback('🔑 Войти в аккаунт', 'login_account')]
         ]);
 
-        await ctx.reply(message, {
+        const sentMessage = await ctx.reply(message, {
             parse_mode: 'HTML',
             ...keyboard
         });
+
+        // Удаляем сообщение через 10 минут
+        scheduleMessageDeletion(bot, ctx.chat?.id, sentMessage?.message_id);
     });
 
     // Команда /login - альтернативный вход
@@ -80,11 +228,14 @@ function startAuthBot(token) {
         
         console.log(`[AUTH-BOT] /login from ${fromId} (${username})`);
         
-        await ctx.reply('🔐 Нажмите кнопку для входа:', 
+        const sentMessage = await ctx.reply('🔐 Нажмите кнопку для входа:', 
             Markup.inlineKeyboard([
                 [Markup.button.callback('🔑 Войти в аккаунт', 'login_account')]
             ])
         );
+        
+        // Удаляем сообщение через 10 минут
+        scheduleMessageDeletion(bot, ctx.chat?.id, sentMessage?.message_id);
     });
 
     // Команда /help
@@ -105,7 +256,10 @@ function startAuthBot(token) {
         message += `• 🗄️ PostgreSQL база данных\n`;
         message += `• 🤖 AI-ассистент для работы с кодом`;
 
-        await ctx.reply(message, { parse_mode: 'HTML' });
+        const sentMessage = await ctx.reply(message, { parse_mode: 'HTML' });
+        
+        // Удаляем сообщение через 10 минут
+        scheduleMessageDeletion(bot, ctx.chat?.id, sentMessage?.message_id);
     });
 
     // Команда /id - показать Telegram ID пользователя

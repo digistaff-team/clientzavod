@@ -178,7 +178,11 @@
 <body>
     <div class="header">
         <h1>🐳 Docker Claw Admin</h1>
-        <button class="logout-btn" onclick="logout()">Logout</button>
+        <div style="display: flex; gap: 20px; align-items: center;">
+            <a href="/admin/containers" style="color: white; text-decoration: none; font-size: 14px;">📦 Контейнеры</a>
+            <a href="/admin/skills" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">🎯 Навыки</a>
+            <button class="logout-btn" onclick="logout()">Logout</button>
+        </div>
     </div>
 
     <div class="container">
@@ -196,13 +200,17 @@
         // Check authentication via API
         async function checkAuth() {
             try {
-                const res = await fetch('/admin/stats-api');
+                const res = await fetch('/admin/stats-api', { 
+                    credentials: 'include' // Важно для cookie сессии
+                });
                 if (!res.ok) {
+                    console.error('[ADMIN] Auth failed:', res.status);
                     window.location.href = '/admin/login';
                     return false;
                 }
                 return true;
             } catch (e) {
+                console.error('[ADMIN] Auth error:', e);
                 window.location.href = '/admin/login';
                 return false;
             }
@@ -212,19 +220,26 @@
             // First check auth
             const isAuth = await checkAuth();
             if (!isAuth) return;
-            
+
             try {
                 const [statsRes, containersRes] = await Promise.all([
-                    fetch('/admin/stats-api'),
-                    fetch('/admin/containers-api')
+                    fetch('/admin/stats-api', { credentials: 'include' }),
+                    fetch('/admin/containers-api', { credentials: 'include' })
                 ]);
 
-                if (!statsRes.ok || !containersRes.ok) {
-                    throw new Error('Failed to load data');
+                if (!statsRes.ok) {
+                    throw new Error(`Stats API error: ${statsRes.status}`);
+                }
+                
+                if (!containersRes.ok) {
+                    throw new Error(`Containers API error: ${containersRes.status}`);
                 }
 
                 const stats = await statsRes.json();
                 const data = await containersRes.json();
+                
+                console.log('[ADMIN] Stats:', stats);
+                console.log('[ADMIN] Containers:', data);
 
                 // Render stats
                 document.getElementById('stats').innerHTML = `
@@ -248,10 +263,15 @@
 
                 // Render containers table
                 const containers = data.containers || [];
+                console.log('[ADMIN] Container count:', containers.length);
+                
                 if (containers.length === 0) {
                     document.getElementById('content').innerHTML = `
                         <div class="empty-state">
                             <p>No containers found</p>
+                            <p style="margin-top: 10px; font-size: 14px; color: #999;">
+                                Check if Docker is running and containers exist
+                            </p>
                         </div>
                     `;
                     return;
@@ -293,15 +313,23 @@
                     </table>
                 `;
             } catch (err) {
+                console.error('[ADMIN] Load error:', err);
                 document.getElementById('content').innerHTML = `
                     <div class="error">Error: ${err.message}</div>
+                    <div style="margin-top: 10px; font-size: 12px;">
+                        <p>Make sure you are logged in as admin.</p>
+                        <p>Try to <a href="/admin/login">login again</a>.</p>
+                    </div>
                 `;
             }
         }
 
         async function startContainer(chatId) {
             if (!confirm(`Start container for user ${chatId}?`)) return;
-            await fetch(`/admin/container/${chatId}/start`, { method: 'POST' });
+            await fetch(`/admin/container/${chatId}/start`, { 
+                method: 'POST',
+                credentials: 'include'
+            });
             loadContainers();
         }
 
@@ -311,22 +339,22 @@
 
         async function authAsUser(chatId) {
             if (!confirm(`Authorize as user ${chatId}? This will log you in as this user and give you full access to their workspace.`)) return;
-            
+
             try {
                 const res = await fetch(`/admin/container/${chatId}/auth`, {
-                    method: 'POST'
+                    method: 'POST',
+                    credentials: 'include'
                 });
-                
+
                 const data = await res.json();
-                
-                if (data.success && data.redirectUrl) {
-                    // Открываем в новой вкладке для авторизации
-                    const newWindow = window.open(data.redirectUrl, '_blank');
-                    if (newWindow) {
-                        setTimeout(() => {
-                            alert(`Authorization successful! You are now logged in as user ${chatId}. Check the new tab.`);
-                        }, 1000);
-                    }
+
+                if (data.success && data.token) {
+                    // Сохраняем параметры авторизации в sessionStorage для восстановления после возврата
+                    sessionStorage.setItem('admin_auth_token', data.token);
+                    sessionStorage.setItem('admin_auth_chatId', chatId);
+                    
+                    // Редирект на главную страницу с токеном авторизации
+                    window.location.href = `/?admin_auth=${data.token}&chatId=${chatId}`;
                 } else {
                     alert('Authorization failed: ' + (data.error || 'Unknown error'));
                 }
@@ -337,19 +365,28 @@
 
         async function stopContainer(chatId) {
             if (!confirm(`Stop container for user ${chatId}?`)) return;
-            await fetch(`/admin/container/${chatId}/stop`, { method: 'POST' });
+            await fetch(`/admin/container/${chatId}/stop`, { 
+                method: 'POST',
+                credentials: 'include'
+            });
             loadContainers();
         }
 
         async function restartContainer(chatId) {
             if (!confirm(`Restart container for user ${chatId}?`)) return;
-            await fetch(`/admin/container/${chatId}/restart`, { method: 'POST' });
+            await fetch(`/admin/container/${chatId}/restart`, { 
+                method: 'POST',
+                credentials: 'include'
+            });
             loadContainers();
         }
 
         async function deleteContainer(chatId) {
             if (!confirm(`DELETE container for user ${chatId}? This cannot be undone!`)) return;
-            await fetch(`/admin/container/${chatId}`, { method: 'DELETE' });
+            await fetch(`/admin/container/${chatId}`, { 
+                method: 'DELETE',
+                credentials: 'include'
+            });
             loadContainers();
         }
 
@@ -357,7 +394,9 @@
             const lines = prompt('Number of log lines:', '100');
             if (lines) {
                 try {
-                    const res = await fetch(`/admin/container/${chatId}/logs?lines=${lines}`);
+                    const res = await fetch(`/admin/container/${chatId}/logs?lines=${lines}`, {
+                        credentials: 'include'
+                    });
                     const data = await res.json();
                     const logWindow = window.open('', '_blank');
                     logWindow.document.write(`
@@ -385,7 +424,10 @@
         }
 
         async function logout() {
-            await fetch('/admin/logout', { method: 'POST' });
+            await fetch('/admin/logout', { 
+                method: 'POST',
+                credentials: 'include'
+            });
             sessionStorage.removeItem('isAdminAuthenticated');
             window.location.href = '/admin/login';
         }

@@ -73,7 +73,6 @@ async function fetchJson(url, options = {}) {
 
 async function loadDashboard() {
     await Promise.all([
-        loadMetrics(),
         loadTopics(),
         loadMaterials(),
         loadProfile(),
@@ -81,29 +80,6 @@ async function loadDashboard() {
     ]);
 }
 
-
-async function runNow() {
-    const chatId = getChatId();
-    if (!chatId) return;
-    const btn = document.getElementById('runNowBtn');
-    if (btn) btn.disabled = true;
-    setApiStatus('Запуск генерации...', 'info');
-    try {
-        const data = await fetchJson(`${API_CONTENT}/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' })
-        });
-        showToast(data.message || 'Запуск выполнен', 'success');
-        setApiStatus(data.message || 'OK', 'ok');
-        await loadJobs();
-    } catch (e) {
-        showToast(e.message, 'error');
-        setApiStatus(e.message, 'error');
-    } finally {
-        if (btn) btn.disabled = false;
-    }
-}
 
 async function loadMetrics() {
     const chatId = getChatId();
@@ -146,7 +122,7 @@ function renderTopicsTable(items) {
     }
 
     body.innerHTML = items.map((item) => {
-        const isEditing = editingTopicId === item.id;
+        const isEditing = editingTopicId == item.id;
         return `
             <tr>
                 <td>${item.id}</td>

@@ -45,19 +45,23 @@ router.get('/login', (req, res) => {
 
 // POST /admin/login - проверка пароля
 router.post('/login', (req, res) => {
-    const { password } = req.body;
+    try {
+        const { password } = req.body || {};
 
-    if (!password) {
-        return res.status(400).json({ error: 'Password is required' });
-    }
-
-    if (password === process.env.ADMIN_PASSWORD) {
-        if (req.session) {
-            req.session.isAdmin = true;
+        if (!password) {
+            return res.status(400).json({ error: 'Password is required' });
         }
-        res.json({ success: true, message: 'Authenticated' });
-    } else {
-        res.status(401).json({ error: 'Invalid password' });
+
+        if (password === process.env.ADMIN_PASSWORD) {
+            if (req.session) {
+                req.session.isAdmin = true;
+            }
+            return res.json({ success: true, message: 'Authenticated' });
+        } else {
+            return res.status(401).json({ error: 'Invalid password' });
+        }
+    } catch (e) {
+        return res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -67,6 +71,12 @@ router.post('/logout', (req, res) => {
         req.session.isAdmin = false;
     }
     res.json({ success: true });
+});
+
+// GET /admin/check-auth - проверка статуса админа (для UI)
+router.get('/check-auth', (req, res) => {
+    const isAdmin = !!(req.session && req.session.isAdmin);
+    res.json({ isAdmin });
 });
 
 // GET /admin/containers - страница со списком контейнеров
@@ -117,32 +127,32 @@ router.get('/container/:chatId/manage', requireAdminAuth, (req, res) => {
 // POST /admin/container/:chatId/auth - создать сессию авторизации для пользователя
 router.post('/container/:chatId/auth', requireAdminAuth, async (req, res) => {
     const { chatId } = req.params;
-    
+
     try {
         // Получаем или создаём сессию для пользователя
         const session = await sessionService.getOrCreateSession(chatId);
-        
+
         // Генерируем токен для авторизации
         const authToken = require('crypto').randomBytes(32).toString('hex');
-        
+
         // Сохраняем токен в manage store для последующей проверки
         const manageStore = require('../manage/store');
         await manageStore.load();
-        
+
         // Получаем текущее состояние из cache
         const state = manageStore.getState(chatId) || {};
-        
+
         // Добавляем admin auth данные
         state.adminAuthToken = authToken;
         state.adminAuthExpires = Date.now() + (24 * 60 * 60 * 1000); // 24 часа
-        
+
         // Обновляем cache напрямую
         const allStates = manageStore.getAllStates();
         allStates[chatId] = state;
-        
+
         // Сохраняем через persist
         await manageStore.persist(chatId);
-        
+
         res.json({
             success: true,
             chatId,
@@ -369,9 +379,9 @@ router.get('/stats', requireAdminAuth, async (req, res) => {
         const containers = await dockerService.getAllUserContainers();
         const running = containers.filter(c => c.status === 'running').length;
         const stopped = containers.filter(c => c.status !== 'running').length;
-        
+
         const sessions = sessionService.getAllSessions();
-        
+
         res.json({
             totalContainers: containers.length,
             runningContainers: running,
@@ -386,6 +396,11 @@ router.get('/stats', requireAdminAuth, async (req, res) => {
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
+});
+
+// GET /admin/skills - страница управления навыками
+router.get('/skills', requireAdminAuth, (req, res) => {
+    res.sendFile(require('path').resolve(__dirname, '../public/admin/skills.html'));
 });
 
 module.exports = router;

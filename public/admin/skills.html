@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Управление навыками - Админ-панель</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+        }
+        .header {
+            background: #1a1a2e;
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            font-size: 20px;
+        }
+        .header-nav {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .header-nav a {
+            color: #aaa;
+            text-decoration: none;
+            font-size: 14px;
+            transition: color 0.3s;
+        }
+        .header-nav a:hover,
+        .header-nav a.active {
+            color: white;
+        }
+        .logout-btn {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .logout-btn:hover {
+            background: #c0392b;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        .content-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+        .content-header h2 {
+            font-size: 24px;
+            color: #333;
+        }
+        .filters {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .filters select,
+        .filters input {
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .filters select {
+            max-width: 200px;
+        }
+        .filters input {
+            max-width: 250px;
+            flex: 1;
+            min-width: 200px;
+        }
+        .skills-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        .skill-card {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            transition: all 0.2s;
+        }
+        .skill-card:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-color: #bbb;
+        }
+        .skill-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 12px;
+        }
+        .skill-card-title {
+            flex: 1;
+            margin: 0;
+            font-size: 16px;
+            color: #333;
+        }
+        .skill-card-actions {
+            display: flex;
+            gap: 6px;
+        }
+        .skill-card-actions button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px 8px;
+            font-size: 14px;
+            color: #667eea;
+            transition: color 0.2s;
+        }
+        .skill-card-actions button:hover {
+            color: #333;
+        }
+        .skill-card-actions .btn-delete:hover {
+            color: #e74c3c;
+        }
+        .skill-desc {
+            color: #666;
+            font-size: 13px;
+            margin-bottom: 12px;
+            line-height: 1.4;
+        }
+        .skill-meta {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 12px;
+            font-size: 12px;
+        }
+        .skill-meta-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .skill-meta-label {
+            color: #999;
+            font-weight: 500;
+            margin-bottom: 2px;
+        }
+        .skill-meta-value {
+            color: #333;
+            word-break: break-word;
+        }
+        .skill-meta-value code {
+            background: #f5f5f5;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        .skill-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+        .skill-tag {
+            background: #e9ecef;
+            color: #495057;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+        }
+        .skill-prompt-preview {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        .skill-prompt-preview strong {
+            display: block;
+            margin-bottom: 6px;
+        }
+        .skill-prompt-preview p {
+            color: #666;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 100px;
+            overflow-y: auto;
+            margin: 0;
+        }
+        .btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+        .empty-state p {
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            overflow-y: auto;
+            display: none;
+        }
+        .modal.active {
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 50px;
+        }
+        .modal-content {
+            background: white;
+            max-width: 700px;
+            width: 90%;
+            border-radius: 12px;
+            padding: 30px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .modal-header h3 {
+            margin: 0;
+        }
+        .modal-header button {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #999;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 500;
+            color: #333;
+        }
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .form-group textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+        .form-group small {
+            display: block;
+            color: #999;
+            margin-top: 4px;
+        }
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔧 Админ-панель Docker-Claw</h1>
+        <div class="header-nav">
+            <a href="/admin/containers">📦 Контейнеры</a>
+            <a href="/admin/skills" class="active">🎯 Навыки</a>
+            <button class="logout-btn" onclick="logout()">🚪 Выход</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="content-header">
+            <h2>🎯 Управление навыками</h2>
+            <button class="btn btn-primary" onclick="openAddSkillModal()">➕ Добавить навык</button>
+        </div>
+
+        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 16px; border-radius: 4px; margin-bottom: 20px;">
+            <strong>ℹ️ Информация:</strong> Управляйте всеми навыками в системе. Администратор может редактировать и удалять любые навыки.
+        </div>
+
+        <!-- Фильтры -->
+        <div class="filters">
+            <select id="filterCategory" onchange="filterSkills()">
+                <option value="">Все категории</option>
+                <option value="development">Разработка и код</option>
+                <option value="nodejs_dev">Node.js Разработка</option>
+                <option value="backend_automation">Backend автоматизация</option>
+                <option value="marketing_seo">Маркетинг и SEO</option>
+                <option value="sales_crm">Продажи и CRM</option>
+                <option value="ecommerce_tools">E-commerce инструменты</option>
+                <option value="data_analysis">Анализ данных</option>
+                <option value="office_docs">Обработка PDF и Office</option>
+                <option value="data_formats">Структурированные данные</option>
+                <option value="database">Работа с базами данных</option>
+                <option value="automation">Автоматизация и файлы</option>
+                <option value="tg_management">Управление Telegram</option>
+                <option value="email_automation">Email-автоматизация</option>
+                <option value="text_analysis">Текстовая аналитика</option>
+                <option value="management_hr">Управление и HR</option>
+                <option value="finance_legal">Финансы и право</option>
+                <option value="sysadmin">Системное администрирование</option>
+                <option value="alerts_reports">Уведомления и отчеты</option>
+                <option value="channel_security">Безопасность каналов</option>
+            </select>
+            <input type="text" id="searchSkills" placeholder="Поиск по названию..." onkeyup="filterSkills()" />
+        </div>
+
+        <!-- Сетка навыков -->
+        <div class="skills-grid" id="skillsGrid">
+            <div class="empty-state">
+                <p>Загрузка навыков...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно добавления/редактирования навыка -->
+    <div id="skillModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">➕ Добавить навык</h3>
+                <button onclick="closeSkillModal()">✕</button>
+            </div>
+
+            <form id="skillForm" onsubmit="saveSkill(event)">
+                <input type="hidden" id="skillId" value="" />
+
+                <div class="form-group">
+                    <label for="skillName">Название навыка *</label>
+                    <input type="text" id="skillName" required placeholder="Например: Python разработчик" />
+                </div>
+
+                <div class="form-group">
+                    <label for="skillSlug">Идентификатор (slug) *</label>
+                    <input type="text" id="skillSlug" required placeholder="Например: python-developer" pattern="[a-z0-9-]+" title="Только латинские буквы, цифры и дефис" />
+                    <small>Уникальный идентификатор на английском</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="skillCategory">Категория *</label>
+                    <select id="skillCategory" required>
+                        <option value="">Выберите категорию</option>
+                        <option value="development">Разработка и код</option>
+                        <option value="nodejs_dev">Node.js Разработка</option>
+                        <option value="backend_automation">Backend автоматизация</option>
+                        <option value="marketing_seo">Маркетинг и SEO</option>
+                        <option value="sales_crm">Продажи и CRM</option>
+                        <option value="ecommerce_tools">E-commerce инструменты</option>
+                        <option value="data_analysis">Анализ данных</option>
+                        <option value="office_docs">Обработка PDF и Office</option>
+                        <option value="data_formats">Структурированные данные</option>
+                        <option value="database">Работа с базами данных</option>
+                        <option value="automation">Автоматизация и файлы</option>
+                        <option value="tg_management">Управление Telegram</option>
+                        <option value="email_automation">Email-автоматизация</option>
+                        <option value="text_analysis">Текстовая аналитика</option>
+                        <option value="management_hr">Управление и HR</option>
+                        <option value="finance_legal">Финансы и право</option>
+                        <option value="sysadmin">Системное администрирование</option>
+                        <option value="alerts_reports">Уведомления и отчеты</option>
+                        <option value="channel_security">Безопасность каналов</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="skillShortDesc">Краткое описание</label>
+                    <input type="text" id="skillShortDesc" placeholder="Короткое описание" />
+                </div>
+
+                <div class="form-group">
+                    <label for="skillSystemPrompt">Системный промпт *</label>
+                    <textarea id="skillSystemPrompt" required placeholder="Инструкции для AI..."></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="skillExamples">Примеры (текстом)</label>
+                    <textarea id="skillExamples" placeholder="User: ...&#10;AI: ..."></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="skillTags">Теги (через запятую)</label>
+                    <input type="text" id="skillTags" placeholder="python, coding, backend" />
+                </div>
+
+                <div class="form-group">
+                    <label for="skillMetadata">Дополнительные настройки (JSON или текст)</label>
+                    <input type="text" id="skillMetadata" placeholder='{"preferred_dialect": "postgresql"}' />
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="skillIsPublic" />
+                        <strong>Публичный навык</strong>
+                    </label>
+                    <small>Публичные навыки видны всем пользователям. Личные — только владельцу.</small>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeSkillModal()">Отмена</button>
+                    <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_MANAGE = `${window.location.origin}/api/manage`;
+        let allSkills = [];
+
+        // === MySQL API ===
+        async function mysqlQuery(sql, params = []) {
+            const response = await fetch(`${API_MANAGE}/mysql/query`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sql, params })
+            });
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(`MySQL API error: ${response.status} - ${error}`);
+            }
+
+            const result = await response.json();
+            if (result.error) throw new Error(result.error);
+            return result;
+        }
+
+        // === Работа с навыками ===
+        async function loadSkills() {
+            try {
+                const result = await mysqlQuery(
+                    `SELECT * FROM ai_skills WHERE is_active = 1 ORDER BY usage_count DESC, name ASC`
+                );
+                allSkills = result.data || [];
+                renderSkills();
+            } catch (e) {
+                console.error('loadSkills error:', e);
+                document.getElementById('skillsGrid').innerHTML = `
+                    <div class="empty-state">
+                        <p style="color: #e74c3c;">Ошибка загрузки навыков: ${e.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function filterSkills() {
+            const filterCategory = document.getElementById('filterCategory').value;
+            const searchText = document.getElementById('searchSkills').value.toLowerCase();
+
+            let filtered = allSkills;
+            if (filterCategory) {
+                filtered = filtered.filter(s => s.category_slug === filterCategory);
+            }
+            if (searchText) {
+                filtered = filtered.filter(s =>
+                    s.name.toLowerCase().includes(searchText) ||
+                    (s.short_desc && s.short_desc.toLowerCase().includes(searchText)) ||
+                    (s.tags && s.tags.toLowerCase().includes(searchText))
+                );
+            }
+
+            renderSkillsFiltered(filtered);
+        }
+
+        function renderSkills() {
+            renderSkillsFiltered(allSkills);
+        }
+
+        function renderSkillsFiltered(skills) {
+            const grid = document.getElementById('skillsGrid');
+
+            if (skills.length === 0) {
+                grid.innerHTML = `
+                    <div class="empty-state">
+                        <p>Навыки не найдены. Попробуйте изменить фильтры.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            skills.forEach(skill => {
+                html += renderSkillCard(skill);
+            });
+            grid.innerHTML = html;
+        }
+
+        function renderSkillCard(skill) {
+            return `
+                <div class="skill-card">
+                    <div class="skill-card-header">
+                        <h4 class="skill-card-title">${escapeHtml(skill.name)}</h4>
+                        <div class="skill-card-actions">
+                            <button onclick="editSkill(${skill.id})" title="Редактировать">✏️</button>
+                            <button onclick="deleteSkill(${skill.id})" class="btn-delete" title="Удалить">🗑️</button>
+                        </div>
+                    </div>
+                    <p class="skill-desc">${escapeHtml(skill.short_desc || 'Нет описания')}</p>
+
+                    <div class="skill-meta">
+                        <div class="skill-meta-item">
+                            <span class="skill-meta-label">Категория:</span>
+                            <span class="skill-meta-value">${escapeHtml(skill.category_name)}</span>
+                        </div>
+                        <div class="skill-meta-item">
+                            <span class="skill-meta-label">Slug:</span>
+                            <span class="skill-meta-value"><code>${escapeHtml(skill.slug)}</code></span>
+                        </div>
+                        <div class="skill-meta-item">
+                            <span class="skill-meta-label">Использований:</span>
+                            <span class="skill-meta-value">${skill.usage_count || 0}</span>
+                        </div>
+                        <div class="skill-meta-item">
+                            <span class="skill-meta-label">Владелец:</span>
+                            <span class="skill-meta-value">${escapeHtml(skill.user_email || 'система')}</span>
+                        </div>
+                    </div>
+
+                    <div class="skill-tags">
+                        ${(skill.tags || '').split(',').filter(t => t.trim()).map(tag =>
+                            `<span class="skill-tag">${escapeHtml(tag.trim())}</span>`
+                        ).join('')}
+                    </div>
+
+                    ${skill.system_prompt ? `
+                    <div class="skill-prompt-preview">
+                        <strong>Системный промпт:</strong>
+                        <p>${escapeHtml(skill.system_prompt.substring(0, 200))}${skill.system_prompt.length > 200 ? '...' : ''}</p>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // === Модали ===
+        function openAddSkillModal() {
+            document.getElementById('skillId').value = '';
+            document.getElementById('skillForm').reset();
+            document.getElementById('modalTitle').textContent = '➕ Добавить навык';
+            document.getElementById('skillModal').classList.add('active');
+        }
+
+        function closeSkillModal() {
+            document.getElementById('skillModal').classList.remove('active');
+        }
+
+        async function editSkill(skillId) {
+            const skill = allSkills.find(s => s.id === skillId);
+            if (!skill) return;
+
+            document.getElementById('skillId').value = skill.id;
+            document.getElementById('skillName').value = skill.name;
+            document.getElementById('skillSlug').value = skill.slug;
+            document.getElementById('skillCategory').value = skill.category_slug;
+            document.getElementById('skillShortDesc').value = skill.short_desc || '';
+            document.getElementById('skillSystemPrompt').value = skill.system_prompt || '';
+            document.getElementById('skillExamples').value = skill.examples_text || '';
+            document.getElementById('skillTags').value = skill.tags || '';
+            document.getElementById('skillMetadata').value = skill.metadata_text || '';
+            document.getElementById('skillIsPublic').checked = skill.is_public === 1;
+
+            document.getElementById('modalTitle').textContent = '✏️ Редактировать навык';
+            document.getElementById('skillModal').classList.add('active');
+        }
+
+        async function saveSkill(event) {
+            event.preventDefault();
+
+            const id = document.getElementById('skillId').value;
+            const name = document.getElementById('skillName').value;
+            const slug = document.getElementById('skillSlug').value;
+            const category = document.getElementById('skillCategory').value;
+            const shortDesc = document.getElementById('skillShortDesc').value;
+            const systemPrompt = document.getElementById('skillSystemPrompt').value;
+            const examples = document.getElementById('skillExamples').value;
+            const tags = document.getElementById('skillTags').value;
+            const metadata = document.getElementById('skillMetadata').value;
+            const isPublic = document.getElementById('skillIsPublic').checked ? 1 : 0;
+
+            // Получаем категорию и имя
+            const categoryEl = document.getElementById('skillCategory');
+            const categoryName = categoryEl.options[categoryEl.selectedIndex].text;
+
+            try {
+                if (id) {
+                    // UPDATE
+                    await mysqlQuery(
+                        `UPDATE ai_skills SET name = %s, slug = %s, category_slug = %s, category_name = %s,
+                         short_desc = %s, system_prompt = %s, examples_text = %s, tags = %s,
+                         metadata_text = %s, is_public = %s, updated_at = NOW() WHERE id = %s`,
+                        [name, slug, category, categoryName, shortDesc, systemPrompt, examples, tags, metadata, isPublic, id]
+                    );
+                } else {
+                    // INSERT
+                    const userEmail = 'system';
+                    await mysqlQuery(
+                        `INSERT INTO ai_skills (user_email, name, slug, category_slug, category_name, short_desc,
+                         system_prompt, examples_text, tags, metadata_text, is_public, is_active, usage_count, created_at, updated_at)
+                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, 0, NOW(), NOW())`,
+                        [userEmail, name, slug, category, categoryName, shortDesc, systemPrompt, examples, tags, metadata, isPublic]
+                    );
+                }
+
+                closeSkillModal();
+                await loadSkills();
+            } catch (e) {
+                alert(`Ошибка сохранения навыка: ${e.message}`);
+            }
+        }
+
+        async function deleteSkill(skillId) {
+            if (!confirm('Удалить этот навык? Это действие необратимо.')) return;
+
+            try {
+                await mysqlQuery(`DELETE FROM ai_skills WHERE id = %s`, [skillId]);
+                await loadSkills();
+            } catch (e) {
+                alert(`Ошибка удаления навыка: ${e.message}`);
+            }
+        }
+
+        async function logout() {
+            try {
+                await fetch('/admin/logout', { method: 'POST' });
+                window.location.href = '/admin/login';
+            } catch (e) {
+                console.error('Logout error:', e);
+            }
+        }
+
+        // Инициализация при загрузке
+        window.addEventListener('load', () => {
+            loadSkills();
+        });
+    </script>
+</body>
+</html>

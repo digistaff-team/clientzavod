@@ -74,23 +74,29 @@ async function getContainerStatus(containerId) {
 async function getAllUserContainers() {
     try {
         // Сначала получаем список ID контейнеров через -q (только ID, без format)
+        console.log('[DOCKER] Getting user containers...');
         const psRes = await execDocker(['ps', '-a', '--filter', 'name=sandbox-user-', '-q']);
-        const containerIds = (psRes.stdout || '').trim().split('\n').filter(Boolean);
+        console.log('[DOCKER] ps stdout:', psRes.stdout?.substring(0, 200));
+        console.log('[DOCKER] ps stderr:', psRes.stderr?.substring(0, 200));
         
+        const containerIds = (psRes.stdout || '').trim().split('\n').filter(Boolean);
+        console.log('[DOCKER] Found container IDs:', containerIds.length);
+
         const containers = [];
         for (const containerId of containerIds) {
             if (!containerId) continue;
-            
+
             // Получаем JSON информацию о контейнере
             const inspectRes = await execDocker(['inspect', containerId]);
             const inspectData = JSON.parse(inspectRes.stdout || '[]');
-            
+
             if (inspectData && inspectData[0]) {
                 const data = inspectData[0];
                 const name = data.Name || '';
                 const state = data.State || {};
-                
-                const chatId = name.replace('/sandbox-user-', '');
+                const labels = data.Config?.Labels || {};
+
+                const chatId = labels.chat_id || name.replace('/sandbox-user-', '');
                 containers.push({
                     containerId: containerId,
                     containerName: name.replace('/', ''),
@@ -101,10 +107,33 @@ async function getAllUserContainers() {
                 });
             }
         }
+        console.log('[DOCKER] Returning', containers.length, 'containers');
         return containers;
     } catch (e) {
         console.error('[DOCKER] Failed to get user containers:', e.message);
-        return [];
+        console.error('[DOCKER] Error details:', e);
+        
+        // Fallback: получаем контейнеры из активных сессий
+        try {
+            const sessionService = require('./session.service');
+            const sessions = sessionService.getAllSessions();
+            console.log('[DOCKER] Fallback: got', sessions.length, 'sessions');
+            
+            const containers = sessions.map(s => ({
+                containerId: s.containerId || 'unknown',
+                containerName: `sandbox-user-${s.chatId}`,
+                chatId: s.chatId,
+                status: s.containerId ? 'running' : 'stopped',
+                rawStatus: s.containerId ? 'running' : 'exited',
+                uptime: s.containerId ? 'up' : null
+            }));
+            
+            console.log('[DOCKER] Fallback: returning', containers.length, 'containers from sessions');
+            return containers;
+        } catch (fallbackErr) {
+            console.error('[DOCKER] Fallback also failed:', fallbackErr.message);
+            return [];
+        }
     }
 }
 

@@ -1,50 +1,77 @@
 const sessionService = require('../services/session.service');
 const dockerService = require('../services/docker.service');
+const mysqlService = require('../services/mysql.service');
+const manageStore = require('./store');
 
 const PERSONA_FILES = ['IDENTITY.md', 'SOUL.md', 'USER.md', 'MEMORY.md'];
-
-// MySQL API для получения навыков
-const MYSQL_API_URL = 'https://ai.memory.api.atiks.org/mysql_full_proxy_api';
-const MYSQL_API_KEY = 'mysql-VTJGc2RHVmtYMS9PQ09iSlgycDZrRWVWVWt5bWR1azQ4bkVqK0JkeXlvSjhpMGg0UW1YSUFlbjRycmM3ZWIzZmkxOVZ1bDNQZ2NITVVtZE9iWGp2R0FiSFRUKzU3YjJEdzMvKzRoR0VaM0htNWtsM2pCOU5rK29VcElGZHRFaXpaa0N5UGVmN2hwdk9aeWdZMkIrcnNCVnRpdWFyaDV1RXVFSFpTK2JJM0hZeHBwZ2dEUGgrQ0pJV3Biem9RdHBGQlhOZ0hkbXhkZDRHSCtXUkpUTnQxYjI5T3VuQklVbUJPdE91Z1VYdm02K2lsL3lHSUpacCtSOWlzQ0xBcktLUQ==';
 
 /**
  * Загружает выбранные навыки пользователя из MySQL
  */
 async function getUserSkills(userEmail) {
     if (!userEmail) return [];
-    
+
     try {
-        const fetch = require('node-fetch');
-        const response = await fetch(MYSQL_API_URL, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${MYSQL_API_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                sql: `SELECT s.* FROM ai_skills s 
-                      INNER JOIN user_selected_skills us ON s.id = us.skill_id 
-                      WHERE us.user_email = %s AND s.is_active = 1`,
-                params: [userEmail]
-            })
-        });
-        
-        if (!response.ok) {
-            console.error('[SKILLS-LOAD-ERROR]', response.status);
-            return [];
-        }
-        
-        const result = await response.json();
-        if (result.error) {
-            console.error('[SKILLS-LOAD-ERROR]', result.error);
-            return [];
-        }
-        
-        console.log('[SKILLS-LOAD-OK]', userEmail, 'found:', (result.data || []).length, 'skills');
-        return result.data || [];
+        const skills = await mysqlService.getUserSkills(userEmail);
+        console.log('[SKILLS-LOAD-OK]', userEmail, 'found:', skills.length, 'skills');
+        return skills;
     } catch (e) {
         console.error('[SKILLS-LOAD-ERROR]', e.message);
         return [];
+    }
+}
+
+/**
+ * Проверяет, подключён ли канал OK (Одноклассники)
+ * @param {string} chatId - ID чата
+ * @returns {boolean}
+ */
+function isOkChannelActive(chatId) {
+    const okConfig = manageStore.getOkConfig(chatId);
+    return !!(okConfig?.is_active && okConfig?.group_id && okConfig?.access_token);
+}
+
+/**
+ * Проверяет, подключён ли канал VK (ВКонтакте)
+ * @param {string} chatId - ID чата
+ * @returns {boolean}
+ */
+function isVkChannelActive(chatId) {
+    const vkConfig = manageStore.getVkConfig(chatId);
+    return !!(vkConfig?.is_active && vkConfig?.group_id && vkConfig?.access_token);
+}
+
+/**
+ * Получает навык "Копирайтер для Одноклассников" автоматически
+ * @returns {Promise<Object|null>}
+ */
+async function getAutoOkCopywriterSkill() {
+    try {
+        const skill = await mysqlService.getSkillBySlug('ok-copywriter');
+        if (skill) {
+            console.log('[AUTO-SKILL-OK] Found OK copywriter skill:', skill.name);
+        }
+        return skill || null;
+    } catch (e) {
+        console.error('[AUTO-SKILL-OK] Error:', e.message);
+        return null;
+    }
+}
+
+/**
+ * Получает навык "Копирайтер для ВКонтакте" автоматически
+ * @returns {Promise<Object|null>}
+ */
+async function getAutoVkCopywriterSkill() {
+    try {
+        const skill = await mysqlService.getSkillBySlug('vk-copywriter');
+        if (skill) {
+            console.log('[AUTO-SKILL-VK] Found VK copywriter skill:', skill.name);
+        }
+        return skill || null;
+    } catch (e) {
+        console.error('[AUTO-SKILL-VK] Error:', e.message);
+        return null;
     }
 }
 
@@ -56,9 +83,8 @@ async function buildContext(chatId) {
     if (!session) return 'Сессия не найдена. Создайте сессию в панели.';
 
     const parts = [];
-    const manageStore = require('./store');
     const projectCacheService = require('../services/projectCache.service');
-    
+
     // Получаем настройки контекста
     const settings = manageStore.getContextSettings(chatId);
 
@@ -118,7 +144,6 @@ async function getPersonaSummary(chatId) {
     const session = sessionService.getSession(chatId);
     if (!session) return '';
 
-    const manageStore = require('./store');
     const settings = manageStore.getContextSettings(chatId);
 
     const lines = [];
@@ -232,14 +257,32 @@ async function verifyAppsRegistry(chatId) {
 async function buildFullContextStructured(chatId) {
     const ctx = await buildContext(chatId);
     const persona = await getPersonaSummary(chatId);
-    
+
     // Получаем email пользователя для загрузки навыков
     const manageStore = require('./store');
     const data = manageStore.getState(chatId);
     const userEmail = data && data.aiUserEmail ? data.aiUserEmail : null;
-    
+
     // Загружаем навыки пользователя
     const skills = await getUserSkills(userEmail);
+
+    // === АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ НАВЫКА ПРИ АКТИВНОМ КАНАЛЕ OK ===
+    if (isOkChannelActive(chatId)) {
+        const okSkill = await getAutoOkCopywriterSkill();
+        if (okSkill && !skills.find(s => s.slug === 'ok-copywriter')) {
+            skills.push(okSkill);
+            console.log('[AUTO-SKILL-OK] Added OK copywriter skill for chat:', chatId);
+        }
+    }
+
+    // === АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ НАВЫКА ПРИ АКТИВНОМ КАНАЛЕ VK ===
+    if (isVkChannelActive(chatId)) {
+        const vkSkill = await getAutoVkCopywriterSkill();
+        if (vkSkill && !skills.find(s => s.slug === 'vk-copywriter')) {
+            skills.push(vkSkill);
+            console.log('[AUTO-SKILL-VK] Added VK copywriter skill for chat:', chatId);
+        }
+    }
 
     // Получаем информацию о персональной базе данных из сессии
     const session = sessionService.getSession(chatId);
@@ -253,7 +296,7 @@ async function buildFullContextStructured(chatId) {
 
     // Проверяем наличие webhook_handler.js в контейнере
     const webhookHandlerExists = await checkWebhookHandlerExists(chatId);
-    
+
     // === АВТОМАТИЧЕСКОЕ ВОЗОБНОВЛЕНИЕ ПЛАНОВ ===
     // Загружаем активные планы из planService
     let activePlans = [];
@@ -263,15 +306,15 @@ async function buildFullContextStructured(chatId) {
     } catch (e) {
         console.warn('[CONTEXT] Failed to load active plans:', e.message);
     }
-    
+
     // Загружаем последние резюме сессий для пространственной памяти
     const sessionSummaries = manageStore.getSessionSummaries(chatId, 3);
-    
+
     return {
         chatId: chatId,                              // ID чата для формирования ссылок
         environmentContext: ctx,                    // Последние команды, файлы
         persona: persona,                            // Файлы персонализации
-        skills: skills,                              // Активные навыки
+        skills: skills,                              // Активные навыки (включая авто-OK)
         database: database,                          // Персональная PostgreSQL БД
         aiAuthToken: data?.aiAuthToken || null,      // Токен для вызова собственного вебхука из приложений
         apps: apps,                                  // Реестр созданных Node.js-приложений

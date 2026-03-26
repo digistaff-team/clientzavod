@@ -13,6 +13,7 @@ const { enqueue } = require('../agentQueue');
 const contentMvpService = require('../../services/contentMvp.service');
 const pinterestMvpService = require('../../services/pinterestMvp.service');
 const vkMvpService = require('../../services/vkMvp.service');
+const okMvpService = require('../../services/okMvp.service');
 
 const bots = new Map(); // chatId -> { bot, token }
 const LOGIN_LINK_MESSAGE_TTL_MS = 10 * 60 * 1000;
@@ -853,12 +854,16 @@ function startBot(chatId, token) {
     // Обработчик загрузки файлов
     bot.action(/^content:(\d+):(approve|regen_text|regen_image|regen_video|reject)$/, async (ctx) => {
         const fromId = String(ctx.from?.id || '');
+        const tgChatId = String(ctx.chat?.id || '');
         const settings = contentMvpService.getContentSettings
             ? contentMvpService.getContentSettings(chatId)
             : {};
         const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
-        const allowedIds = new Set([String(chatId), moderatorId].filter(Boolean));
+        const data = manageStore.getState(chatId);
+        const verifiedTgId = data?.verifiedTelegramId ? String(data.verifiedTelegramId) : null;
+        const allowedIds = new Set([String(chatId), moderatorId, tgChatId, verifiedTgId].filter(Boolean));
         if (!allowedIds.has(fromId)) {
+            console.log(`[CONTENT-MOD] Access denied: fromId=${fromId}, chatId=${chatId}, moderatorId=${moderatorId}, tgChatId=${tgChatId}, verifiedTgId=${verifiedTgId}`);
             await ctx.answerCbQuery('Недостаточно прав', { show_alert: true }).catch(() => {});
             return;
         }
@@ -883,12 +888,16 @@ function startBot(chatId, token) {
     // Pinterest moderation callbacks
     bot.action(/^pin_mod:(\d+):(approve|reject|regen_text|regen_image)$/, async (ctx) => {
         const fromId = String(ctx.from?.id || '');
+        const tgChatId = String(ctx.chat?.id || '');
         const settings = contentMvpService.getContentSettings
             ? contentMvpService.getContentSettings(chatId)
             : {};
         const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
-        const allowedIds = new Set([String(chatId), moderatorId].filter(Boolean));
+        const data = manageStore.getState(chatId);
+        const verifiedTgId = data?.verifiedTelegramId ? String(data.verifiedTelegramId) : null;
+        const allowedIds = new Set([String(chatId), moderatorId, tgChatId, verifiedTgId].filter(Boolean));
         if (!allowedIds.has(fromId)) {
+            console.log(`[PIN-MOD] Access denied: fromId=${fromId}, chatId=${chatId}, moderatorId=${moderatorId}, tgChatId=${tgChatId}, verifiedTgId=${verifiedTgId}`);
             await ctx.answerCbQuery('Недостаточно прав', { show_alert: true }).catch(() => {});
             return;
         }
@@ -913,12 +922,16 @@ function startBot(chatId, token) {
     // VK moderation callbacks
     bot.action(/^vk_mod:(\d+):(approve|reject|regen_text|regen_image)$/, async (ctx) => {
         const fromId = String(ctx.from?.id || '');
+        const tgChatId = String(ctx.chat?.id || '');
         const settings = contentMvpService.getContentSettings
             ? contentMvpService.getContentSettings(chatId)
             : {};
         const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
-        const allowedIds = new Set([String(chatId), moderatorId].filter(Boolean));
+        const data = manageStore.getState(chatId);
+        const verifiedTgId = data?.verifiedTelegramId ? String(data.verifiedTelegramId) : null;
+        const allowedIds = new Set([String(chatId), moderatorId, tgChatId, verifiedTgId].filter(Boolean));
         if (!allowedIds.has(fromId)) {
+            console.log(`[VK-MOD] Access denied: fromId=${fromId}, chatId=${chatId}, moderatorId=${moderatorId}, tgChatId=${tgChatId}, verifiedTgId=${verifiedTgId}`);
             await ctx.answerCbQuery('Недостаточно прав', { show_alert: true }).catch(() => {});
             return;
         }
@@ -937,6 +950,38 @@ function startBot(chatId, token) {
         } catch (e) {
             await ctx.answerCbQuery('Ошибка').catch(() => {});
             await ctx.reply(`Ошибка модерации VK: ${e.message}`);
+        }
+    });
+
+    // OK moderation callbacks
+    bot.action(/^ok_mod:(\d+):(approve|reject|regen_text|regen_image)$/, async (ctx) => {
+        const fromId = String(ctx.from?.id || '');
+        const tgChatId = String(ctx.chat?.id || '');
+        const settings = contentMvpService.getContentSettings
+            ? contentMvpService.getContentSettings(chatId)
+            : {};
+        const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+        const allowedIds = new Set([String(chatId), moderatorId, tgChatId].filter(Boolean));
+        if (!allowedIds.has(fromId)) {
+            console.log(`[OK-MOD] Access denied: fromId=${fromId}, chatId=${chatId}, moderatorId=${moderatorId}, tgChatId=${tgChatId}`);
+            await ctx.answerCbQuery('Недостаточно прав', { show_alert: true }).catch(() => {});
+            return;
+        }
+
+        const [, jobIdRaw, action] = ctx.match || [];
+        const jobId = Number(jobIdRaw);
+        if (!Number.isFinite(jobId)) {
+            await ctx.answerCbQuery('Некорректный ID').catch(() => {});
+            return;
+        }
+
+        try {
+            const result = await okMvpService.handleOkModerationAction(chatId, { telegram: ctx.telegram }, jobId, action);
+            await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
+            await ctx.reply(result?.message || 'Операция выполнена.');
+        } catch (e) {
+            await ctx.answerCbQuery('Ошибка').catch(() => {});
+            await ctx.reply(`Ошибка модерации ОК: ${e.message}`);
         }
     });
 

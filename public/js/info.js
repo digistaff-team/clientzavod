@@ -1,83 +1,27 @@
 const API_MANAGE = `${window.location.origin}/api/manage`;
 
 async function onLoginSuccess() {
+    await loadMetrics();
     await loadSessionInfo();
-    await loadTelegramProfile();
     await loadConfigPath();
     await loadAIRouterLogs();
 }
 
-async function loadTelegramProfile() {
+async function loadMetrics() {
     const chatId = getChatId();
     if (!chatId) return;
-    
     try {
-        const res = await fetch(`${API_MANAGE}/telegram/status?chat_id=${encodeURIComponent(chatId)}`);
-        const data = await res.json();
-        
-        const blockEl = document.getElementById('telegramProfileBlock');
-        const infoEl = document.getElementById('telegramProfileInfo');
-        
-        if (!blockEl || !infoEl) return;
-        
-        // Показываем блок только если есть данные о пользователе
-        if (data.verified && (data.username || data.firstName)) {
-            blockEl.style.display = 'block';
-            
-            // Формируем строку вида "@username FirstName SurName"
-            const parts = [];
-            if (data.username) {
-                // Добавляем @ если нет
-                parts.push(data.username.startsWith('@') ? data.username : '@' + data.username);
-            }
-            if (data.firstName) {
-                parts.push(data.firstName);
-            }
-            if (data.lastName) {
-                parts.push(data.lastName);
-            }
-            
-            infoEl.textContent = parts.join(' ') || 'Профиль не найден';
-        } else {
-            // Пробуем загрузить через admin API
-            await loadTelegramProfileAdmin(chatId, blockEl, infoEl);
-        }
+        const data = await fetchJson(`${API_CONTENT}/metrics?chat_id=${encodeURIComponent(chatId)}`);
+        const w24 = data?.windows?.last24h || {};
+        const w7 = data?.windows?.last7d || {};
+        document.getElementById('metricPublished24h').textContent = w24.published ?? '-';
+        document.getElementById('metricFailed24h').textContent = w24.failed ?? '-';
+        document.getElementById('metricPublished7d').textContent = w7.published ?? '-';
+        document.getElementById('metricSuccess24h').textContent = w24.success_rate == null
+            ? '-'
+            : `${Math.round(Number(w24.success_rate) * 100)}%`;
     } catch (e) {
-        console.error('loadTelegramProfile error:', e);
-    }
-}
-
-async function loadTelegramProfileAdmin(chatId, blockEl, infoEl) {
-    try {
-        const ADMIN_PASSWORD = '8092697980'; // Можно вынести в настройки
-        const res = await fetch(
-            `${API_MANAGE}/telegram/user-info?chat_id=${encodeURIComponent(chatId)}&admin_password=${ADMIN_PASSWORD}`
-        );
-        const data = await res.json();
-        
-        if (data.success && (data.username || data.firstName)) {
-            blockEl.style.display = 'block';
-            
-            // Формируем строку вида "@username FirstName SurName"
-            const parts = [];
-            if (data.username) {
-                parts.push(data.username.startsWith('@') ? data.username : '@' + data.username);
-            }
-            if (data.firstName) {
-                parts.push(data.firstName);
-            }
-            if (data.lastName) {
-                parts.push(data.lastName);
-            }
-            
-            const source = data.fromCache ? '(из кэша)' : '(из Telegram)';
-            infoEl.textContent = `${parts.join(' ')} ${source}`;
-        } else {
-            blockEl.style.display = 'none';
-        }
-    } catch (e) {
-        console.error('loadTelegramProfileAdmin error:', e);
-        blockEl.style.display = 'none';
+        console.error('loadMetrics error:', e);
     }
 }
 
@@ -96,6 +40,26 @@ async function loadConfigPath() {
     }
 }
 
+async function getTelegramUsername(chatId) {
+    try {
+        const ADMIN_PASSWORD = '8092697980';
+        const res = await fetch(
+            `${API_MANAGE}/telegram/user-info?chat_id=${encodeURIComponent(chatId)}&admin_password=${ADMIN_PASSWORD}`
+        );
+        const data = await res.json();
+        
+        if (data.success && data.username) {
+            // Убираем @ в начале если есть
+            const username = data.username.replace(/^@/, '');
+            // Возвращаем HTML с кликабельной ссылкой
+            return ` <a href="https://t.me/${username}" target="_blank" style="color: #1976D2; text-decoration: none;">@${username}</a>`;
+        }
+    } catch (e) {
+        console.error('getTelegramUsername error:', e);
+    }
+    return '';
+}
+
 async function loadSessionInfo() {
     const chatId = getChatId();
     if (!chatId) return;
@@ -105,8 +69,11 @@ async function loadSessionInfo() {
         const response = await fetch(`${API_URL}/session/${chatId}`);
         const data = await response.json();
         if (data.exists) {
+            // Загружаем Telegram username через API
+            const username = await getTelegramUsername(chatId);
+            
             el.innerHTML = `
-                <div><strong>Chat ID:</strong> ${data.chat_id}</div>
+                <div><strong>Chat ID:</strong> ${data.chat_id}${username}</div>
                 <div><strong>Session ID:</strong> ${data.sessionId}</div>
                 <div><strong>Container ID:</strong> ${data.containerId}</div>
                 <div><strong>Создана:</strong> ${new Date(data.created).toLocaleString('ru-RU')}</div>
@@ -121,8 +88,8 @@ async function loadSessionInfo() {
 }
 
 async function refreshAll() {
+    await loadMetrics();
     await loadSessionInfo();
-    await loadTelegramProfile();
     await loadConfigPath();
     showToast('Обновлено', 'success');
 }
@@ -169,38 +136,38 @@ async function destroySession() {
 async function loadAIRouterLogs() {
     const chatId = getChatId();
     if (!chatId) return;
-    
+
     const statsEl = document.getElementById('aiRouterStats');
     const logsEl = document.getElementById('aiRouterLogs');
     if (!logsEl) return;
-    
+
     try {
         const res = await fetch(`${API_MANAGE}/ai/router-logs?chat_id=${encodeURIComponent(chatId)}`);
         const data = await res.json();
-        
+
         // Обновляем статистику
         if (statsEl && data.stats) {
             const s = data.stats;
             statsEl.innerHTML = `
-                <strong>Статистика:</strong> 
-                Запросов: ${s.totalRequests} | 
-                Токенов: ${s.totalTokens} | 
-                Успешно: ${s.successCount} | 
+                <strong>Статистика:</strong>
+                Запросов: ${s.totalRequests} |
+                Токенов: ${s.totalTokens} |
+                Успешно: ${s.successCount} |
                 Ошибок: ${s.errorCount}
             `;
         }
-        
+
         // Форматируем логи
         if (data.logs && data.logs.length > 0) {
             const lines = data.logs.map(log => {
                 const date = new Date(log.at).toLocaleString('ru-RU');
                 const status = log.success ? '✅' : '❌';
-                const usage = log.usage 
-                    ? `tokens: ${log.usage.prompt_tokens || 0}+${log.usage.completion_tokens || 0}` 
+                const usage = log.usage
+                    ? `tokens: ${log.usage.prompt_tokens || 0}+${log.usage.completion_tokens || 0}`
                     : 'no usage';
                 const duration = `${log.durationMs}ms`;
                 const model = log.responseModel || log.model;
-                
+
                 let line = `[${date}] ${status} ${model} | ${usage} | ${duration}`;
                 if (log.error) {
                     line += ` | ERROR: ${log.error}`;
@@ -221,7 +188,7 @@ async function clearAIRouterLogs() {
     if (!confirm('Очистить все логи AI Router?')) return;
     const chatId = getChatId();
     if (!chatId) return;
-    
+
     try {
         const res = await fetch(`${API_MANAGE}/ai/router-logs?chat_id=${encodeURIComponent(chatId)}`, {
             method: 'DELETE'
