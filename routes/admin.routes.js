@@ -208,12 +208,27 @@ router.get('/container/:chatId/info', requireAdminAuth, async (req, res) => {
         
         const status = await dockerService.getContainerStatus(containerId);
         const session = sessionService.getSession(chatId);
-        
+
+        // Получаем Telegram username через AUTH_BOT_TOKEN (auth-бот знает всех пользователей)
+        let tgUsername = null;
+        const authBotToken = process.env.AUTH_BOT_TOKEN;
+        if (authBotToken) {
+            try {
+                const { Telegram } = require('telegraf');
+                const tg = new Telegram(authBotToken);
+                const chat = await tg.getChat(chatId);
+                tgUsername = chat.username || null;
+            } catch (e) {
+                console.warn(`[ADMIN-INFO] getChat failed for ${chatId}:`, e.message);
+            }
+        }
+
         res.json({
             chatId,
             containerId,
             containerName,
             status,
+            tgUsername,
             session: session ? {
                 created: session.created,
                 lastActivity: session.lastActivity,
@@ -350,6 +365,109 @@ router.delete('/container/:chatId', requireAdminAuth, async (req, res) => {
     }
 });
 
+// DELETE /admin/container/:chatId/kill — полное удаление пользователя
+router.delete('/container/:chatId/kill', requireAdminAuth, async (req, res) => {
+    const { chatId } = req.params;
+    const config = require('../config');
+    const path = require('path');
+    const fs = require('fs').promises;
+    const manageStore = require('../manage/store');
+    const { deleteUserDatabase } = require('../services/postgres.service');
+    const mysqlService = require('../services/mysql.service');
+    const storageService = require('../services/storage.service');
+
+    const results = [];
+
+    // 1. Остановить и удалить контейнер
+    try {
+        const containerName = `sandbox-user-${chatId}`;
+        const containerId = await dockerService.getContainerIdByName(containerName);
+        if (containerId) {
+            await dockerService.execDocker(['stop', containerId]);
+            await dockerService.removeContainer(containerId);
+            results.push('container: removed');
+        } else {
+            results.push('container: not found');
+        }
+    } catch (e) {
+        results.push(`container: error — ${e.message}`);
+    }
+
+    // 2. Удалить PostgreSQL БД
+    try {
+        await deleteUserDatabase(chatId);
+        results.push('postgres: dropped');
+    } catch (e) {
+        results.push(`postgres: error — ${e.message}`);
+    }
+
+    // 3. Удалить файлы пользователя
+    try {
+        const dataDir = storageService.getDataDir(chatId);
+        await fs.rm(dataDir, { recursive: true, force: true });
+        results.push('files: removed');
+    } catch (e) {
+        results.push(`files: error — ${e.message}`);
+    }
+
+    // 4. Удалить state-файлы (manage-state-*.json + .bak)
+    try {
+        manageStore.clearToken(chatId);
+        results.push('state: cleared');
+    } catch (e) {
+        results.push(`state: error — ${e.message}`);
+    }
+
+    // 5. Удалить бэкапы
+    try {
+        const backupRoot = config.BACKUP_ROOT;
+        const entries = await fs.readdir(backupRoot).catch(() => []);
+        const prefix = `${chatId}_`;
+        for (const entry of entries.filter(e => e.startsWith(prefix))) {
+            await fs.rm(path.join(backupRoot, entry), { recursive: true, force: true });
+        }
+        results.push('backups: removed');
+    } catch (e) {
+        results.push(`backups: error — ${e.message}`);
+    }
+
+    // 6. Удалить снапшоты
+    try {
+        const snapshotDir = path.join(config.SNAPSHOT_ROOT, chatId);
+        await fs.rm(snapshotDir, { recursive: true, force: true });
+        results.push('snapshots: removed');
+    } catch (e) {
+        results.push(`snapshots: error — ${e.message}`);
+    }
+
+    // 7. Удалить записи из MySQL
+    try {
+        const userEmail = `chat_${chatId}`;
+        await mysqlService.query(
+            'DELETE FROM user_selected_skills WHERE user_email = ?',
+            [userEmail]
+        );
+        await mysqlService.query(
+            'DELETE FROM ai_skills WHERE user_email = ?',
+            [userEmail]
+        );
+        results.push('mysql: cleared');
+    } catch (e) {
+        results.push(`mysql: error — ${e.message}`);
+    }
+
+    // 8. Удалить сессию из памяти
+    try {
+        sessionService.removeSession(chatId);
+        results.push('session: removed');
+    } catch (e) {
+        results.push(`session: error — ${e.message}`);
+    }
+
+    console.log(`[ADMIN-KILL] ${chatId}:`, results.join(' | '));
+    res.json({ success: true, chatId, results });
+});
+
 // GET /admin/container/:chatId/logs - логи контейнера
 router.get('/container/:chatId/logs', requireAdminAuth, async (req, res) => {
     const { chatId } = req.params;
@@ -401,6 +519,11 @@ router.get('/stats', requireAdminAuth, async (req, res) => {
 // GET /admin/skills - страница управления навыками
 router.get('/skills', requireAdminAuth, (req, res) => {
     res.sendFile(require('path').resolve(__dirname, '../public/admin/skills.html'));
+});
+
+// GET /admin/chat - веб-чат с контейнерами
+router.get('/chat', requireAdminAuth, (req, res) => {
+    res.sendFile(require('path').resolve(__dirname, '../public/admin/chat.html'));
 });
 
 module.exports = router;

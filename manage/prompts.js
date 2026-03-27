@@ -357,10 +357,12 @@ function getSystemInstruction(mode, structuredContext, channel = 'telegram', ena
 
         // Telegram (всегда доступен)
         systemPrompt += `\n📱 Навык "Копирайтер для Telegram":\n`;
-        systemPrompt += `  • HTML-теги: разрешены только <b>, <i>, <code>, <pre>\n`;
-        systemPrompt += `  • Эмодзи уместны, структура с заголовками приветствуется\n`;
-        systemPrompt += `  • Длина: свободная\n`;
-        systemPrompt += `  • Перенос строк: обычный \\n\n`;
+        systemPrompt += `  • HTML-теги: <b>, <i>, <u>, <s>, <code>, <pre>, <a href="...">\n`;
+        systemPrompt += `  • Первая строка = превью уведомления (делай цепляющей, ~60 симв.)\n`;
+        systemPrompt += `  • Длина: 300–800 симв. (пост), до 1024 симв. (медиа-подпись)\n`;
+        systemPrompt += `  • Хэштеги: 1–4 в конце, только для навигации канала\n`;
+        systemPrompt += `  • Эмодзи: умеренно (3–7), как маркеры структуры\n`;
+        systemPrompt += `  • Стиль: экспертный, конкретный, без воды\n`;
 
         // VK
         if (enabledChannels.includes('vk')) {

@@ -142,6 +142,12 @@
             background: #dc3545;
             color: white;
         }
+        .btn-kill {
+            background: #1a0000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+        .btn-kill:hover { background: #ff0000; color: #fff; }
         .btn-logs {
             background: #6c757d;
             color: white;
@@ -181,6 +187,7 @@
         <div style="display: flex; gap: 20px; align-items: center;">
             <a href="/admin/containers" style="color: white; text-decoration: none; font-size: 14px;">📦 Контейнеры</a>
             <a href="/admin/skills" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">🎯 Навыки</a>
+            <a href="/admin/chat" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">💬 Чат</a>
             <button class="logout-btn" onclick="logout()">Logout</button>
         </div>
     </div>
@@ -306,6 +313,7 @@
                                         `}
                                         <button class="btn btn-logs" onclick="viewLogs('${c.chatId}')">Logs</button>
                                         <button class="btn btn-delete" onclick="deleteContainer('${c.chatId}')">Delete</button>
+                                        <button class="btn btn-kill" onclick="killUser('${c.chatId}')">Kill</button>
                                     </td>
                                 </tr>
                             `).join('')}
@@ -383,10 +391,29 @@
 
         async function deleteContainer(chatId) {
             if (!confirm(`DELETE container for user ${chatId}? This cannot be undone!`)) return;
-            await fetch(`/admin/container/${chatId}`, { 
+            await fetch(`/admin/container/${chatId}`, {
                 method: 'DELETE',
                 credentials: 'include'
             });
+            loadContainers();
+        }
+
+        async function killUser(chatId) {
+            const answer = prompt(
+                `⚠️ ПОЛНОЕ УДАЛЕНИЕ пользователя ${chatId}\n` +
+                `Будут уничтожены: контейнер, БД, файлы, бэкапы, снапшоты, настройки.\n\n` +
+                `Введите chat ID для подтверждения:`
+            );
+            if (answer !== String(chatId)) {
+                alert('Отменено: ID не совпадает.');
+                return;
+            }
+            const res = await fetch(`/admin/container/${chatId}/kill`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await res.json();
+            console.log('[KILL]', data.results);
             loadContainers();
         }
 

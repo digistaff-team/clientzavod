@@ -203,6 +203,7 @@
         <div style="display: flex; gap: 20px; align-items: center;">
             <a href="/admin/containers" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">📦 Контейнеры</a>
             <a href="/admin/skills" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">🎯 Навыки</a>
+            <a href="/admin/chat" style="color: #aaa; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='white'" onmouseout="this.style.color='#aaa'">💬 Чат</a>
             <button class="back-btn" onclick="goBack()">← Back</button>
             <button class="logout-btn" onclick="logout()">Logout</button>
         </div>
@@ -281,6 +282,10 @@
                     <div class="info-item">
                         <label>Chat ID</label>
                         <div class="value">${info.chatId}</div>
+                    </div>
+                    <div class="info-item">
+                        <label>User Name</label>
+                        <div class="value">${info.tgUsername ? '@' + info.tgUsername : '—'}</div>
                     </div>
                     <div class="info-item">
                         <label>Container Name</label>

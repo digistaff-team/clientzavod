@@ -13,6 +13,10 @@ const FileStore = require('session-file-store')(session);
 
 const app = express();
 
+if (process.env.NODE_ENV === 'production') {
+    app.set('trust proxy', 1);
+}
+
 // Middleware для обработки admin_auth токена (должен быть ДО express.static!)
 app.use(async (req, res, next) => {
     const { admin_auth, chatId } = req.query;
@@ -66,8 +70,9 @@ app.use(session({
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: false, // Set to true if using HTTPS
+        secure: process.env.NODE_ENV === 'production',
         httpOnly: true,
+        sameSite: 'lax',
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
 }));

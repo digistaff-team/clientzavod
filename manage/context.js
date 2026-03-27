@@ -59,6 +59,33 @@ async function getAutoOkCopywriterSkill() {
 }
 
 /**
+ * Проверяет, подключён ли Telegram-канал для публикации контента
+ * @param {string} chatId - ID чата
+ * @returns {boolean}
+ */
+function isTelegramChannelActive(chatId) {
+    const settings = manageStore.getContentSettings(chatId);
+    return !!(settings?.channelId);
+}
+
+/**
+ * Получает навык "Копирайтер для Telegram" автоматически
+ * @returns {Promise<Object|null>}
+ */
+async function getAutoTelegramCopywriterSkill() {
+    try {
+        const skill = await mysqlService.getSkillBySlug('tg-copywriter');
+        if (skill) {
+            console.log('[AUTO-SKILL-TG] Found Telegram copywriter skill:', skill.name);
+        }
+        return skill || null;
+    } catch (e) {
+        console.error('[AUTO-SKILL-TG] Error:', e.message);
+        return null;
+    }
+}
+
+/**
  * Получает навык "Копирайтер для ВКонтакте" автоматически
  * @returns {Promise<Object|null>}
  */
@@ -265,6 +292,15 @@ async function buildFullContextStructured(chatId) {
 
     // Загружаем навыки пользователя
     const skills = await getUserSkills(userEmail);
+
+    // === АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ НАВЫКА ПРИ АКТИВНОМ TELEGRAM-КАНАЛЕ ===
+    if (isTelegramChannelActive(chatId)) {
+        const tgSkill = await getAutoTelegramCopywriterSkill();
+        if (tgSkill && !skills.find(s => s.slug === 'tg-copywriter')) {
+            skills.push(tgSkill);
+            console.log('[AUTO-SKILL-TG] Added Telegram copywriter skill for chat:', chatId);
+        }
+    }
 
     // === АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ НАВЫКА ПРИ АКТИВНОМ КАНАЛЕ OK ===
     if (isOkChannelActive(chatId)) {

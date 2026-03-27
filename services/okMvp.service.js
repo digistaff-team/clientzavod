@@ -299,12 +299,14 @@ function getDrafts(chatId) {
 }
 
 function setDraft(chatId, draftId, draft) {
-  const data = manageStore.getState(chatId) || {};
+  const states = manageStore.getAllStates();
+  let data = states[chatId];
+  if (!data) {
+    data = {};
+    states[chatId] = data;
+  }
   data.okDrafts = data.okDrafts || {};
   data.okDrafts[draftId] = draft;
-  if (!manageStore.getState(chatId)) {
-    manageStore.getAllStates()[chatId] = data;
-  }
   return manageStore.persist(chatId);
 }
 
@@ -764,9 +766,8 @@ async function tickOkSchedule(chatId, bot) {
   if (data[key] === now.date) return;
 
   data[key] = now.date;
-  if (!manageStore.getState(chatId)) {
-    manageStore.getAllStates()[chatId] = data;
-  }
+  const states = manageStore.getAllStates();
+  if (!states[chatId]) states[chatId] = data;
   await manageStore.persist(chatId);
 
   console.log(`[OK-SCHEDULE] ${chatId} slot matched ${now.time}, enqueueing ok_generate`);

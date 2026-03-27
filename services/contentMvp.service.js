@@ -669,8 +669,9 @@ function setDraft(chatId, draftId, draft) {
   const data = manageStore.getState(chatId) || {};
   data.contentDrafts = data.contentDrafts || {};
   data.contentDrafts[draftId] = draft;
-  if (!manageStore.getState(chatId)) {
-    manageStore.getAllStates()[chatId] = data;
+  const states = manageStore.getAllStates();
+  if (!states[chatId]) {
+    states[chatId] = data;
   }
   return manageStore.persist(chatId);
 }
@@ -1675,9 +1676,8 @@ async function tickScheduleForChat(chatId, bot) {
       const randomOffset = minOffset + Math.floor(Math.random() * (intervalMinutes - minOffset + 1));
       const targetMinute = currentSlot + randomOffset;
       data[slotKey] = `${now.date}|${targetMinute}`;
-      if (!manageStore.getState(chatId)) {
-        manageStore.getAllStates()[chatId] = data;
-      }
+      const states = manageStore.getAllStates();
+      if (!states[chatId]) states[chatId] = data;
       await manageStore.persist(chatId);
     }
 
@@ -1686,9 +1686,8 @@ async function tickScheduleForChat(chatId, bot) {
 
     // Время наступило — публикуем
     data[runKey] = now.date;
-    if (!manageStore.getState(chatId)) {
-      manageStore.getAllStates()[chatId] = data;
-    }
+    const states2 = manageStore.getAllStates();
+    if (!states2[chatId]) states2[chatId] = data;
     await manageStore.persist(chatId);
   } else {
     // Фиксированный режим: публикация строго по слотам
@@ -1702,9 +1701,8 @@ async function tickScheduleForChat(chatId, bot) {
     if (data[key] === now.date) return;
 
     data[key] = now.date;
-    if (!manageStore.getState(chatId)) {
-      manageStore.getAllStates()[chatId] = data;
-    }
+    const states3 = manageStore.getAllStates();
+    if (!states3[chatId]) states3[chatId] = data;
     await manageStore.persist(chatId);
   }
 
