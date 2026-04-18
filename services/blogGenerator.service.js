@@ -4,7 +4,8 @@
  */
 const config = require('../config');
 const aiRouterService = require('./ai_router_service');
-const imageGenService = require('./imageGen.service');
+const inputImageContext = require('./inputImageContext.service');
+const manageStore = require('../manage/store');
 const wpRepo = require('./content/wordpress.repository');
 const contentRepo = require('./content/repository');
 
@@ -59,17 +60,6 @@ async function aiChat(chatId, systemPrompt, userPrompt) {
  * @returns {Promise<{bodyHtml: string, seoTitle: string, metaDesc: string, slug: string, imageBuffer: Buffer, imageMime: string, imageFilename: string}>}
  */
 async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
-<<<<<<< HEAD
-  // 0. Проверка баланса отключена (модуль биллинга пока не используется)
-  // const balanceCheck = await tokenBilling.hasBalance(chatId, ESTIMATED_TOKENS_PER_ARTICLE);
-  // if (!balanceCheck.canUse) {
-  //   throw new InsufficientBalanceError(
-  //     `Insufficient token balance for article generation. ${balanceCheck.reason || ''}`
-  //   );
-  // }
-
-=======
->>>>>>> 58d2488 (Refactor content processing to worker-based architecture)
   // 1. Загрузка базы знаний (если указана)
   const knowledgeDoc = await loadKnowledge(chatId, techDocId);
   const knowledgeContext = knowledgeDoc
@@ -109,13 +99,9 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
     `Структура статьи:\n${JSON.stringify(formatData, null, 2)}\nТема: ${topic}`
   );
 
-  // 4. Генерация изображения
-  const imageResult = await imageGenService.generateCover({
-    prompt: imagePromptText.trim(),
-    aspectRatio: '16:9',
-    style: 'realistic',
-    chatId
-  });
+  // 4. Генерация изображения (с референсом из /workspace/input если есть)
+  const imageModel = manageStore.getImageGenSettings(chatId).model;
+  const imageBuffer = await inputImageContext.generateImage(chatId, imagePromptText.trim(), '16:9', imageModel, 'wordpress');
 
   // 5. Генерация статьи в HTML
   const blogWritePrompt = await channelSkills.buildSystemPrompt('blog-copywriter', BLOG_PROMPT_WRITE);
@@ -145,9 +131,9 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
     seoTitle: seoTitle.trim().substring(0, 70), // SEO title limit
     metaDesc: metaDesc.trim().substring(0, 160), // Meta description limit
     slug: cleanSlug,
-    imageBuffer: imageResult.buffer,
-    imageMime: imageResult.mimeType,
-    imageFilename: imageResult.filename
+    imageBuffer: imageBuffer,
+    imageMime: 'image/jpeg',
+    imageFilename: 'cover.jpg'
   };
 }
 

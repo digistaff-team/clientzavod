@@ -202,7 +202,7 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 async function generateVkImage(chatId, topic, imagePrompt) {
   const basePrompt = (imagePrompt || `Topic: ${topic.topic}`).slice(0, 300);
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel);
+  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'vk');
 }
 
 async function saveImageToContainer(chatId, buffer, jobId) {

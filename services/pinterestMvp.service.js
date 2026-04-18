@@ -238,7 +238,7 @@ async function generatePinImage(chatId, topic, pinTitle) {
   const titlePart = pinTitle ? `. Title: ${pinTitle}` : '';
   const basePrompt = `Topic: ${topic.topic}${titlePart}`.slice(0, 300);
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '2:3', imageModel);
+  return inputImageContext.generateImage(chatId, basePrompt, '2:3', imageModel, 'pinterest');
 }
 
 async function saveImageToContainer(chatId, buffer, jobId) {

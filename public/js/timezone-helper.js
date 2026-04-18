@@ -189,9 +189,10 @@ function generateWeekdayCheckboxes(channelPrefix, selectedWeekdays = []) {
     const displayOrder = [1, 2, 3, 4, 5, 6, 0];
 
     return displayOrder.map((index) => {
-        const checked = selectedWeekdays.includes(index) ? 'checked' : '';
+        const value = index === 0 ? 7 : index; // 0=Вс → 7 (ISO: 1=Пн..7=Вс)
+        const checked = selectedWeekdays.includes(value) ? 'checked' : '';
         return `<label class="weekday-label">
-            <input type="checkbox" class="${channelPrefix}-weekday" value="${index}" ${checked}>
+            <input type="checkbox" class="${channelPrefix}-weekday" value="${value}" ${checked}>
             <span>${dayNames[index]}</span>
         </label>`;
     }).join('\n');

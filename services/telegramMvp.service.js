@@ -726,7 +726,7 @@ async function generatePostText(chatId, topic, materialsText, personaText = '') 
 async function generateImage(chatId, topic, text) {
   const basePrompt = `Topic: ${topic.topic}`.slice(0, 300);
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel);
+  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'telegram');
 }
 
 async function saveImageToUserWorkspace(chatId, buffer, jobId) {

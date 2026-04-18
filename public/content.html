@@ -125,10 +125,21 @@
                         <button class="btn btn-secondary" onclick="loadTopics()">Обновить</button>
                     </div>
                 </div>
+                <div id="topicsBulkBar" style="display:none; align-items:center; gap:8px; margin-bottom:8px; padding:8px 12px; background:#f0f4ff; border:1px solid #c7d2fe; border-radius:6px; flex-wrap:wrap;">
+                    <span id="topicsBulkCount" style="font-size:13px; color:#374151;"></span>
+                    <select id="topicsBulkStatus" class="content-inline-input" style="width:auto;">
+                        <option value="pending">В очереди</option>
+                        <option value="used">Публикуется</option>
+                        <option value="completed">Опубликована</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="bulkSetTopicStatus()">Применить</button>
+                    <button class="btn btn-secondary" onclick="clearTopicSelection()">Снять выделение</button>
+                </div>
                 <div class="content-jobs-table-wrap" style="max-height: 250px; overflow-y: auto;">
                     <table class="content-jobs-table">
                         <thead>
                             <tr>
+                                <th style="position: sticky; top: 0; z-index: 1; width:32px;"><input type="checkbox" id="topicsSelectAll" onchange="toggleSelectAllTopics(this.checked)" title="Выбрать все"></th>
                                 <th style="position: sticky; top: 0; z-index: 1;">ID</th>
                                 <th style="position: sticky; top: 0; z-index: 1;">Тема</th>
                                 <th style="position: sticky; top: 0; z-index: 1;">Фокус</th>
@@ -140,7 +151,7 @@
                             </tr>
                         </thead>
                         <tbody id="topicsTableBody">
-                            <tr><td colspan="8" class="content-empty-cell">Темы не загружены</td></tr>
+                            <tr><td colspan="9" class="content-empty-cell">Темы не загружены</td></tr>
                         </tbody>
                     </table>
                 </div>

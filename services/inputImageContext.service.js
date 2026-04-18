@@ -279,36 +279,38 @@ function _buildPrompt(productContext, interior, lighting, angle) {
  * @param {string} basePrompt  - промпт канала (topic-based)
  * @param {string} aspectRatio - '1:1' | '2:3'
  * @param {string} t2iModel    - модель для t2i ('nano-banana-2' | 'grok-imagine/text-to-image')
+ * @param {string} [channel]   - название канала для логов (telegram, vk, wordpress, ...)
  * @returns {Promise<Buffer>}
  */
-async function generateImage(chatId, basePrompt, aspectRatio, t2iModel) {
+async function generateImage(chatId, basePrompt, aspectRatio, t2iModel, channel = 'unknown') {
+  const tag = `[IMAGE-CTX][${channel}][${chatId}]`;
+
   const [{ textPrompt, imageFile }, interior] = await Promise.all([
     getInputContext(chatId),
     vpRepo.ensureSchema(chatId)
       .then(() => vpRepo.getRandomInterior(chatId))
-      .catch(e => { console.warn(`[IMAGE-CTX] Interior fetch skipped: ${e.message}`); return null; })
+      .catch(e => { console.warn(`${tag} Interior fetch skipped: ${e.message}`); return null; })
   ]);
 
   const productContext = textPrompt || basePrompt;
   const prompt = _buildPrompt(productContext, interior);
-  console.log(`[IMAGE-CTX] prompt: ${prompt}`);
-
-  if (interior) {
-    console.log(`[IMAGE-CTX] Interior: style="${interior.style || 'n/a'}" id=${interior.id}`);
-  }
+  console.log(`${tag} requestedModel=${t2iModel} hasInputFile=${!!imageFile} hasInterior=${!!interior}`);
 
   if (imageFile && I2I_SCHEMAS[t2iModel]) {
     const imagePublicUrl = `${config.APP_URL}/api/video/input/${chatId}/${encodeURIComponent(imageFile)}`;
-    console.log(`[IMAGE-CTX] i2i: chatId=${chatId} file=${imageFile} model=${t2iModel}`);
+    console.log(`${tag} mode=i2i model=${t2iModel} file=${imageFile}`);
     try {
-      return await _generateI2I(prompt, imagePublicUrl, aspectRatio, t2iModel);
+      const result = await _generateI2I(prompt, imagePublicUrl, aspectRatio, t2iModel);
+      console.log(`${tag} i2i SUCCESS model=${t2iModel}`);
+      return result;
     } catch (e) {
-      console.warn(`[IMAGE-CTX] i2i failed, fallback t2i: ${e.message}`);
+      console.warn(`${tag} i2i FAILED (${e.message}), falling back to t2i`);
     }
   }
 
   const effectiveT2iModel = I2I_ONLY_MODELS.has(t2iModel) ? 'grok-imagine/text-to-image' : t2iModel;
-  console.log(`[IMAGE-CTX] t2i: chatId=${chatId} model=${effectiveT2iModel}`);
+  const reason = !imageFile ? 'no-input-file' : !I2I_SCHEMAS[t2iModel] ? 'model-no-i2i' : 'i2i-failed';
+  console.log(`${tag} mode=t2i model=${effectiveT2iModel} reason=${reason}`);
   return await _generateT2I(prompt, aspectRatio, effectiveT2iModel);
 }
 

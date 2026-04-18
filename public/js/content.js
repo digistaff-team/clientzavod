@@ -3,6 +3,7 @@ const API_MANAGE = `${window.location.origin}/api/manage`;
 let selectedJobId = null;
 let editingTopicId = null;
 let editingMaterialId = null;
+let selectedTopicIds = new Set();
 
 const STATUS_RU = {
     pending: 'В очереди',
@@ -170,9 +171,74 @@ async function loadTopics() {
     if (status) qs.set('status', status);
     try {
         const data = await fetchJson(`${API_CONTENT}/topics?${qs.toString()}`);
+        selectedTopicIds.clear();
+        updateTopicsBulkBar();
         renderTopicsTable(data.items || []);
     } catch (e) {
         setApiStatus(`Темы: ${e.message}`, 'error');
+    }
+}
+
+function updateTopicsBulkBar() {
+    const bar = document.getElementById('topicsBulkBar');
+    const count = document.getElementById('topicsBulkCount');
+    if (!bar) return;
+    if (selectedTopicIds.size === 0) {
+        bar.style.display = 'none';
+    } else {
+        bar.style.display = 'flex';
+        if (count) count.textContent = `Выбрано: ${selectedTopicIds.size}`;
+    }
+    const selectAll = document.getElementById('topicsSelectAll');
+    if (selectAll) {
+        const allCheckboxes = document.querySelectorAll('.topic-row-check');
+        selectAll.checked = allCheckboxes.length > 0 && allCheckboxes.length === selectedTopicIds.size;
+        selectAll.indeterminate = selectedTopicIds.size > 0 && selectedTopicIds.size < allCheckboxes.length;
+    }
+}
+
+function toggleSelectAllTopics(checked) {
+    document.querySelectorAll('.topic-row-check').forEach(cb => {
+        const id = parseInt(cb.dataset.id, 10);
+        if (checked) selectedTopicIds.add(id);
+        else selectedTopicIds.delete(id);
+        cb.checked = checked;
+    });
+    updateTopicsBulkBar();
+}
+
+function toggleTopicSelect(id, checked) {
+    if (checked) selectedTopicIds.add(id);
+    else selectedTopicIds.delete(id);
+    updateTopicsBulkBar();
+}
+
+function clearTopicSelection() {
+    selectedTopicIds.clear();
+    document.querySelectorAll('.topic-row-check').forEach(cb => cb.checked = false);
+    updateTopicsBulkBar();
+}
+
+async function bulkSetTopicStatus() {
+    const chatId = getChatId();
+    if (!chatId || selectedTopicIds.size === 0) return;
+    const status = document.getElementById('topicsBulkStatus')?.value;
+    if (!status) return;
+    const ids = [...selectedTopicIds];
+    try {
+        await Promise.all(ids.map(id =>
+            fetchJson(`${API_CONTENT}/topics/${id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, status })
+            })
+        ));
+        showToast(`Статус обновлён у ${ids.length} тем`, 'success');
+        const filterEl = document.getElementById('topicsStatusFilter');
+        if (filterEl) filterEl.value = '';
+        await loadTopics();
+    } catch (e) {
+        showToast(e.message, 'error');
     }
 }
 
@@ -180,14 +246,16 @@ function renderTopicsTable(items) {
     const body = document.getElementById('topicsTableBody');
     if (!body) return;
     if (!items.length) {
-        body.innerHTML = '<tr><td colspan="8" class="content-empty-cell">Темы не найдены</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="content-empty-cell">Темы не найдены</td></tr>';
         return;
     }
 
     body.innerHTML = items.map((item) => {
         const isEditing = editingTopicId == item.id;
+        const isChecked = selectedTopicIds.has(item.id);
         return `
             <tr>
+                <td><input type="checkbox" class="topic-row-check" data-id="${item.id}" ${isChecked ? 'checked' : ''} onchange="toggleTopicSelect(${item.id}, this.checked)"></td>
                 <td>${item.id}</td>
                 <td>${isEditing
                     ? `<input type="text" id="topic-edit-topic-${item.id}" value="${escapeHtml(item.topic || '')}" class="content-inline-input">`

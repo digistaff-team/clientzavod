@@ -191,7 +191,7 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 async function generateFbImage(chatId, topic, imagePrompt, jobId) {
   const basePrompt = (imagePrompt || `Topic: ${topic.topic}`).slice(0, 300);
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel);
+  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'facebook');
 }
 
 async function saveImageToContainer(chatId, imageBuffer, jobId) {
