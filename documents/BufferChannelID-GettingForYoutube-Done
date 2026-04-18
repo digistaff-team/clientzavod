@@ -1,0 +1,208 @@
+ План: добавление getChannels() в Buffer API и автоподстановка Channel ID в UI                        
+                                                                                                    
+ Context                                                                                            
+
+ Сейчас пользователи должны вручную узнавать Buffer Channel ID через cURL/DevTools, что неудобно и
+ ведёт к ошибкам. Нужно добавить функцию getChannels() в buffer.service.js, backend-эндпоинт и
+ UI-кнопку, чтобы пользователь мог получить список своих каналов по API-ключу и выбрать нужный из
+ выпадающего списка.
+
+ Изменения
+
+ 1. services/buffer.service.js — новая функция getChannels()
+
+ Добавить GraphQL-запрос account { channels { id name service serviceId } }, аналогично существующему
+  паттерну getPinterestBoards() (строка 168). Возвращает массив [{ id, name, service, serviceId }].
+ Экспортировать в module.exports (строка 224).
+
+ 2. manage/routes.js — новый эндпоинт
+
+ Добавить один универсальный маршрут:
+
+ POST /channels/buffer/channels
+ Body: { buffer_api_key }
+ Response: { success: true, channels: [...] }
+
+ Эндпоинт принимает только buffer_api_key (Channel ID ещё не известен — его и выбирают). Можно
+ опционально фильтровать по ?service=youtube. Размещение — рядом с существующими Buffer-маршрутами
+ (после строки ~604, перед Pinterest boards import).
+
+ 3. public/channels.html — UI для YouTube
+
+ В блоке #youtubeAuthBlock (строка 632-644) заменить текстовый <input> для Channel ID на:
+ - Кнопку "Загрузить каналы" рядом с полем Buffer API Token
+ - <select id="youtubeBufferChannelSelect"> — выпадающий список каналов (фильтр service ===
+ 'youtube')
+ - Скрытый <input id="youtubeBufferChannelId"> сохраняется для передачи выбранного значения
+
+ Подсказку "⚠️  Это внутренний ID Buffer..." можно оставить, но дополнить: "или нажмите «Загрузить
+ каналы»".
+
+ 4. public/channels.html — UI для Pinterest
+
+ Аналогично в блоке Pinterest (строки 228-231): добавить кнопку "Загрузить каналы" и <select> для
+ выбора Pinterest-канала. Паттерн тот же, фильтр service === 'pinterest'.
+
+ 5. public/js/channels.js — frontend-логика
+
+ Добавить функцию loadBufferChannels(apiKey, service, selectElementId):
+ 1. POST /api/manage/channels/buffer/channels с { buffer_api_key }
+ 2. Фильтрация по service (youtube/pinterest)
+ 3. Заполнение <select> опциями <option value="{id}">{name} ({serviceId})</option>
+ 4. При выборе — записать id в соответствующий скрытый input (youtubeBufferChannelId /
+ bufferChannelId)
+
+ Добавить обработчики кнопок:
+ - fetchYoutubeBufferChannels() → вызывает loadBufferChannels(apiKey, 'youtube',
+ 'youtubeBufferChannelSelect')
+ - fetchPinterestBufferChannels() → вызывает loadBufferChannels(apiKey, 'pinterest',
+ 'pinterestBufferChannelSelect')
+
+ Файлы для изменения
+
+ ┌────────────────────────────┬──────────────────────────────────────────────┐
+ │            Файл            │                  Что делаем                  │
+ ├────────────────────────────┼──────────────────────────────────────────────┤
+ │ services/buffer.service.js │ Новая функция getChannels(apiKey)            │
+ ├────────────────────────────┼──────────────────────────────────────────────┤
+ │ manage/routes.js           │ Новый POST /channels/buffer/channels         │
+ ├────────────────────────────┼──────────────────────────────────────────────┤
+ │ public/channels.html       │ Select + кнопка в YouTube и Pinterest блоках │
+ ├────────────────────────────┼──────────────────────────────────────────────┤
+ │ public/js/channels.js      │ loadBufferChannels(), обработчики кнопок     │
+ └────────────────────────────┴──────────────────────────────────────────────┘
+
+ Верификация
+
+ 1. Запустить npm test — убедиться, что существующие тесты не сломались
+ 2. Запустить npm run dev, открыть /channels.html
+ 3. Ввести Buffer API Token в YouTube-блоке → нажать "Загрузить каналы" → убедиться, что select
+ заполняется YouTube-каналами
+ 4. Выбрать канал → убедиться, что Channel ID подставляется автоматически
+ 5. Нажать "Проверить соединение" → должно показать OK
+
+
+
+ План реализации простыми словами
+
+    Шаг 1: services/buffer.service.js — добавляю функцию getChannels()
+
+    Сейчас в файле есть функции getPinterestBoards(), publishToBuffer() и другие. Я добавлю новую
+    функцию:
+
+      1 async function getChannels(apiKey) {
+      2     // GraphQL-запрос к Buffer API
+      3     const query = `
+      4         query {
+      5             account {
+      6                 channels {
+      7                     id
+      8                     name
+      9                     service
+     10                     serviceId
+     11                 }
+     12             }
+     13         }
+     14     `;
+     15     // POST на https://api.bufferapp.com/1/graphql
+     16     // с заголовком Authorization: Bearer {apiKey}
+     17     // Возвращает массив каналов
+     18 }
+
+    Функция экспортируется в module.exports.
+
+    ---
+
+    Шаг 2: manage/routes.js — новый endpoint
+
+    Добавлю маршрут:
+
+     1 POST /api/manage/channels/buffer/channels
+
+    Он принимает { buffer_api_key }, вызывает bufferService.getChannels(), фильтрует по service
+    (если передан query-параметр ?service=youtube), и возвращает:
+
+     1 { "success": true, "channels": [...] }
+
+    ---
+
+    Шаг 3: public/channels.html — меняю UI для YouTube и Pinterest
+
+    YouTube блок (строка ~632-644):
+     - Текстовый <input> для Channel ID становится скрытым
+     - Добавляется кнопка "Загрузить каналы" рядом с полем Buffer API Token
+     - Добавляется <select id="youtubeBufferChannelSelect"> для выбора канала
+
+    Pinterest блок (строка ~228-231):
+     - Аналогично: кнопка + <select id="pinterestBufferChannelSelect">
+
+    ---
+
+    Шаг 4: public/js/channels.js — фронтенд-логика
+
+    Добавлю функции:
+
+     1. `loadBufferChannels(apiKey, service, selectElementId)` — делает POST-запрос, фильтрует каналы
+        по типу (youtube/pinterest), заполняет <select>
+     2. `fetchYoutubeBufferChannels()` — обработчик кнопки для YouTube
+     3. `fetchPinterestBufferChannels()` — обработчик кнопки для Pinterest
+     4. При выборе канала в <select> — его id автоматически подставляется в скрытый input
+
+    ---
+
+    Шаг 5: Верификация
+
+     1. npm test — убедиться, что старые тесты проходят
+     2. Ручное тестирование: открыть /channels.html, ввести API-ключ, нажать "Загрузить каналы",
+        выбрать канал, проверить что ID подставился
+
+    ---
+
+    Файлы для изменения
+
+
+    ┌────────────────────────────┬──────────────────────────────────────────────┐
+    │ Файл                       │ Что делаю                                    │
+    ├────────────────────────────┼──────────────────────────────────────────────┤
+    │ services/buffer.service.js │ Новая функция getChannels(apiKey)            │
+    │ manage/routes.js           │ Новый POST /channels/buffer/channels         │
+    │ public/channels.html       │ Select + кнопка в YouTube и Pinterest блоках │
+    │ public/js/channels.js      │ Функции загрузки и выбора каналов            │
+    └────────────────────────────┴──────────────────────────────────────────────┘
+
+
+✦ Все задачи выполнены. Вот что было сделано:
+
+    ---
+
+    Сводка изменений
+
+    1. services/buffer.service.js
+    Добавлена функция getChannels(apiKey) — делает GraphQL-запрос к Buffer API и возвращает массив
+    каналов с полями id, name, service, serviceId.
+
+    2. manage/routes.js
+    Добавлен endpoint POST /api/manage/channels/buffer/channels:
+     - Принимает { buffer_api_key } в теле
+     - Опционально фильтрует по ?service=youtube или ?service=pinterest
+     - Возвращает { success: true, channels: [...] }
+
+    3. public/channels.html — YouTube блок
+     - Текстовый input для Channel ID заменён на <select> + скрытый <input>
+     - Кнопка 📥 рядом с полем API Token для загрузки каналов
+     - Подсказка обновлена: «или нажмите "Загрузить каналы"»
+
+    4. public/channels.html — Pinterest блок
+     - Аналогично YouTube: <select> + скрытый <input> + кнопка 📥
+
+    5. public/js/channels.js
+    Добавлены функции:
+     - loadBufferChannels(apiKey, service, selectElementId) — загружает каналы и заполняет <select>
+     - fetchYoutubeBufferChannels() / fetchPinterestBufferChannels() — обработчики кнопок
+     - onYoutubeChannelSelectChange() / onPinterestChannelSelectChange() — при выборе канала обновляют
+        скрытый input
+     - Обновлены loadYoutubeConfig() и loadPinterestConfig() — теперь также восстанавливают значение
+       <select> при загрузке сохранённой конфигурации
+
+    6. Тесты
+   Все 55 тестов прошли успешно ✅

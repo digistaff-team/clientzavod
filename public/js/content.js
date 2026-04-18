@@ -336,6 +336,8 @@ async function saveTopicInline(topicId) {
         });
         editingTopicId = null;
         showToast('Тема обновлена', 'success');
+        const filterEl = document.getElementById('topicsStatusFilter');
+        if (filterEl) filterEl.value = '';
         await loadTopics();
     } catch (e) {
         showToast(e.message, 'error');

@@ -1,0 +1,82 @@
+ План: исправление ошибок из логов приложения                                                       
+                                                                                                    
+ Context
+
+ Логи приложения заспамлены повторяющимися ошибками (каждые ~10 сек) из-за того, что VK/OK
+ планировщики пытаются подключиться к несуществующим per-user базам данных. Также обнаружен баг с
+ невалидным временем публикации (target=30:33) и вызов persist() без chatId. Всего 4 проблемы.
+
+ Ошибка 1: VK/OK планировщики спамят ошибками для несуществующих БД
+
+ Суть: tickVkSchedule() и tickOkSchedule() вызывают vkRepo.countPublishedToday() /
+ okRepo.countPublishedToday() без проверки существования БД db_{chatId}. Для пользователей 128247430
+ и 8092697980 БД не созданы, но каналы VK/OK активны в state.
+
+ Файлы:
+ - services/vkMvp.service.js — функция tickVkSchedule() (~строка 732)
+ - services/okMvp.service.js — функция tickOkSchedule() (~строка 753)
+ - services/postgres.service.js — функция databaseExists() (~строка 58)
+
+ Исправление: В начало tickVkSchedule() и tickOkSchedule(), после проверки if (!cfg ||
+ !cfg.is_active) return;, добавить проверку существования БД:
+
+ const { databaseExists } = require('./postgres.service');
+
+ // В tickVkSchedule, после if (!cfg || !cfg.is_active) return;
+ if (!await databaseExists(chatId)) return;
+
+ Аналогично для tickOkSchedule(). Функция databaseExists уже есть в postgres.service.js и делает
+ SELECT 1 FROM pg_database WHERE datname = $1 — один лёгкий запрос к системному каталогу вместо
+ десятков FATAL-ошибок.
+
+ Ошибка 2: Невалидное время target=30:33 в CONTENT-SCHEDULE-RANDOM
+
+ Суть: В contentMvp.service.js (~строки 1883-1894) при расчёте случайного времени публикации
+ targetMinute = currentSlot + randomOffset может превысить 1440 (24 часа). Пример: currentSlot=1080
+ (18:00) + randomOffset=720 (12ч) = 1800 минут → отображается как 30:00, слот никогда не наступит.
+
+ Файл: services/contentMvp.service.js (~строка 1886)
+
+ Исправление: После вычисления targetMinute добавить нормализацию:
+
+ const targetMinute = (currentSlot + randomOffset) % 1440;
+
+ Это обернёт время на следующие сутки (например, 1800 % 1440 = 360 = 06:00).
+
+ Ошибка 3: persist вызван без chatId
+
+ Суть: В manage/store.js:45 уже есть guard if (!chatId), который логирует ошибку и возвращает. Вызов
+ идёт из contentMvp.service.js (~строки 1890, 1798, 1820), где chatId может быть undefined при
+ итерации по состояниям.
+
+ Файл: services/contentMvp.service.js — найти вызовы manageStore.persist() в районе строк 1790-1890
+
+ Исправление: Перед каждым вызовом persist() в этих местах добавить guard:
+
+ if (chatId) await manageStore.persist(chatId);
+
+ Ошибка 4: Bot polling 404 для chatId 128247430
+
+ Суть: В manage/telegram/runner.js (~строка 1280) вызывается bot.launch() с невалидным токеном. Бот
+ был удалён в BotFather, но токен остался в state. Ошибка логируется и не повторяется — это
+ одноразовая ошибка при старте.
+
+ Решение: Не требует изменений в коде — это проблема данных. Пользователю 128247430 нужно либо
+ обновить токен бота, либо удалить через admin panel (DELETE /admin/container/128247430/kill).
+
+ Порядок внесения изменений
+
+ 1. services/vkMvp.service.js — добавить databaseExists проверку в tickVkSchedule()
+ 2. services/okMvp.service.js — добавить databaseExists проверку в tickOkSchedule()
+ 3. services/contentMvp.service.js — нормализовать targetMinute через % 1440
+ 4. services/contentMvp.service.js — добавить guard if (chatId) перед вызовами persist()
+
+ Верификация
+
+ 1. npm test — убедиться, что существующие тесты проходят
+ 2. docker-compose up -d && docker-compose logs -f app — проверить, что:
+   - Ошибки [VK-MVP-SCHEDULER] Error for 128247430 и [OK-MVP-SCHEDULER] Error for 8092697980 больше
+ не появляются
+   - [CONTENT-SCHEDULE-RANDOM] показывает target в диапазоне 00:00–23:59
+   - [MANAGE] persist called without chatId больше не появляется
+   - Планировщики для пользователей с существующими БД (990065788, 399444307) работают как раньше

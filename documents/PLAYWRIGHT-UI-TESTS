@@ -1,0 +1,193 @@
+План: Playwright UI-тесты для Docker-Claw
+
+     Context
+
+     Пользователь хочет покрыть критический путь пользователя UI-тестами с Playwright:
+     - auth.html → setup.html → channels.html (авторизация + онбординг)
+     - Подключение VK/Telegram канала
+     - Запуск генерации контента
+
+     Режимы: mock API на локалке (быстро, Playwright Inspector/UI mode), реальный сервер в CI.
+
+     ---
+     Архитектура
+
+     Гибридный подход (helpers + specs, без полного POM):
+
+     tests/e2e/
+     ├── playwright.config.js
+     ├── helpers/
+     │   ├── api.js          ← переключение mock/real через E2E_MODE env
+     │   ├── auth.js         ← loginWithToken(), setAuthInLocalStorage()
+     │   ├── setup.js        ← interceptWindowOpen(), verifyCode(), completeOnboarding()
+     │   └── channels.js     ← navigateToChannels(), switchToChannelTab(), connectVkChannel()
+     ├── fixtures/
+     │   ├── constants.js    ← SEL{}, TEST_CHAT_ID, таймауты
+     │   └── testData.js     ← mockResponses, apiPatterns
+     └── specs/
+         ├── 0-critical-path.spec.js   ← smoke-тест (полный путь одним тестом)
+         ├── 1-onboarding.spec.js      ← auth → setup → redirect
+         ├── 2-channels.spec.js        ← tabs, VK подключение, channel picker
+         └── 3-content-flow.spec.js    ← Telegram panel, run-now кнопка
+
+     ---
+     Ключевые технические решения
+
+     Mock/Real переключение (helpers/api.js)
+
+     const IS_MOCK = process.env.E2E_MODE !== 'real';
+
+     async function mockRoute(page, pattern, response, method) {
+       if (!IS_MOCK) return;
+       await page.route(pattern, async (route, request) => {
+         if (method && request.method() !== method) return route.continue();
+         await route.fulfill({ status: 200, contentType: 'application/json', body:
+     JSON.stringify(response) });
+       });
+     }
+
+     Перехват window.open (helpers/setup.js)
+
+     async function interceptWindowOpen(page) {
+       await page.addInitScript(() => {
+         const calls = [];
+         window._windowOpenCalls = calls;
+         window.open = (url, target) => { calls.push({ url, target }); return { closed: false, close:
+     () => {}, focus: () => {} }; };
+       });
+     }
+     Должен вызываться ДО page.goto(), иначе setup.js уже загружен.
+
+     localStorage auth (helpers/auth.js)
+
+     // Устанавливает auth без прохождения через UI
+     await page.goto('/');  // ← нужен navigate для привязки к origin
+     await page.evaluate(([cId, tId]) => {
+       localStorage.setItem('chatId', cId);
+       localStorage.setItem('telegramId', tId);
+     }, [chatId, telegramId]);
+
+     ---
+     Критические API для мокирования
+
+     ┌─────────────────────────────┬───────────────────────────────────────────────┬────────────────┐
+     │          Endpoint           │                 Mock response                 │     Зачем      │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ GET /api/auth/telegram-web- │ {success:true, chatId:"TEST_CHAT_123",        │ tg_login_token │
+     │ login*                      │ telegramId:"TEST_TG_456"}                     │  flow          │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ GET                         │                                               │ Убрать         │
+     │ /api/session/init-status/*  │ {status:"ready"}                              │ прогресс-бар   │
+     │                             │                                               │ поллинг        │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ GET /api/manage/setup*      │ {onboardingComplete:false/true}               │ Редирект или   │
+     │                             │                                               │ нет            │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ GET                         │ {username:"testcwbot"}                        │ connectBotBtn  │
+     │ /api/manage/cw-bot-info*    │                                               │                │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ POST                        │ {success:true}                                │ Верификация    │
+     │ /api/manage/telegram/verify │                                               │ кода           │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ POST /api/manage/setup      │ {success:true}                                │ Сохранение     │
+     │                             │                                               │ онбординга     │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ GET /api/manage/enabled-cha │ {channels:["telegram"]}                       │ Tabbar каналов │
+     │ nnels*                      │                                               │                │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ GET /api/manage/content/set │ {settings:{moderatorUserId:"TEST_CHAT_123",.. │ Форма Telegram │
+     │ tings*                      │ .}}                                           │                │
+     ├─────────────────────────────┼───────────────────────────────────────────────┼────────────────┤
+     │ POST /api/content/run-now   │ {success:true, jobId:42}                      │ Кнопка "Сгенер │
+     │                             │                                               │ ировать"       │
+     └─────────────────────────────┴───────────────────────────────────────────────┴────────────────┘
+
+     ---
+     Шаги реализации
+
+     Фаза 1: Инфраструктура
+
+     1. package.json — добавить @playwright/test: ^1.44.0 в devDependencies, npm scripts:
+       - test:e2e — playwright test --config=tests/e2e/playwright.config.js
+       - test:e2e:ui — добавить --ui
+       - test:e2e:debug — добавить --debug
+       - test:e2e:smoke — запуск только 0-critical-path.spec.js
+       - test:e2e:ci — E2E_MODE=real playwright test ... --reporter=html
+     2. Запустить: npm install && npx playwright install chromium
+
+     Фаза 2: Конфиг и fixtures
+
+     3. tests/e2e/playwright.config.js — baseURL: http://localhost:3015, workers:1 (localStorage
+     изоляция), screenshot/video on-failure, webServer только для E2E_MODE=real
+     4. tests/e2e/fixtures/constants.js — SEL{} (все id/class селекторы), таймауты, TEST_CHAT_ID
+     5. tests/e2e/fixtures/testData.js — mockResponses{} и apiPatterns{} (glob-паттерны для
+     page.route)
+
+     Фаза 3: Helpers
+
+     6. tests/e2e/helpers/api.js — setupMocks(page, opts), mockRoute(page, pattern, response, method)
+     7. tests/e2e/helpers/auth.js — loginWithToken(page, opts), setAuthInLocalStorage(page)
+     8. tests/e2e/helpers/setup.js — interceptWindowOpen(page), verifyCode(page),
+     completeOnboarding(page, expect)
+     9. tests/e2e/helpers/channels.js — navigateToChannels(page), switchToChannelTab(page, name),
+     connectVkChannel(page, expect)
+
+     Фаза 4: Spec файлы
+
+     10. specs/0-critical-path.spec.js — smoke тест: весь путь в одном test()
+     11. Запустить npm run test:e2e:smoke — проверить инфраструктуру
+     12. specs/1-onboarding.spec.js — 7 тестов: redirect, window.open, validate code, activate
+     saveBtn, complete flow
+     13. specs/2-channels.spec.js — 6 тестов: tabbar, VK connect, channel picker
+     14. specs/3-content-flow.spec.js — 5 тестов: form fields, run-now, disabled state, toast
+
+     Фаза 5: Финализация
+
+     15. Добавить в .gitignore: playwright-report/, test-results/
+     16. Запустить npm run test:e2e:ui — визуальная проверка всех тестов
+     17. Убедиться npm run test:e2e — все зелёные
+
+     ---
+     Потенциальные проблемы
+
+     - initAuth() читает localStorage сразу при load → setAuthInLocalStorage сначала делает goto('/'),
+      затем устанавливает значения
+     - channels.html использует initChannelsAuth() (не стандартный initAuth()) → та же стратегия через
+      localStorage
+     - saveSetup редиректит через setTimeout(1500ms) → waitForURL с таймаутом 5000ms
+     - window.open в connectBot() → page.addInitScript() перед navigate заменяет функцию
+     - Переопределение page.route для одного паттерна → использовать page.unroute() перед повторной
+     установкой
+
+     ---
+     Ключевые файлы для изменения
+
+     - /root/docker-claw/package.json — devDependencies + scripts
+     - /root/docker-claw/.gitignore — playwright-report/, test-results/
+     - Новые файлы: tests/e2e/** (все перечисленные выше)
+
+     Исправление Windows-совместимости
+
+     npm scripts используют playwright (без npx) — npm автоматически добавляет node_modules/.bin в
+     PATH при запуске scripts.
+     Перед первым запуском обязателен npm install + npx playwright install chromium.
+
+     Верификация
+
+     npm run test:e2e:smoke  # Smoke: 1 критический тест (20 сек)
+     npm run test:e2e        # Все тесты mock-режим (60-90 сек)
+     npm run test:e2e:ui     # Интерактивный UI mode для отладки
+
+● Готово! 🎯 На Windows теперь запустите по порядку:
+
+  npm install                                                                                         
+  npx playwright install chromium
+  npm run test:e2e:ui                                                                                 
+                                                                                                    
+  Первые два шага нужны только один раз. После этого Playwright Inspector откроется в браузере со     
+  всеми тестами, которыми можно управлять интерактивно.
+                                                                                                      
+  Последующие запуски:                                                                                
+  npm run test:e2e          # Все тесты (headless)                                                  
+  npm run test:e2e:ui       # С интерактивным интерфейсом                                             
+  npm run test:e2e:smoke    # Только smoke-тест (быстро)                                            

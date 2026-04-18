@@ -177,6 +177,9 @@ async function ensureSchema(chatId) {
     // Миграция: добавить недостающие колонки content_posts для таблиц старой схемы
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS body_text TEXT`);
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS hashtags TEXT`);
+    try {
+      await client.query(`ALTER TABLE content_posts ALTER COLUMN job_id DROP NOT NULL`);
+    } catch (_) {}
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'text+image'`);
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS publish_status TEXT NOT NULL DEFAULT 'ready'`);
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);

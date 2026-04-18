@@ -175,8 +175,10 @@ async function createDraft(chatId, { title, content, excerpt, categories, featur
   const response = await wpRequest(chatId, 'POST', '/wp-json/wp/v2/posts', { body });
   const post = await response.json();
 
-  // Формируем preview URL для модерации
-  const previewUrl = `${post.link}?preview=true&preview_id=${post.id}`;
+  // Используем preview_link из ответа WP REST API (требует авторизации в браузере)
+  const wpConfig2 = getWpConfig(chatId);
+  const baseUrl = (wpConfig2?.baseUrl || '').replace(/\/+$/, '');
+  const previewUrl = post.preview_link || `${baseUrl}/?p=${post.id}&preview=true`;
 
   return {
     id: post.id,

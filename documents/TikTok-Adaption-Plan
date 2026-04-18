@@ -1,0 +1,163 @@
+# 🔄 Адаптация TikTok-автопостинга под Docker-Claw (Клиент Завод)
+
+Ниже — пошаговая интеграция вашего Make-сценария в архитектуру платформы.
+
+---
+
+## 📋 Сравнительная карта компонентов
+
+| Make.com модуль | Аналог в Docker-Claw | Файл / Метод |
+|----------------|---------------------|--------------|
+| `google-sheets:getSheetContent` | Резервирование темы из БД | `services/content/repository.js` → `reserveNextTopic(chatId, 'tiktok')` |
+| `google-docs:getADocument` (ДНК/TOV) | Бренд-контекст для AI | `content_knowledge_base` таблица или `/workspace/input/brand/` + `manage/context.js` |
+| `openai-gpt-3:CreateCompletion` | Генерация промпта через AI Agent | `manage/prompts.js` + `manage/telegram/agentLoop.js` |
+| `veo3pro-hbnyq5:veo311` | Видео-пайплайн | `services/videoPipeline.service.js` → `generateVideoFromScene()` |
+| `http:DownloadFile` | Авто-сохранение в temp | `VIDEO_TEMP_ROOT` + `/api/video/temp/:chatId/:filename` |
+| `http:ActionSendData` (upload-post.com) | Нативная публикация | `services/tiktokMvp.service.js` + CW Bot модерация |
+
+---
+
+## 🛠 Пошаговая реализация
+
+### 1️⃣ Источник тем (вместо Google Sheets)
+```javascript
+// services/tiktokMvp.service.js
+const topic = await repository.reserveNextTopic(chatId, 'tiktok');
+// topic содержит: id, text, channel='tiktok', status='used'
+```
+- Темы хранятся в `content_topics` (per-user PostgreSQL)
+- При ошибке генерации: `repository.releaseTopic(chatId, topicId)` → статус `'pending'`
+- При успехе: `repository.updateTopicStatus(chatId, topicId, 'completed')`
+
+### 2️⃣ Бренд-контекст (вместо Google Docs)
+```javascript
+// Подгрузка ДНК/TOV из БД или файловой системы
+const brandContext = await repository.getKnowledgeBase(chatId, 'tiktok');
+// Или чтение из /workspace/input/brand/dna.md, tov.md
+```
+- Интегрировать в промпт через `manage/context.js` → `buildContext(chatId, {channel: 'tiktok'})`
+
+### 3️⃣ Генерация промпта для Veo
+```javascript
+// manage/prompts.js — добавить шаблон для TikTok
+const tiktokVideoPrompt = `
+Ты — эксперт по генерации видео в Veo для бренда «Фэнси».
+Бренд-ДНК: {{brandDNA}}
+Tone of Voice: {{brandTOV}}
+Тема: {{topic}}
+[...структура промпта как в Make-сценарии...]
+`;
+```
+- Вызов через `services/ai_router_service.js` (ProTalk/OpenAI/OpenRouter)
+- Результат передаётся в видео-пайплайн
+
+### 4️⃣ Генерация видео (KIE.ai адаптеры)
+```javascript
+// services/videoPipeline.service.js
+const videoResult = await generateVideoFromScene(chatId, {
+  prompt: generatedPrompt,
+  model: 'veo3.1', // или seedance-2 / grok-imagine из настроек
+  aspectRatio: '9:16',
+  channel: 'tiktok'
+});
+// Вебхук-резолюция: POST /api/video/callback/:chatId/:videoId
+```
+- Файл сохраняется в `{DATA_ROOT}/.video-temp/{chatId}/`
+- Публичный URL: `/api/video/temp/${chatId}/${filename}`
+
+### 5️⃣ Модерация через CW Bot (обязательный этап)
+```javascript
+// После генерации — отправка на модерацию
+await cwBot.sendModeration({
+  chatId,
+  topicId: topic.id,
+  platform: 'tiktok',
+  callbackPattern: `tiktok_mod:${topic.id}`,
+  videoUrl: `/api/video/temp/${chatId}/${filename}`,
+  preview: generatedPrompt
+});
+// Кнопки: ✅ утвердить | 🔁 перегенерировать | ❌ отклонить
+```
+- Обработчик колбэка в `manage/telegram/cwBot.js` или `services/tiktokMvp.service.js`
+- При ✅ — постановка в очередь публикации
+
+### 6️⃣ Публикация в TikTok
+```javascript
+// services/tiktokMvp.service.js
+async function publishTikTokVideo(chatId, videoPath, topic) {
+  // Вариант А: Buffer API (кросс-постинг)
+  await bufferService.publish({
+    platform: 'tiktok',
+    video: videoPath,
+    caption: topic.text,
+    schedule: calculateOptimalTime(chatId)
+  });
+  
+  // Вариант Б: Нативный TikTok API (при наличии токенов)
+  // ...реализация через официальную API
+  
+  await repository.updateTopicStatus(chatId, topic.id, 'published');
+}
+```
+
+### 7️⃣ Планировщик (вместо ручного запуска)
+```javascript
+// services/tiktokMvp.service.js — аналог tickIgReelsSchedule
+export async function tickTikTokSchedule(chatId) {
+  const settings = await manageStore.getTikTokSettings(chatId);
+  if (!settings.enabled || !isPostingTime(settings.schedule)) return;
+  
+  const topic = await repository.reserveNextTopic(chatId, 'tiktok');
+  if (!topic) return;
+  
+  try {
+    await handleTikTokGenerateJob(chatId, topic);
+  } catch (err) {
+    await repository.releaseTopic(chatId, topic.id);
+    await alerts.notify(chatId, 'tiktok_generation_failed', err);
+  }
+}
+// Запуск каждые 60 сек через общий scheduler в services/content/worker.js
+```
+
+---
+
+## ⚙️ Конфигурация и настройки
+
+Добавить в `manage/store.js` / `content_config`:
+```javascript
+{
+  tiktok: {
+    enabled: true,
+    model: 'veo3.1', // veo3.1 | seedance-2 | grok-imagine
+    dailyLimit: 5,
+    schedule: { hours: [9, 12, 18, 21] },
+    hashtags: ['#Фэнси', '#тренды', '#рекомендации'],
+    premoderation: true // обязательная модерация через CW Bot
+  }
+}
+```
+
+---
+
+## 🚨 Важные отличия от Make-сценария
+
+| Аспект | Make.com | Docker-Claw |
+|--------|----------|-------------|
+| **Изоляция** | Общий аккаунт | Пер-user контейнер + БД |
+| **Модерация** | Отсутствует | Обязательна через CW Bot |
+| **Хранение тем** | Google Sheets | PostgreSQL `content_topics` |
+| **Видео-адаптеры** | Только Veo | Veo 3.1 + Seedance 2.0 + Grok Imagine |
+| **Публикация** | Сторонний API upload-post.com | Buffer API / нативный TikTok API |
+| **Отказоустойчивость** | Игнор ошибок | FSM + retry queue + alerts |
+
+---
+
+## ▶️ Следующие шаги
+
+1. **Проверить**: есть ли уже реализация `services/tiktokMvp.service.js` в вашем репозитории
+2. **Добавить**: `'tiktok'` в `VALID_CHANNELS` в `services/telegramMvp.service.js` (если отсутствует)
+3. **Настроить**: TikTok API credentials или Buffer API token в `.env.local`
+4. **Протестировать**: запуск через `node tests/video.pipeline.test.js` + ручной триггер в Telegram
+
+Нужно, чтобы я подготовил конкретный PR с кодом для `tiktokMvp.service.js` или помог настроить интеграцию с Buffer API? 🛠️✨

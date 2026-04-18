@@ -14,6 +14,17 @@ const contentLimits = require('./limits');
 const manageStore = require('../../manage/store');
 const alerts = require('./alerts');
 
+function getNowInTz(tz) {
+  const p = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const get = (t) => p.find((x) => x.type === t)?.value;
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, time: `${get('hour')}:${get('minute')}` };
+}
+
 const POLL_INTERVAL_MS = 2000; // OPTIMIZATION: Уменьшили интервал polling с 5с до 2с
 const VIDEO_POLL_INTERVAL_MS = parseInt(process.env.VIDEO_POLL_INTERVAL_MS || '10000', 10); // TASK-015
 const BLOG_POLL_INTERVAL_MS = 60000; // 60 секунд для планировщика тем WordPress
@@ -397,43 +408,70 @@ async function scheduleBlogPostsForChat(chatId) {
   // Проверяем, что WordPress подключён
   const wpConfig = manageStore.getWpConfig(chatId);
   if (!wpConfig || !wpConfig.baseUrl || !wpConfig.username || !wpConfig.appPassword) {
-    return; // WordPress не подключён
+    return;
+  }
+
+  // Автоматический планировщик работает только при настроенном расписании
+  if (!wpConfig.scheduleTime) {
+    return;
+  }
+
+  const tz = wpConfig.scheduleTz || 'Europe/Moscow';
+  const now = getNowInTz(tz);
+
+  // Проверяем день недели (1=Пн, 7=Вс)
+  const scheduleDays = wpConfig.scheduleDays;
+  if (scheduleDays && scheduleDays.length > 0) {
+    const dowDate = new Date(now.date + 'T12:00:00');
+    const dow = dowDate.getDay() || 7; // 0=Вс → 7
+    if (!scheduleDays.includes(dow)) return;
+  }
+
+  // Проверяем временное окно
+  const [startH, startM] = wpConfig.scheduleTime.split(':').map(Number);
+  const [nowH, nowM] = now.time.split(':').map(Number);
+  const startMinutes = startH * 60 + startM;
+  const nowMinutes = nowH * 60 + nowM;
+  if (nowMinutes < startMinutes) return;
+  if (wpConfig.scheduleEndTime) {
+    const [endH, endM] = wpConfig.scheduleEndTime.split(':').map(Number);
+    if (nowMinutes >= endH * 60 + endM) return;
   }
 
   // Проверяем лимиты
+  const perDayLimit = wpConfig.dailyLimit || wpConfig.postsPerDay || 3;
   const publishedToday = await contentLimits.getUsageStats(chatId, contentLimits.QUOTA_TYPES.BLOG_GENERATION);
-  const perDayLimit = wpConfig.postsPerDay || 3; // По умолчанию 3 поста в день
-
   if (publishedToday.today >= perDayLimit) {
-    return; // Достигнут дневной лимит
+    return;
   }
 
-  // Проверяем, есть ли уже активные задачи wordpress в очереди
-  const queueStats = await queueRepo.getQueueStats(chatId);
-  // Упрощённая проверка — можно расширить до просмотра типов задач
+  // Проверяем minIntervalHours (минимальный интервал между постами)
+  if (wpConfig.minIntervalHours && wpConfig.lastPublishedAt) {
+    const hoursSince = (Date.now() - new Date(wpConfig.lastPublishedAt).getTime()) / 3600000;
+    if (hoursSince < wpConfig.minIntervalHours) return;
+  }
 
   // Выбираем следующую тему (резервируем её)
   const contentRepo = require('./repository');
   const topic = await contentRepo.reserveNextTopic(chatId, 'wordpress');
+  if (!topic) return;
 
-  if (!topic) {
-    return; // Нет доступных тем
+  // Создаём задачу на генерацию с откатом при ошибке
+  try {
+    await enqueueJob(chatId, {
+      jobType: 'wordpress_generate',
+      payload: {
+        topicId: topic.id,
+        topic: topic.topic,
+        keywords: topic.focus || topic.secondary || '',
+        techDocId: topic.tech_doc_id || null
+      }
+    });
+    console.log(`[CONTENT-WORKER-BLOG] Enqueued blog post generation for chat ${chatId}, topic ${topic.id}`);
+  } catch (err) {
+    await contentRepo.releaseTopic(chatId, topic.id).catch(() => {});
+    throw err;
   }
-
-  // Создаём задачу на генерацию
-  await enqueueJob(chatId, {
-    job_type: 'wordpress_generate',
-    payload: {
-      topicId: topic.id,
-      topic: topic.topic,
-      keywords: topic.focus || topic.secondary || '',
-      techDocId: topic.tech_doc_id || null
-    },
-    status: 'queued',
-    channel: 'wordpress'
-  });
-
-  console.log(`[CONTENT-WORKER-BLOG] Enqueued blog post generation for chat ${chatId}, topic ${topic.id}`);
 }
 
 /**
@@ -701,6 +739,7 @@ module.exports = {
   handleWordPressGeneration,
   handleWordPressPublish,
   publishBlogAnnouncement,
+  sendBlogModerationRequest,
   POLL_INTERVAL_MS,
   MAX_CONCURRENT_JOBS
 };

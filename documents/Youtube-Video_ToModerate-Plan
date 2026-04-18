@@ -1,0 +1,169 @@
+ Убрать генерацию thumbnail, отправлять видео модератору                                            
+                                                                                                    
+ Context
+
+ YouTube Shorts — вертикальное видео 9:16. Текущий пайплайн генерирует отдельный горизонтальный
+ thumbnail (16:9) через KIE Image API и отправляет его модератору как фото. Это лишняя трата времени
+ (до 90 сек + до 3 retry) и кредитов KIE. YouTube сам автоматически выбирает кадр из видео как превью
+  для Shorts. Нужно: убрать генерацию thumbnail, отправлять модератору само видео, убрать
+ thumbnailUrl из публикации в Buffer.
+
+ Файл: services/youtubeMvp.service.js
+
+ Шаг 1. AI-промпт — убрать thumbnailPrompt
+
+ Строки 115-131 — функция generateYoutubeContent. В JSON-промпте убрать поле thumbnailPrompt и
+ связанные требования:
+
+ - Строка 120: убрать "thumbnailPrompt": "описание превью-картинки..." из JSON-шаблона
+ - Строка 129: убрать - thumbnailPrompt: детальное описание превью, 16:9, яркий текст крупным шрифтом
+
+ Строки 155-161 — return из generateYoutubeContent. Убрать поле thumbnailPrompt из возвращаемого
+ объекта (строки 159-160).
+
+ Шаг 2. Убрать функции generateThumbnail и saveThumbnailToHost
+
+ - Строки 168-225 — функция generateThumbnail — удалить целиком
+ - Строки 307-313 — функция saveThumbnailToHost — удалить целиком
+
+ Шаг 3. Основной обработчик handleYoutubeGenerateJob — убрать блок генерации thumbnail
+
+ Строки 397-417 — весь блок генерации превью (let thumbnailPath, цикл retry, проверка !thumbnailPath)
+  — удалить целиком.
+
+ Строки 438-451 — запись в БД (youtubeRepo.createJob). Убрать поля:
+ - thumbnailPrompt: ytContent.thumbnailPrompt (строка 443)
+ - thumbnailPath (строка 444)
+ - thumbnailAttempts (строка 449)
+
+ Строки 453-463 — объект draft. Убрать поле:
+ - thumbnailPath (строка 459)
+
+ Шаг 4. Функция sendYtToModerator — заменить sendPhoto на sendVideo
+
+ Строки 584-596 — inline keyboard. Убрать кнопку 🖼 Превью (regen_image), т.к. thumbnail больше не
+ генерируется. Оставить только:
+ inline_keyboard: [
+   [
+     { text: '✅ Опубликовать', callback_data: `${callbackBase}:approve` },
+     { text: '❌ Отклонить', callback_data: `${callbackBase}:reject` }
+   ],
+   [
+     { text: '🔁 Текст', callback_data: `${callbackBase}:regen_text` }
+   ]
+ ]
+
+ Строки 598-617 — заменить отправку. Вместо:
+ const thumbnailLocalPath = path.join(storageService.getDataDir(chatId), 'output', 'content',
+ draft.thumbnailPath);
+ // sendPhoto...
+
+ Сделать:
+ const videoLocalPath = path.join(storageService.getDataDir(chatId), 'output', 'content',
+ draft.videoPath);
+ const moderatorBot = cwBot && cwBot.token !== bot?.token ? cwBot : bot;
+ try {
+   const sent = await moderatorBot.telegram.sendVideo(moderatorId, { source: videoLocalPath }, {
+ caption, reply_markup: kb });
+   await setYtDraft(chatId, String(draft.jobId), { ...draft, moderationMessageId: sent.message_id });
+ } catch (e) {
+   console.warn(`[YOUTUBE-MVP] Video send failed, sending text only: ${e.message}`);
+   const sent = await moderatorBot.telegram.sendMessage(moderatorId, caption, { reply_markup: kb });
+   await setYtDraft(chatId, String(draft.jobId), { ...draft, moderationMessageId: sent.message_id });
+ }
+
+ Шаг 5. Функция handleYtModerationAction — убрать regen_image
+
+ Строки 673-684 — блок if (action === 'regen_image') — удалить целиком.
+
+ Строки 696-724 — блок reject (полная перегенерация). Убрать генерацию thumbnail:
+ - Строка 703: const thumbnailBuffer = await generateThumbnail(...) — удалить
+ - Строка 704: const saved = await saveThumbnailToHost(...) — удалить
+ - Строка 709: draft.thumbnailPath = saved.filename — удалить
+ - Строка 715: thumbnailPath: saved.filename — удалить из updateJob
+
+ Шаг 6. Функция publishYoutubePost — убрать thumbnailUrl
+
+ Строки 492-494 — убрать формирование thumbnailUrl:
+ // УДАЛИТЬ:
+ const thumbnailUrl = job.thumbnail_path
+   ? `${config.APP_URL}/api/files/public/${chatId}/${job.thumbnail_path}`
+   : null;
+
+ Строки 515-520 — убрать thumbnailUrl из вызова bufferService.createPost:
+ const bufferResult = await bufferService.createPost(cfg.buffer_api_key, cfg.buffer_channel_id, {
+   text,
+   videoUrl,
+   // thumbnailUrl — убрать
+   youtubeTitle: job.video_title || 'YouTube Short',
+   youtubeCategoryId: '24'
+ });
+
+ Файл: services/content/youtube.repository.js — НЕ МЕНЯТЬ
+
+ Столбцы thumbnail_prompt, thumbnail_path, thumbnail_attempts в таблице youtube_jobs оставить — они
+ безвредны и удаление потребует миграции. Код просто перестанет их заполнять.
+
+ Verification
+
+ 1. Запустить npm test — убедиться, что тесты проходят
+ 2. Запустить генерацию YouTube Shorts — убедиться:
+   - Thumbnail не генерируется (нет логов [YOUTUBE-MVP] Thumbnail)
+   - Модератор получает видео (не фото) в Telegram с кнопками ✅/❌/🔁 Текст
+   - Кнопка 🖼 Превью отсутствует
+   - Публикация через Buffer работает без thumbnailUrl
+
+---
+
+## Результат выполнения
+
+**Дата:** 2026-04-06
+**Файл:** services/youtubeMvp.service.js
+**Статус:** ✅ Все шаги выполнены успешно
+
+### Выполненные шаги:
+
+**Шаг 1. AI-промпт — убрать thumbnailPrompt** ✅
+- Удалено поле "thumbnailPrompt" из JSON-шаблона в промпте
+- Удалено требование thumbnailPrompt из списка требований
+- Удалено поле thumbnailPrompt из return объекта generateYoutubeContent
+
+**Шаг 2. Убрать функции generateThumbnail и saveThumbnailToHost** ✅
+- Удалена функция generateThumbnail (была ~60 строк)
+- Удалена функция saveThumbnailToHost
+
+**Шаг 3. Основной обработчик handleYoutubeGenerateJob — убрать блок генерации thumbnail** ✅
+- Удалён весь блок генерации превью (цикл retry с MAX_THUMBNAIL_ATTEMPTS)
+- Удалены поля из youtubeRepo.createJob: thumbnailPrompt, thumbnailPath, thumbnailAttempts
+- Удалено поле thumbnailPath из объекта draft
+- Удалена константа MAX_THUMBNAIL_ATTEMPTS
+
+**Шаг 4. Функция sendYtToModerator — заменить sendPhoto на sendVideo** ✅
+- Удалена кнопка 🖼 Превью (regen_image) из inline keyboard
+- Заменена отправка sendPhoto на sendVideo с videoLocalPath
+- Fallback при ошибке: отправка текстового сообщения вместо видео
+
+**Шаг 5. Функция handleYtModerationAction — убрать regen_image** ✅
+- Удалён целиком блок if (action === 'regen_image')
+- Удалена генерация thumbnail из блока reject (полная перегенерация)
+- Удалены поля thumbnailPath из draft и updateJob в reject блоке
+
+**Шаг 6. Функция publishYoutubePost — убрать thumbnailUrl** ✅
+- Удалено формирование thumbnailUrl
+- Удалён thumbnailUrl из вызова bufferService.createPost
+
+### Файл youtube.repository.js — НЕ ИЗМЕНЁН ✅
+Столбцы thumbnail_prompt, thumbnail_path, thumbnail_attempts оставлены без изменений.
+
+### Verification:
+
+1. **npm test** — ✅ Все 45 тестов пройдены
+2. **node -c services/youtubeMvp.service.js** — ✅ Синтаксических ошибок нет
+3. **grep thumbnail** — ✅ В файле не осталось упоминаний thumbnail/generateThumbnail/saveThumbnailToHost
+
+### Итоговые изменения:
+- Удалено ~120 строк кода
+- Удалена зависимость от KIE Image API для генерации превью
+- Экономия: до 90 сек + 3 retry на каждую генерацию YouTube Shorts
+- Модератор теперь получает видеофайл вместо thumbnail
+- Публикация через Buffer работает без thumbnailUrl

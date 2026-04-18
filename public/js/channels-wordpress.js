@@ -44,7 +44,6 @@
       await loadWordpressCategories();
       await loadWordpressConfig();
       await loadWordpressKnowledge();
-      await loadWordpressRecentPosts();
     } catch (e) {
       setConnStatus(`❌ ${e.message}`, '#c00');
     }
@@ -241,7 +240,6 @@
         body: JSON.stringify({ chatId })
       });
       setStatus(`✅ ${r.message || 'Задача поставлена'}`, '#0a0');
-      setTimeout(loadWordpressRecentPosts, 2000);
     } catch (e) {
       setStatus(`❌ ${e.message}`, '#c00');
     }
@@ -303,29 +301,6 @@
     }
   };
 
-  // ===== Recent posts =====
-  async function loadWordpressRecentPosts() {
-    const chatId = chat();
-    if (!chatId) return;
-    try {
-      const r = await jfetch(`${API}/wordpress/posts?chatId=${encodeURIComponent(chatId)}&limit=10`);
-      const list = r.posts || [];
-      const el = $('wordpressRecentPosts');
-      if (!list.length) { el.innerHTML = '<em style="color:#999">Статей пока нет</em>'; return; }
-      el.innerHTML = list.map(p => {
-        const link = p.wp_permalink || p.wp_preview_url;
-        const status = p.publish_status || 'draft';
-        const color = status === 'published' ? '#0a0' : status === 'error' || status === 'rejected' ? '#c00' : '#888';
-        return `<div style="padding:6px 0; border-bottom:1px solid #f0f0f0;">
-          <div><strong>${escapeHtml(p.seo_title || 'Без заголовка')}</strong> <span style="color:${color}; font-size:11px;">[${status}]</span></div>
-          ${link ? `<div style="font-size:11px;"><a href="${link}" target="_blank">${escapeHtml(link)}</a></div>` : ''}
-        </div>`;
-      }).join('');
-    } catch (e) {
-      console.warn('loadWordpressRecentPosts:', e.message);
-    }
-  }
-  window.loadWordpressRecentPosts = loadWordpressRecentPosts;
 
   // ===== Status (auto on tab open) =====
   async function loadWordpressStatus() {
@@ -342,8 +317,7 @@
         await loadWordpressCategories();
         await loadWordpressConfig();
           await loadWordpressKnowledge();
-        await loadWordpressRecentPosts();
-      } else {
+        } else {
         setConnStatus('Не подключено', '#888');
       }
     } catch (e) {

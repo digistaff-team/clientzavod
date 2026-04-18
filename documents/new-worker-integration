@@ -1,0 +1,595 @@
+### 📄 Обновлённый `worker.js` для мультиканального контент-генератора
+
+Ниже представлена полная версия файла, которая интегрирует новую БД-схему (`content_queue`) с существующей архитектурой Клиент Завода.
+
+```javascript
+// =====================================================
+// services/content/worker.js
+// AI Content Generation Worker for Клиент Завод
+// =====================================================
+
+const { Pool } = require('pg');
+const cron = require('node-cron');
+const { generateText } = require('./generator'); // AI-генерация текста
+const { generateImage } = require('./openai-images'); // Генерация изображений
+const { sendDraftToTelegram } = require('../../manage/telegram/content-bot'); // Отправка на модерацию
+const { publishToChannel } = require('./publisher'); // Публикация в канал
+
+// =====================================================
+// КОНФИГУРАЦИЯ
+// =====================================================
+
+const POLL_INTERVAL_MS = parseInt(process.env.CONTENT_POLL_INTERVAL_MS) || 5000;
+const VIDEO_POLL_INTERVAL_MS = parseInt(process.env.VIDEO_POLL_INTERVAL_MS) || 10000;
+const MAX_CONCURRENT_JOBS = parseInt(process.env.MAX_CONCURRENT_JOBS) || 1;
+const DAILY_SCHEDULE_TIME = process.env.CONTENT_DAILY_TIME || '0 9 * * *'; // 09:00 ежедневно
+
+// PostgreSQL подключение
+const pool = new Pool({
+    host: process.env.PG_HOST || '172.17.0.1',
+    port: process.env.PG_PORT || 5432,
+    database: process.env.PG_DATABASE || 'clientzavod',
+    user: process.env.PG_USER || 'postgres',
+    password: process.env.POSTGRES_PASSWORD || 'postgres',
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 2000,
+});
+
+// =====================================================
+// СОСТОЯНИЕ WORKER
+// =====================================================
+
+let isRunning = false;
+let pollIntervalId = null;
+let videoPollIntervalId = null;
+let jobHandlers = new Map();
+let videoCallback = null;
+let activeJobs = 0;
+let getBotsFunction = null;
+
+// =====================================================
+// РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ
+// =====================================================
+
+/**
+ * Регистрация обработчика для типа задачи
+ * @param {string} jobType - Тип задачи (content_generate, video_generate, etc.)
+ * @param {Function} handler - Функция-обработчик
+ */
+function registerJobHandler(jobType, handler) {
+    jobHandlers.set(jobType, handler);
+    console.log(`[Worker] Registered handler for: ${jobType}`);
+}
+
+/**
+ * Регистрация callback для завершения генерации видео
+ * @param {Function} callback - Callback функция
+ */
+function registerVideoCallback(callback) {
+    videoCallback = callback;
+    console.log('[Worker] Registered video callback');
+}
+
+/**
+ * Установка функции получения ботов (из runner.js)
+ * @param {Function} getBots - Функция получения экземпляров ботов
+ */
+function setGetBotsFunction(getBots) {
+    getBotsFunction = getBots;
+}
+
+// =====================================================
+// ОСНОВНАЯ ЛОГИКА CONTENT WORKER
+// =====================================================
+
+/**
+ * Получить следующую задачу из очереди
+ */
+async function getNextPendingTask() {
+    const query = `
+        SELECT * FROM content_queue 
+        WHERE status = 'pending' 
+            AND deleted_at IS NULL
+        ORDER BY priority DESC, created_at ASC 
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+    `;
+    
+    try {
+        const result = await pool.query(query);
+        return result.rows[0] || null;
+    } catch (error) {
+        console.error('[Worker] Error fetching pending task:', error);
+        return null;
+    }
+}
+
+/**
+ * Обновить статус задачи
+ */
+async function updateTaskStatus(taskId, status, updates = {}) {
+    const query = `
+        UPDATE content_queue 
+        SET status = $1, 
+            updated_at = NOW(),
+            ${Object.keys(updates).map((key, index) => `${key} = $${index + 2}`).join(', ')}
+        WHERE id = $${Object.keys(updates).length + 2}
+        RETURNING *
+    `;
+    
+    const values = [status, ...Object.values(updates), taskId];
+    
+    try {
+        const result = await pool.query(query, values);
+        return result.rows[0];
+    } catch (error) {
+        console.error('[Worker] Error updating task status:', error);
+        return null;
+    }
+}
+
+/**
+ * Обработать задачу генерации контента
+ */
+async function processContentTask(task) {
+    console.log(`[Worker] Processing content task #${task.id} for ${task.channel}`);
+    
+    try {
+        // 1. Обновляем статус на processing
+        await updateTaskStatus(task.id, 'processing', {
+            retry_count: task.retry_count + 1,
+            last_retry_at: new Date().toISOString()
+        });
+        
+        // 2. Генерация текста через AI
+        console.log(`[Worker] Generating text for topic: ${task.topic}`);
+        const textResult = await generateText({
+            topic: task.topic,
+            channel: task.channel,
+            content_type: task.content_type,
+            focus_keyword: task.focus_keyword,
+            secondary_keywords: task.secondary_keywords,
+            lsi_keywords: task.lsi_keywords,
+            channel_config: task.channel_config
+        });
+        
+        // 3. Генерация изображения (если нужно)
+        let imageUrl = null;
+        if (task.channel !== 'email' && task.channel !== 'telegram') {
+            console.log('[Worker] Generating image...');
+            imageUrl = await generateImage({
+                prompt: task.primary_image_prompt || textResult.image_prompt,
+                channel: task.channel
+            });
+        }
+        
+        // 4. Сохраняем сгенерированный контент
+        await updateTaskStatus(task.id, 'generated', {
+            title: textResult.title,
+            body_text: textResult.body,
+            short_description: textResult.short_description,
+            primary_image_url: imageUrl,
+            hashtags: textResult.hashtags,
+            ai_model: textResult.model,
+            ai_tokens_used: textResult.tokens_used,
+            ai_generation_time: textResult.generation_time
+        });
+        
+        // 5. Отправка на модерацию (Human-in-the-Loop)
+        if (task.approval_required) {
+            console.log('[Worker] Sending draft for approval...');
+            const approvalResult = await sendDraftToTelegram({
+                task,
+                textResult,
+                imageUrl,
+                getBots: getBotsFunction
+            });
+            
+            await updateTaskStatus(task.id, 'waiting_approval', {
+                approval_chat_id: approvalResult.chat_id,
+                approval_message_id: approvalResult.message_id
+            });
+        } else {
+            // Автопубликация (если не требуется модерация)
+            await publishContent(task.id, task.channel, textResult, imageUrl);
+        }
+        
+        console.log(`[Worker] Task #${task.id} completed successfully`);
+        
+    } catch (error) {
+        console.error(`[Worker] Error processing task #${task.id}:`, error);
+        
+        // Обработка ошибки
+        const maxRetries = task.max_retries || 3;
+        const newRetryCount = (task.retry_count || 0) + 1;
+        
+        if (newRetryCount >= maxRetries) {
+            await updateTaskStatus(task.id, 'failed', {
+                error_message: error.message,
+                error_details: JSON.stringify({
+                    stack: error.stack,
+                    channel: task.channel,
+                    topic: task.topic
+                }),
+                error_code: error.code || 'GENERATION_FAILED'
+            });
+        } else {
+            await updateTaskStatus(task.id, 'pending', {
+                error_message: error.message,
+                retry_count: newRetryCount
+            });
+        }
+    } finally {
+        activeJobs--;
+    }
+}
+
+/**
+ * Опубликовать контент в канал
+ */
+async function publishContent(taskId, channel, textResult, imageUrl) {
+    try {
+        const task = await getTaskById(taskId);
+        if (!task) return;
+        
+        const publishResult = await publishToChannel({
+            channel,
+            channel_config: task.channel_config,
+            title: textResult.title,
+            body: textResult.body,
+            imageUrl,
+            hashtags: textResult.hashtags,
+            link: task.channel_config?.link
+        });
+        
+        await updateTaskStatus(taskId, 'published', {
+            published_at: new Date().toISOString(),
+            published_url: publishResult.url,
+            published_post_id: publishResult.post_id,
+            published_channel_data: JSON.stringify(publishResult.metadata)
+        });
+        
+        console.log(`[Worker] Content published to ${channel}: ${publishResult.url}`);
+        
+    } catch (error) {
+        console.error('[Worker] Error publishing content:', error);
+        await updateTaskStatus(taskId, 'failed', {
+            error_message: error.message,
+            error_code: 'PUBLISH_FAILED'
+        });
+    }
+}
+
+/**
+ * Получить задачу по ID
+ */
+async function getTaskById(taskId) {
+    const query = 'SELECT * FROM content_queue WHERE id = $1';
+    const result = await pool.query(query, [taskId]);
+    return result.rows[0] || null;
+}
+
+// =====================================================
+// POLLING ОЧЕРЕДИ
+// =====================================================
+
+async function pollQueue() {
+    if (!isRunning) return;
+    if (activeJobs >= MAX_CONCURRENT_JOBS) {
+        console.log(`[Worker] Max concurrent jobs reached (${MAX_CONCURRENT_JOBS}), skipping poll`);
+        return;
+    }
+    
+    const task = await getNextPendingTask();
+    
+    if (task) {
+        activeJobs++;
+        // Обрабатываем асинхронно, не блокируя polling
+        processContentTask(task).catch(err => {
+            console.error('[Worker] Unhandled error in processContentTask:', err);
+            activeJobs--;
+        });
+    }
+}
+
+async function pollVideoGenerations() {
+    if (!isRunning || !videoCallback) return;
+    
+    // Проверка задач с генерацией видео
+    const query = `
+        SELECT * FROM content_queue 
+        WHERE status = 'processing' 
+            AND content_type = 'video'
+            AND updated_at < NOW() - INTERVAL '5 minutes'
+        LIMIT 5
+    `;
+    
+    try {
+        const result = await pool.query(query);
+        for (const task of result.rows) {
+            await videoCallback(task);
+        }
+    } catch (error) {
+        console.error('[Worker] Error polling video generations:', error);
+    }
+}
+
+// =====================================================
+// ЗАПУСК И ОСТАНОВКА WORKER
+// =====================================================
+
+/**
+ * Запустить worker
+ * @param {Function} getBots - Функция получения ботов
+ */
+async function startWorker(getBots) {
+    if (isRunning) {
+        console.log('[Worker] Already running');
+        return;
+    }
+    
+    console.log('[Worker] Starting content worker...');
+    console.log(`[Worker] Poll interval: ${POLL_INTERVAL_MS}ms`);
+    console.log(`[Worker] Max concurrent jobs: ${MAX_CONCURRENT_JOBS}`);
+    console.log(`[Worker] Daily schedule: ${DAILY_SCHEDULE_TIME}`);
+    
+    setGetBotsFunction(getBots);
+    isRunning = true;
+    
+    // Запуск polling очереди
+    pollIntervalId = setInterval(pollQueue, POLL_INTERVAL_MS);
+    console.log('[Worker] Queue polling started');
+    
+    // Запуск polling видео-генераций
+    if (videoCallback) {
+        videoPollIntervalId = setInterval(pollVideoGenerations, VIDEO_POLL_INTERVAL_MS);
+        console.log('[Worker] Video polling started');
+    }
+    
+    // Настройка cron на ежедневный запуск в 09:00
+    cron.schedule(DAILY_SCHEDULE_TIME, async () => {
+        console.log('[Worker] Daily content generation triggered (09:00)');
+        await createDailyContentTasks();
+    });
+    
+    console.log('[Worker] Content worker started successfully');
+}
+
+/**
+ * Остановить worker
+ */
+async function stopWorker() {
+    console.log('[Worker] Stopping content worker...');
+    isRunning = false;
+    
+    if (pollIntervalId) {
+        clearInterval(pollIntervalId);
+        pollIntervalId = null;
+    }
+    
+    if (videoPollIntervalId) {
+        clearInterval(videoPollIntervalId);
+        videoPollIntervalId = null;
+    }
+    
+    // Ждём завершения активных задач
+    while (activeJobs > 0) {
+        console.log(`[Worker] Waiting for ${activeJobs} active jobs to complete...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    console.log('[Worker] Content worker stopped');
+}
+
+/**
+ * Создать ежедневные задачи на генерацию контента
+ */
+async function createDailyContentTasks() {
+    try {
+        // Получаем задачи из импортированных источников (Excel)
+        const query = `
+            SELECT * FROM content_queue 
+            WHERE source IN ('excel_import', 'google_sheets')
+                AND status = 'draft'
+                AND scheduled_at::date = CURRENT_DATE
+            ORDER BY priority DESC, created_at ASC
+        `;
+        
+        const result = await pool.query(query);
+        
+        for (const task of result.rows) {
+            await updateTaskStatus(task.id, 'pending');
+            console.log(`[Worker] Activated daily task #${task.id} for ${task.channel}`);
+        }
+        
+        console.log(`[Worker] Activated ${result.rows.length} daily tasks`);
+        
+    } catch (error) {
+        console.error('[Worker] Error creating daily tasks:', error);
+    }
+}
+
+// =====================================================
+// ENQUEUE JOB (для совместимости с существующим API)
+// =====================================================
+
+/**
+ * Поставить задачу в очередь
+ * @param {string} chatId - Chat ID пользователя
+ * @param {Object} options - Опции задачи
+ */
+async function enqueueJob(chatId, options) {
+    const {
+        topic,
+        channel = 'telegram',
+        content_type = 'post',
+        title,
+        body_text,
+        focus_keyword,
+        secondary_keywords,
+        lsi_keywords,
+        channel_config,
+        approval_required = true,
+        priority = 0,
+        scheduled_at = null
+    } = options;
+    
+    const query = `
+        INSERT INTO content_queue (
+            user_id, topic, channel, content_type, title, body_text,
+            focus_keyword, secondary_keywords, lsi_keywords,
+            channel_config, approval_required, priority, scheduled_at,
+            source, status
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+        ) RETURNING *
+    `;
+    
+    const values = [
+        chatId, topic, channel, content_type, title, body_text,
+        focus_keyword, JSON.stringify(secondary_keywords), JSON.stringify(lsi_keywords),
+        JSON.stringify(channel_config), approval_required, priority, scheduled_at,
+        'manual', 'pending'
+    ];
+    
+    try {
+        const result = await pool.query(query, values);
+        console.log(`[Worker] Job enqueued: #${result.rows[0].id}`);
+        return result.rows[0];
+    } catch (error) {
+        console.error('[Worker] Error enqueueing job:', error);
+        throw error;
+    }
+}
+
+// =====================================================
+// ЭКСПОРТ
+// =====================================================
+
+module.exports = {
+    startWorker,
+    stopWorker,
+    registerJobHandler,
+    registerVideoCallback,
+    enqueueJob,
+    setGetBotsFunction,
+    // Дополнительные экспорты для API
+    getNextPendingTask,
+    updateTaskStatus,
+    getTaskById,
+    pollQueue,
+    createDailyContentTasks
+};
+```
+
+---
+
+## 🔧 Интеграция с существующей архитектурой
+
+### 1. Подключение в `server.js`
+
+```javascript
+// server.js
+const { startWorker, stopWorker } = require('./services/content/worker');
+
+// При запуске сервера
+async function main() {
+    // ... инициализация ...
+    
+    // Запуск content worker
+    const getBots = () => require('./manage/telegram/runner').getBots();
+    await startWorker(getBots);
+    
+    // Graceful shutdown
+    process.on('SIGTERM', async () => {
+        await stopWorker();
+        // ... остальной shutdown ...
+    });
+}
+```
+
+### 2. Настройка `.env`
+
+```bash
+# Content Worker Configuration
+CONTENT_POLL_INTERVAL_MS=5000
+VIDEO_POLL_INTERVAL_MS=10000
+MAX_CONCURRENT_JOBS=1
+CONTENT_DAILY_TIME=0 9 * * *
+
+# PostgreSQL
+PG_HOST=172.17.0.1
+PG_PORT=5432
+PG_DATABASE=clientzavod
+PG_USER=postgres
+POSTGRES_PASSWORD=ваш_безопасный_пароль
+
+# Telegram
+TELEGRAM_BOT_TOKEN=ваш_токен_бота
+CONTENT_ADMIN_CHAT_ID=128247430
+TELEGRAM_CHANNEL_ID=-1001234567890
+```
+
+### 3. Зависимости (`package.json`)
+
+```json
+{
+  "dependencies": {
+    "pg": "^8.11.3",
+    "node-cron": "^3.0.3",
+    "telegraf": "^4.15.0",
+    "openai": "^4.28.0"
+  }
+}
+```
+
+---
+
+## 📋 Жизненный цикл задачи
+
+```
+┌─────────────┐
+│   draft     │ ← Создана (импорт Excel / вручную)
+└──────┬──────┘
+       │ Cron (09:00) активирует
+       ▼
+┌─────────────┐
+│   pending   │ ← Worker берёт в работу
+└──────┬──────┘
+       │ AI генерация
+       ▼
+┌─────────────┐
+│ processing  │ ← Генерация текста + картинки
+└──────┬──────┘
+       │ Готово
+       ▼
+┌─────────────┐
+│  generated  │ ← Контент сохранён в БД
+└──────┬──────┘
+       │ Отправка админу
+       ▼
+┌─────────────────┐
+│waiting_approval │ ← Ждёт кнопки в Telegram
+└──────┬──────────┘
+       │
+       ├───[✅]───→ published
+       │
+       └───[❌]───→ rejected
+```
+
+---
+
+## ✅ Проверка работы
+
+```bash
+# 1. Проверьте, что worker запускается
+docker logs bash-executor 2>&1 | grep -i worker
+
+# 2. Проверьте задачи в БД
+docker exec postgres psql -U postgres -d clientzavod -c \
+  "SELECT id, topic, channel, status, created_at FROM content_queue ORDER BY created_at DESC LIMIT 5;"
+
+# 3. Проверьте активные процессы
+docker exec bash-executor ps aux | grep node
+```

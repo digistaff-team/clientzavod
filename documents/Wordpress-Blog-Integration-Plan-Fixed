@@ -1,0 +1,504 @@
+План интеграции публикации статей: WordPress + Дзен (RSS) + Telegram                               
+
+ Context
+
+ Требуется перенести Make-сценарий documents/Worpress-Blog-Blueprint.json в Docker-Claw как нативный
+ канал публикации длинных статей. Каждый пользователь имеет собственный WordPress-блог. Пайплайн:
+ генерация статьи AI → сохранение SEO-метаданных в БД → публикация в WP как draft → отправка
+ превью-ссылки модератору в Telegram → по ✅ пост становится published → Дзен подтягивает запись
+ через RSS-фид WP → в Telegram-канал пользователя уходит анонс со ссылкой. Темы берутся из таблицы
+ content_topics планировщиком.
+
+ Зафиксированный scope (решения пользователя)
+
+ 1. Мультитенантность: у каждого пользователя свой WP-сайт. Учётки WP хранятся в per-user state.
+ 2. Дзен: публикация через RSS-фид WordPress (/feed/). Отдельного кода для Дзена нет — пользователь
+ настраивает импорт в Дзен-студии один раз.
+ 3. Telegram: переиспользуется существующий канал пользователя через contentMvp.service.js — анонс с
+ обложкой и ссылкой на опубликованную статью.
+ 4. SEO: seo_title, meta_desc всегда сохраняются в content_posts независимо от WP. В WP пишем их в
+ штатные title и excerpt (без привязки к Yoast/Rank Math).
+ 5. Источник тем: таблица content_topics в per-user БД; планировщик воркера сам выбирает очередную
+ тему.
+ 6. Модерация: модератору уходит ссылка на WP draft preview (штатный ?preview=true&preview_id=... WP)
+  + inline-кнопки wp_mod:approve|rewrite|reject.
+
+ ---
+ Архитектура пайплайна
+
+ content_topics (per-user)
+     ↓ [scheduler tick каждые 60с]
+ content_jobs (channel='wordpress', status='draft')
+     ↓ [worker]
+ blogGenerator.service (AI chain: формат → промпт картинки → imageGen → статья → SEO)
+     ↓
+ content_posts (seo_title, meta_desc, body_html, featured_image_url, status='ready')
+     ↓
+ wordpressMvp.publishDraft() → wp_post_id, preview_url
+     ↓ [если premoderationEnabled]
+ CW_BOT → превью-ссылка + wp_mod:* кнопки → ожидание callback
+     ↓ [approve]
+ wordpressMvp.transitionToPublish(wp_post_id) → status='published'
+     ↓ [параллельно]
+     ├─ Дзен: ничего не делаем (подтянет по RSS)
+     └─ contentMvp: анонс в TG-канал пользователя
+     ↓
+ content_posts.status='published', биллинг списан, content_topics row помечен used
+
+ ---
+ Пошаговый план реализации
+
+ Шаги упорядочены для последовательного выполнения AI-агентом. Каждый шаг — самостоятельный,
+ завершается проверкой.
+
+ Шаг 1. Модель данных и конфиг канала
+
+ Цель: подготовить БД под WP-канал.
+
+ Файлы:
+ - services/content/repository.js — в ensureSchema() добавить idempotent ALTER TABLE content_posts
+ ADD COLUMN IF NOT EXISTS:
+   - body_html TEXT
+   - seo_title VARCHAR(255)
+   - meta_desc TEXT
+   - featured_image_url TEXT
+   - wp_media_id INTEGER
+   - wp_post_id INTEGER
+   - wp_permalink TEXT
+   - wp_preview_url TEXT
+   - moderator_note TEXT
+ - Там же: создать таблицу content_topics (id, chatId, topic, keywords, tech_doc_id, priority,
+ used_at, created_at).
+ - Там же: создать таблицу content_knowledge_base (id, chatId, title, body, tags) — замена второго
+ Google Sheet «Технические документы» (мод 7).
+ - manage/store.js: добавить в per-user state поля wordpress: { baseUrl, username, appPassword,
+ defaultCategoryId, enabled } и хелперы getWpConfig(chatId) / setWpConfig(chatId, cfg).
+
+ Проверка: перезапустить приложение, вызвать repository.ensureSchema(chatId) из REPL — убедиться, что
+  столбцы и таблицы создались, повторный вызов не падает.
+
+ ---
+ Шаг 2. Сервис WordPress REST API
+
+ Цель: чистый клиент WP без логики FSM.
+
+ Файл: services/wordpressMvp.service.js (новый, по образцу services/vkMvp.service.js).
+
+ Методы:
+ module.exports = {
+   async uploadMedia(chatId, { buffer, filename, mimeType, altText, title }),
+   //   POST {baseUrl}/wp-json/wp/v2/media, Basic auth, multipart
+   //   → { id, source_url }
+
+   async createDraft(chatId, { title, content, excerpt, categories, featured_media, slug }),
+   //   POST /wp-json/wp/v2/posts с status='draft'
+   //   → { id, link, preview_link }  // preview_link: `${link}?preview=true&preview_id=${id}`
+
+   async publishPost(chatId, wpPostId),
+   //   POST /wp-json/wp/v2/posts/{id} с status='publish'
+   //   → { id, link }
+
+   async deletePost(chatId, wpPostId), // для rollback при rewrite
+
+   async ping(chatId), // GET /wp-json для проверки подключения
+ };
+
+ Креды берутся через store.getWpConfig(chatId). Basic auth:
+ Buffer.from(${username}:${appPassword}).toString('base64'). HTTP — через уже используемый в проекте
+ node-fetch.
+
+ Проверка: CLI node test-wp-publish.js <chatId> — создать draft с фиктивной картинкой, проверить
+ через ping и ручной GET.
+
+ ---
+ Шаг 3. Генерация изображений (Kie.ai / OpenAI Images)
+
+ Цель: отдельный модуль, т.к. существующий services/image.service.js содержит только overlayWatermark
+  (см. services/image.service.js:61).
+
+ Файл: services/imageGen.service.js (новый).
+
+ module.exports = {
+   async generateCover({ prompt, aspectRatio, style }),
+   //   адаптер: сначала Kie.ai (если в .env есть KIE_API_KEY), иначе OpenAI Images через ai_router
+   //   → { buffer, mimeType, filename }
+ };
+
+ Кэш сгенерированных картинок: /var/sandbox-data/{chatId}/blog-cache/{hash}.{ext} — чтобы retry не
+ перегенерировал.
+
+ Проверка: юнит-тест tests/imageGen.test.js с моком fetch.
+
+ ---
+ Шаг 4. Блог-генератор (prompt chain)
+
+ Цель: ядро — перенос модулей Make 5, 9, 13, 14, 15, 27 в один сервис.
+
+ Файл: services/blogGenerator.service.js (новый).
+
+ Зависимости: services/ai_router_service.js, services/imageGen.service.js, доступ к
+ content_knowledge_base через repository.
+
+ Системные промпты — вынести в manage/prompts.js как константы BLOG_PROMPT_FORMAT, BLOG_PROMPT_IMAGE,
+  BLOG_PROMPT_WRITE, BLOG_PROMPT_SEO. Заголовки и текст — из соответствующих модулей blueprint (5,
+ 27, 9, 13/14/15).
+
+ Метод:
+ async generate(chatId, { topic, keywords, techDocId }) {
+   // 1. loadKnowledge: прочитать content_knowledge_base[techDocId] если указан
+   // 2. format: ai_router.chat(BLOG_PROMPT_FORMAT, { topic, keywords }) → JSON {format,
+ target_audience, structure}
+   // 3. imagePrompt: ai_router.chat(BLOG_PROMPT_IMAGE, {structure}) → строка
+   // 4. image: imageGen.generateCover({prompt}) → buffer
+   // 5. article: ai_router.chat(BLOG_PROMPT_WRITE, {structure, knowledge, seoRules, imageUrl}) →
+ HTML
+   // 6. seo: Promise.all([ai_router.chat(SEO_TITLE), chat(SEO_DESC), chat(SEO_SLUG)])
+   // 7. return { bodyHtml, seoTitle, metaDesc, slug, imageBuffer, imageMime }
+ }
+
+ Все вызовы ai_router.chat() проходят через tokenBilling.js автоматически — отдельно списывать не
+ нужно, но перед запуском проверить tokenBilling.hasBalance(chatId, estimatedTokens) и бросить
+ InsufficientBalanceError, если нет.
+
+ Проверка: tests/blog.generator.test.js — мок ai_router_service и imageGen, проверить форму
+ возвращаемого объекта, порядок вызовов, ошибку при пустом балансе.
+
+ ---
+ Шаг 5. Репозиторий блог-постов
+
+ Цель: CRUD для блог-постов по образцу per-channel репо.
+
+ Файл: services/content/wordpress.repository.js (новый, шаблон —
+ services/content/youtube.repository.js).
+
+ Методы: createDraftPost, updateWpIds, markReady, markPublished, markError, findByStatus(chatId,
+ status), findPendingModeration(chatId), attachModeratorNote(id, note).
+
+ Проверка: ручной вызов из REPL + unit-тест на статус-переходы.
+
+ ---
+ Шаг 6. Worker — ветка WordPress
+
+ Цель: подключить FSM к воркеру.
+
+ Файл: services/content/worker.js — добавить обработку channel === 'wordpress':
+
+ draft  → blogGenerator.generate()
+        → wordpressMvp.uploadMedia() [идемпотентность: skip если wp_media_id уже есть]
+        → wordpressMvp.createDraft() [skip если wp_post_id уже есть, иначе PATCH]
+        → content_posts.update(seo_title, meta_desc, wp_post_id, wp_preview_url, body_html,
+ status='ready')
+
+ ready  → если !premoderationEnabled: status='approved' сразу
+        → иначе: sendModerationRequest() (Шаг 7)
+
+ approved → wordpressMvp.publishPost(wp_post_id)
+          → contentMvp.publishAnnouncement(chatId, {title, previewImage, wp_permalink, teaser})
+          → status='published', content_topics.used_at = now()
+
+ error  → retry с exponential backoff (уже есть в queue.repository.js)
+        → при исчерпании попыток: alerts.notifyAdmin()
+
+ Параллелизм: семафор 1 на chatId для WP (длинная генерация, rate-limit OpenAI/Kie), через простой
+ Map<chatId, Promise>.
+
+ Проверка: интеграционный тест с моками всех внешних сервисов, прогон полного цикла draft →
+ published.
+
+ ---
+ Шаг 7. Модерация через CW_BOT (превью-ссылка)
+
+ Цель: модератор видит короткое сообщение со ссылкой на WP draft preview и кнопками.
+
+ Файлы:
+ - services/content/wordpress.repository.js или worker.js: sendModerationRequest(chatId, post)
+ формирует сообщение:
+ 📝 Новая статья для блога
+ Заголовок: <seoTitle>
+ Темы: <keywords>
+
+ [Превью]( <wp_preview_url> )
+
+ [✅ Опубликовать] [🔁 Переписать] [❌ Отклонить]
+ - Кнопки: callback_data = wp_mod:approve:{jobId}, wp_mod:rewrite:{jobId}, wp_mod:reject:{jobId}.
+ - manage/telegram/runner.js: в обработчике callback_query добавить роутинг wp_mod:*:
+   - approve → wordpress.repository.markApproved(jobId) → worker подхватит
+   - rewrite → запросить текст замечания (следующим сообщением), сохранить в moderator_note, вернуть
+ в draft, инкрементировать попытку
+   - reject → wordpressMvp.deletePost, status='rejected'
+ - В manage/prompts.js: добавить в BLOG_PROMPT_WRITE секцию «если есть moderator_note — учесть её».
+
+ Проверка: ручной прогон через CW_BOT на тестовом chatId.
+
+ ---
+ Шаг 8. Анонс в Telegram после публикации
+
+ Цель: переиспользовать contentMvp.service.js без дублирования.
+
+ Файл: services/content/worker.js в ветке approved → published:
+
+ await contentMvpService.enqueueAnnouncement(chatId, {
+   text: `${seoTitle}\n\n${metaDesc}\n\n👉 Читать: ${wpPermalink}`,
+   imageBuffer: featuredImageBuffer, // из кэша
+   source: 'blog',
+   sourceRefId: contentPostId,
+ });
+
+ Если у contentMvp нет публичного метода enqueueAnnouncement — добавить тонкую обёртку над
+ существующей логикой постановки задачи в content_queue с channel='telegram'. Не изобретать новую
+ очередь.
+
+ Проверка: e2e smoke с моком Telegram API.
+
+ ---
+ Шаг 9. Планировщик тем
+
+ Цель: воркер сам берёт темы из content_topics.
+
+ Файл: services/content/worker.js — в тике планировщика (каждые 60 сек):
+ для каждого chatId с enabled wordpress:
+   если нет активных wordpress-задач в content_queue:
+     topic = SELECT FROM content_topics WHERE chatId=? AND used_at IS NULL
+             ORDER BY priority DESC, created_at ASC LIMIT 1
+     если topic: enqueue(chatId, 'wordpress', {topicId: topic.id})
+
+ Лимиты: services/content/limits.js — добавить wordpress: { perDay: 3 } (настраивается через
+ content_config).
+
+ Проверка: вставить темы в БД, дождаться тика, убедиться, что задача поставлена и used_at не
+ выставлен до успешной публикации.
+
+ ---
+ Шаг 10. API, UI подключения и управление темами
+
+ Цель: пользователь может подключить WP-блог и управлять темами.
+
+ Файлы:
+ - routes/content.routes.js: добавить endpoints:
+   - POST /api/content/wordpress/connect → сохранить baseUrl/username/appPassword +
+ wordpressMvp.ping()
+   - GET  /api/content/wordpress/status → вернуть состояние + последние 10 постов
+   - POST /api/content/wordpress/disconnect
+   - GET  /api/content/wordpress/config → вернуть расписание и лимиты
+   - PUT  /api/content/wordpress/config → сохранить расписание и лимиты
+   - POST /api/content/topics / GET / DELETE /:id — CRUD тем
+   - POST /api/content/knowledge → добавить технический документ
+ - public/channels.html: карточка «WordPress блог» с формой подключения, кнопкой «Проверить
+ подключение», блоком настроек планировщика (см. Шаг 10a) и списком тем.
+ - public/content.html: секция «Опубликованные статьи» (список с wp_permalink).
+ - Валидаторы: services/content/validators.js — схема для блог-темы и для wordpressConfig (часы в
+ 0–23, лимит 1–10, таймзона из белого списка).
+
+ Проверка: ручной тест в браузере — подключить тестовый WP, добавить тему, дождаться публикации,
+ увидеть анонс в TG.
+
+ ---
+ Шаг 10a. UI планировщика публикаций (по образцу VK/OK/Instagram)
+
+ Цель: в карточке WordPress в public/channels.html добавить полноценный блок «Настройки публикации» —
+  визуально и функционально идентичный существующим каналам (VK: channels.html:516–540+, Instagram:
+ channels.html:472–485).
+
+ Файл: public/channels.html, новая панель #channelPanel-wordpress с блоками по образцу
+ #vkSettingsBlock.
+
+ Элементы UI (внутри блока #wordpressSettingsBlock):
+
+ 1. Заголовок и описание
+   - <h3>Настройки публикации</h3>
+   - Пояснение: «Расписание генерации и публикации статей в блог. Дзен подтянет статьи автоматически
+ через RSS-фид WP.»
+ 2. Чекбоксы режимов (display: flex; gap: 16px; flex-wrap: wrap;):
+   - #wordpressEnabled — «Канал активен»
+   - #wordpressAutoPublish — «Автопубликация без модерации» (инвертирует premoderationEnabled)
+   - #wordpressAnnounceTelegram — «Анонсировать в Telegram-канале»
+   - #wordpressUseKnowledgeBase — «Использовать базу знаний для фактов»
+ 3. Расписание — grid 1fr 1fr:
+   - #wordpressScheduleHour (<select> 00–23) + #wordpressScheduleMinute (<input text maxlength=2>) +
+ скрытый #wordpressScheduleTime — по образцу vkScheduleHour/vkScheduleMinute из
+ channels.html:524–534. Обработчики updateWordpressScheduleTime(), validateWordpressMinutes() — копии
+  VK-аналогов.
+   - #wordpressScheduleTz — <select> с тем же списком таймзон, что у VK (вынести в общий хелпер
+ buildTzOptions() в public/js/common.js, чтобы не дублировать опции между каналами).
+ 4. Дни недели — checkbox group #wordpressScheduleDays (ПН–ВС), по образцу VK. Значения 1..7,
+ сохраняются как массив.
+ 5. Лимиты — grid 1fr 1fr:
+   - #wordpressDailyLimit (<input type=number min=1 max=10 value=1>) — «Лимит статей в день»
+   - #wordpressMinIntervalHours (<input type=number min=1 max=48 value=6>) — «Минимальный интервал
+ между статьями (часы)»
+ 6. Категория WP по умолчанию:
+   - #wordpressDefaultCategoryId — <select> подгружается после успешного ping через GET
+ /wp-json/wp/v2/categories. До подключения — placeholder «Сначала подключите блог».
+ 7. База знаний (технические документы) — сворачиваемый блок:
+   - Кнопка «➕ Добавить документ» открывает модалку с title, body (textarea), tags.
+   - Список загруженных документов с кнопкой «Удалить».
+   - Опционально: drag-and-drop загрузка .md/.txt (переиспользовать существующий аплоадер, если
+ есть).
+ 8. Темы для планировщика — отдельная секция «Темы для генерации» (CRUD content_topics):
+   - Таблица: тема, ключевые слова, приоритет, привязанный tech doc, статус (ожидает/использована).
+   - Форма добавления: topic (input), keywords (input с tag-инпутом), priority (select
+ low/normal/high), techDocId (select из загруженных документов).
+   - Кнопка «Удалить» для каждой темы.
+   - Индикатор «Следующий запуск: через NN мин» — рассчитывается на основании scheduleTime +
+ последнего used_at + minIntervalHours.
+ 9. Статус планировщика — строка внизу блока:
+   - «Статус: 🟢 Активен / ⚪ Остановлен»
+   - «Последняя публикация:  ()»
+   - «Всего опубликовано: N | Ошибок подряд: M»
+   - Подтягивается из GET /api/content/wordpress/status.
+ 10. Кнопки действий:
+   - 💾 Сохранить настройки → saveWordpressConfig() → PUT /api/content/wordpress/config
+   - ▶️  Запустить генерацию сейчас → POST /api/content/wordpress/run-now (ставит внеочередную задачу,
+  игнорируя расписание, но уважая дневной лимит)
+   - ⏸ Приостановить планировщик → переключает wordpressEnabled
+   - Статус-строка #wordpressSettingsStatus под кнопками (как #instagramSettingsStatus в
+ channels.html:485)
+
+ JS-функции (добавить в public/js/common.js или инлайн-скрипт channels.html):
+
+ async function loadWordpressConfig() { /* GET /api/content/wordpress/config → заполнить поля */ }
+ async function saveWordpressConfig() { /* собрать JSON, PUT */ }
+ async function loadWordpressTopics() { /* GET /api/content/topics?channel=wordpress */ }
+ async function addWordpressTopic() { /* POST */ }
+ async function deleteWordpressTopic(id) { /* DELETE */ }
+ async function loadWordpressKnowledge() { /* GET /api/content/knowledge */ }
+ async function addWordpressKnowledgeDoc() { /* POST */ }
+ async function runWordpressNow() { /* POST /run-now */ }
+ async function loadWordpressCategories() { /* GET /wp-json/wp/v2/categories через прокси endpoint,
+ чтобы не упираться в CORS */ }
+ function updateWordpressScheduleTime() { /* копия updateVkScheduleTime */ }
+ function validateWordpressMinutes() { /* копия validateVkMinutes */ }
+
+ Вызывать loadWordpressConfig() + loadWordpressTopics() + loadWordpressKnowledge() при показе панели
+ WP (в обработчике переключения каналов).
+
+ Серверная часть (дополнения к Шагу 10):
+ - GET  /api/content/wordpress/categories — прокси к {baseUrl}/wp-json/wp/v2/categories (CORS-обход +
+  Basic auth).
+ - POST /api/content/wordpress/run-now — ставит задачу в content_queue с priority=high, проверяя
+ дневной лимит.
+ - Поле wordpressConfig в per-user state (через store.js):
+ {
+   enabled, autoPublish, announceTelegram, useKnowledgeBase,
+   scheduleTime, scheduleTz, scheduleDays,
+   dailyLimit, minIntervalHours,
+   defaultCategoryId,
+   lastPublishedAt, consecutiveErrors
+ }
+
+ Проверка UI:
+ 1. Открыть /channels.html, выбрать вкладку WordPress — панель отображается, поля подгружены.
+ 2. Подключить тестовый WP — категории подтянулись в #wordpressDefaultCategoryId.
+ 3. Добавить тему → она появляется в таблице, «Следующий запуск» показывает корректный ETA.
+ 4. Сохранить настройки → перезагрузить страницу → значения сохранились.
+ 5. Нажать «Запустить сейчас» → в content_queue появляется задача вне расписания, через ≤30 сек
+ статус обновляется.
+ 6. Снять галочку «Канал активен» → планировщик перестаёт тикать для этого chatId (проверить, что
+ новые задачи не создаются).
+ 7. Визуально сравнить с карточкой VK — отступы, шрифты, цвета идентичны.
+
+ ---
+ Шаг 11. Тесты
+
+ Цель: покрыть критичные пути.
+
+ Файлы (новые):
+ - tests/wordpress.publisher.test.js — мок fetch, проверить корректность заголовков Basic auth,
+ multipart media, идемпотентность.
+ - tests/blog.generator.test.js — мок ai_router_service и imageGen, проверить prompt chain.
+ - tests/blog.moderation.test.js — FSM переходы ready → approved → published, ready → rewrite →
+ draft, ready → reject → rejected.
+ - tests/e2e/specs/blog-publish.spec.js — Playwright smoke c моком WP (httpbin-style dummy) и
+ Telegram.
+
+ Обновить package.json:
+ "test": "node tests/content.status.test.js && node tests/validators.extended.test.js && node
+ tests/wordpress.publisher.test.js && node tests/blog.generator.test.js && node
+ tests/blog.moderation.test.js"
+
+ Проверка: npm test и npm run test:e2e:smoke.
+
+ ---
+ Шаг 12. Документация и финализация
+
+ Цель: обновить CLAUDE.md и добавить подсистему в таблицы.
+
+ Файлы:
+ - CLAUDE.md: в таблицу подсистем добавить Контент WordPress | services/wordpressMvp.service.js | WP
+ REST API v2, per-user креды и Генератор статей | services/blogGenerator.service.js | Prompt chain
+ для длинного контента. В контент-пайплайн — wordpress.repository.js. В трёхуровневой БД —
+ content_topics, content_knowledge_base.
+ - README.md: секция «Публикация в блог» с инструкцией настройки WP App Password и RSS-импорта в
+ Дзен.
+
+ Проверка: git diff CLAUDE.md — убедиться, что актуальные файлы перечислены.
+
+ ---
+ Критические файлы (сводка)
+
+ Новые:
+ - services/wordpressMvp.service.js
+ - services/blogGenerator.service.js
+ - services/imageGen.service.js
+ - services/content/wordpress.repository.js
+ - tests/wordpress.publisher.test.js
+ - tests/blog.generator.test.js
+ - tests/blog.moderation.test.js
+ - tests/e2e/specs/blog-publish.spec.js
+ - test-wp-publish.js (CLI для ручной проверки)
+
+ Расширяемые:
+ - services/content/repository.js — ensureSchema расширить
+ - services/content/worker.js — ветка wordpress + планировщик тем
+ - services/content/limits.js — лимит wordpress
+ - services/content/validators.js — схема блог-тем
+ - manage/store.js — хранение WP креденшелов
+ - manage/prompts.js — BLOG_PROMPT_* константы
+ - manage/telegram/runner.js — обработчик callback wp_mod:*
+ - routes/content.routes.js — новые endpoints
+ - public/channels.html, public/content.html — UI
+ - package.json — тесты
+ - CLAUDE.md, README.md — документация
+
+ Использовать как есть (не трогать):
+ - services/ai_router_service.js
+ - services/content/queue.repository.js (retry уже работает)
+ - services/content/alerts.js
+ - services/contentMvp.service.js (только добавить enqueueAnnouncement, если метода ещё нет)
+ - services/image.service.js (только overlayWatermark, см. services/image.service.js:61)
+ - manage/tokenBilling.js
+
+ ---
+ Verification (end-to-end)
+
+ 1. Schema: запустить приложение, вызвать ensureSchema(testChatId) → psql -d db_{chatId} -c '\d
+ content_posts' показывает новые колонки.
+ 2. WP ping: curl -X POST http://localhost:3015/api/content/wordpress/connect -d '{...}' → 200 +
+ ping: ok.
+ 3. Unit: npm test → зелёный.
+ 4. Ручной сквозной:
+   - Подключить тестовый WP через /channels.html.
+   - Добавить тему «Как выбрать фрезер» через /content.html.
+   - Дождаться тика планировщика (≤60 сек).
+   - В CW_BOT приходит сообщение с превью-ссылкой — открыть ссылку, убедиться, что WP показывает
+ draft.
+   - Нажать ✅ → через ≤30 сек проверить: (a) статья published в WP, (b) анонс пришёл в TG-канал
+ пользователя, (c) content_topics.used_at проставлен, (d) content_posts.status='published', (e) в
+ content_posts присутствуют seo_title и meta_desc.
+   - Проверить RSS: curl https://<wp-site>/feed/ → новая запись там есть (Дзен подтянет сам).
+ 5. Idempotency retry: в wordpressMvp.publishPost инжектировать однократную ошибку → убедиться, что
+ при retry не создаётся дубль (проверка по wp_post_id).
+ 6. Rewrite: отправить 🔁 с комментарием → убедиться, что статус вернулся в draft, moderator_note
+ сохранён, повторная генерация учла замечание.
+ 7. E2E: npm run test:e2e:smoke → зелёный.
+
+ ---
+ Открытые риски (закладываем буфер)
+
+ - Размер WP App Password: нужен HTTPS на WP (проверить в ping).
+ - Rate limit Kie.ai при бесплатном тарифе: semафор на chatId спасает от параллельного запуска, но не
+  от общего лимита — логировать 429 и удлинять backoff.
+ - RSS задержка Дзена: Дзен подтягивает ленту с задержкой до нескольких часов. Пользователь должен
+ знать — добавить предупреждение в channels.html.
+ - Длина статьи vs лимит body_html: TEXT в PostgreSQL хватит (до 1 ГБ), ничего дополнительно не
+ нужно.

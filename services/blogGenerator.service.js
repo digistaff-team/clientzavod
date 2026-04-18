@@ -5,7 +5,6 @@
 const config = require('../config');
 const aiRouterService = require('./ai_router_service');
 const imageGenService = require('./imageGen.service');
-const tokenBilling = require('../manage/tokenBilling');
 const wpRepo = require('./content/wordpress.repository');
 const contentRepo = require('./content/repository');
 
@@ -20,15 +19,6 @@ const {
 } = require('../manage/prompts');
 const channelSkills = require('./channelSkills');
 
-// Оценка токенов для проверки баланса (приблизительно)
-const ESTIMATED_TOKENS_PER_ARTICLE = 15000; // ~15k tokens на полную генерацию
-
-class InsufficientBalanceError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'InsufficientBalanceError';
-  }
-}
 
 /**
  * Загрузить технический документ из базы знаний
@@ -49,21 +39,13 @@ async function loadKnowledge(chatId, techDocId) {
  * Вызвать AI router с проверкой баланса
  */
 async function aiChat(chatId, systemPrompt, userPrompt) {
-  // Используем aiRouterService напрямую
-  // Передаём messages в формате OpenAI
   const messages = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt }
   ];
 
-  // Создаём временную "сессию" для AI router
-  const result = await aiRouterService.processMessage(
-    chatId,
-    { messages, model: null }, // модель возьмётся из настроек пользователя
-    null // bot — не требуется для прямой генерации
-  );
-
-  return result.reply || result.text || result;
+  const result = await aiRouterService.callAI(chatId, null, null, messages, null, null);
+  return result?.choices?.[0]?.message?.content || '';
 }
 
 /**
@@ -77,6 +59,7 @@ async function aiChat(chatId, systemPrompt, userPrompt) {
  * @returns {Promise<{bodyHtml: string, seoTitle: string, metaDesc: string, slug: string, imageBuffer: Buffer, imageMime: string, imageFilename: string}>}
  */
 async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
+<<<<<<< HEAD
   // 0. Проверка баланса отключена (модуль биллинга пока не используется)
   // const balanceCheck = await tokenBilling.hasBalance(chatId, ESTIMATED_TOKENS_PER_ARTICLE);
   // if (!balanceCheck.canUse) {
@@ -85,6 +68,8 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
   //   );
   // }
 
+=======
+>>>>>>> 58d2488 (Refactor content processing to worker-based architecture)
   // 1. Загрузка базы знаний (если указана)
   const knowledgeDoc = await loadKnowledge(chatId, techDocId);
   const knowledgeContext = knowledgeDoc
@@ -166,8 +151,4 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
   };
 }
 
-module.exports = {
-  generate,
-  InsufficientBalanceError,
-  ESTIMATED_TOKENS_PER_ARTICLE
-};
+module.exports = { generate };

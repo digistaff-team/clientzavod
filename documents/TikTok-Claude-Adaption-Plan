@@ -1,0 +1,422 @@
+# Адаптация TikTok-рабочего процесса (Make.com Blueprint → Docker-Claw)
+
+Составлен по результатам анализа `documents/TikTok-blueprint.json` и текущей реализации
+`services/tiktokMvp.service.js`. Цель — полная верность оригинальному рабочему процессу
+при сохранении архитектуры платформы (per-user, FSM, CW-модерация, отказоустойчивость).
+
+---
+
+## 1. Сравнительный анализ (как есть vs blueprint)
+
+| Blueprint (Make.com) | Текущая реализация | Статус |
+|---------------------|-------------------|--------|
+| randomInt(2,59) → строка Google Sheets | `reserveNextTopic(chatId, 'tiktok')` — очередь | ✅ Улучшение (без повторов) |
+| Google Docs ДНК Фэнси | `loadUserPersona` (IDENTITY.md/SOUL.md) | ⚠️ Частично (разные источники) |
+| Google Docs TOV Фэнси | Не загружается отдельно | ❌ Отсутствует |
+| GPT-4.1 → структурированный Veo-промпт (5 секций, EN) | `generateTiktokContent` → caption/hashtags | ⚠️ Есть, но структура промпта не соответствует blueprint |
+| Veo 3 Fast видео, 9:16 | `claimVideo` / `generateVideo` — общий image-to-video пайплайн | ✅ Реализовано, TikTok уже участник |
+| `enableFallback: true` | Не передаётся в Veo-адаптер | ❌ Отсутствует |
+| `enableTranslation: true` | Захардкожено в `generateVideoVeo`, не управляемо | ⚠️ Есть, но не явно |
+| Скачивание видео | Автоматически в пайплайне | ✅ Реализовано |
+| upload-post.com multipart POST | `publishTiktokPost` — TODO заглушка | ❌ Не реализовано |
+| `title: {{1.value}}` (broken ref) | Нет поля title при публикации | ⚠️ Нужно использовать `topic.topic` |
+| Нет модерации | CW Bot `tt_mod:` | ✅ Платформенное улучшение |
+| Нет отказоустойчивости | `releaseTopic` в catch планировщика | ✅ Платформенное улучшение |
+
+**Ключевой вывод по видео-пайплайну:** TikTok уже является полноценным участником общего
+image-to-video пайплайна наравне с YouTube, Instagram Reels и VK Video. Константа `CHANNELS`
+в `services/content/videoPipeline.repository.js` включает `'tiktok'`, и в
+`handleTiktokGenerateJob` уже реализован вызов `claimVideo(chatId, 'tiktok')` /
+`generateVideo(chatId, 'tiktok')` — идентично другим каналам. Видео не нужно генерировать
+отдельно. Таймер удаления ждёт пока все 4 канала заберут видео.
+
+**Что реально не реализовано:** генерация caption по шаблону blueprint (GPT-4.1 + ДНК/TOV),
+реальная публикация через upload-post.com, завершение жизненного цикла топика.
+
+---
+
+## 2. Архитектурные решения
+
+### 2.1 Роль Veo-промпта в пайплайне
+
+Blueprint использует *text-to-video*: GPT генерирует описание сцены, Veo создаёт видео по тексту.
+Платформа использует *image-to-video*: фото товара → сцена → видео. Это два разных подхода к
+**генерации видео**. TikTok использует второй (как все остальные каналы).
+
+GPT-промпт по шаблону blueprint применяется в платформе для другой задачи —
+**генерации caption/описания видео** (то, что `generateTiktokContent` уже делает, но
+без правильной структуры и без загрузки ДНК/TOV). Структура 5 секций не нужна в caption,
+но системный промпт blueprint содержит ценные правила («точные прилагательные, без абстракций,
+без отрицаний»), которые улучшают качество текста для любых целей.
+
+### 2.2 Загрузка ДНК/TOV
+
+Blueprint читает два отдельных Google Docs документа:
+- **ДНК** (`ДНК Фэнси`) — бренд-идентичность
+- **TOV** (`tov фэнси`) — тон голоса
+
+В Docker-Claw аналог — файловая система контейнера. **Правило загрузки:**
+
+```
+Приоритет 1: /workspace/input/brand/dna.md  + /workspace/input/brand/tov.md
+Приоритет 2: /workspace/IDENTITY.md  (если нет отдельных файлов)
+Приоритет 3: пустая строка (не блокирует генерацию, но снижает качество)
+```
+
+Файлы `dna.md` и `tov.md` пользователь размещает вручную в `/workspace/input/brand/`.
+Сервис читает их через `fs.readFile`. Несуществующий `buildContext()` не используется.
+
+### 2.3 Публикация через upload-post.com
+
+Blueprint использует `POST https://api.upload-post.com/api/upload` multipart/form-data:
+- `title` — текст темы (`topic.topic`, исправляет broken `{{1.value}}` reference из blueprint)
+- `user` — имя аккаунта (в blueprint: `chevron_mdl`, в платформе: `UPLOAD_POST_USER`)
+- `platform[]` — `'tiktok'`
+- `video` — файл видео (бинарные данные + имя файла)
+- `Authorization: Bearer {JWT}` — токен из `UPLOAD_POST_JWT` в `.env.local`
+
+### 2.4 Жизненный цикл топика
+
+После успешной публикации необходимо вызвать `repository.updateTopicStatus(chatId, topicId, 'completed')`.
+`topicId` должен храниться в черновике (`draft.topicId`) и передаваться через весь поток вплоть
+до подтверждения от upload-post.com.
+
+### 2.5 День недели
+
+Blueprint вычисляет `dayOfWeek = formatDate(now, "e")`. В платформе уже реализован
+эквивалент: `settings.allowedWeekdays` в `publishScheduledPosts`. **Действий не требует.**
+
+---
+
+## 3. Детальный план реализации
+
+### Шаг 1. Добавить константу промпта в `manage/prompts.js`
+
+**Файл:** `manage/prompts.js`
+
+Добавить константу перед `module.exports` и включить её в экспорт:
+
+```js
+const TIKTOK_CAPTION_SYSTEM = `Ты — эксперт по созданию описаний для TikTok видео.
+
+На основе темы поста, бренд-ДНК и тона голоса создай описание для короткого видео.
+
+Правила:
+Используй точные и конкретные прилагательные.
+Избегай абстракций, отрицаний и рассуждений.
+Не добавляй лишних объяснений — только значимые слова и эмоции.
+Описание должно быть кратким (до 150 символов) и привлекательным.
+3-5 релевантных хэштегов на языке аудитории.
+
+Формат ответа (JSON):
+{
+  "caption": "Текст описания (до 150 символов)",
+  "hashtags": ["#хештег1", "#хештег2"]
+}`;
+
+module.exports = {
+  // ... существующие экспорты ...
+  TIKTOK_CAPTION_SYSTEM
+};
+```
+
+---
+
+### Шаг 2. Загрузка ДНК и TOV в `services/tiktokMvp.service.js`
+
+Заменить функцию `loadUserPersona` на две отдельные:
+
+```js
+async function loadBrandDna(chatId) {
+  const storageDir = storageService.getDataDir(String(chatId));
+  try {
+    return await fs.readFile(path.join(storageDir, 'input', 'brand', 'dna.md'), 'utf-8');
+  } catch {}
+  try {
+    return await fs.readFile(path.join(storageDir, 'IDENTITY.md'), 'utf-8');
+  } catch {}
+  return '';
+}
+
+async function loadBrandTov(chatId) {
+  const storageDir = storageService.getDataDir(String(chatId));
+  try {
+    return await fs.readFile(path.join(storageDir, 'input', 'brand', 'tov.md'), 'utf-8');
+  } catch {}
+  try {
+    return await fs.readFile(path.join(storageDir, 'SOUL.md'), 'utf-8');
+  } catch {}
+  return '';
+}
+```
+
+---
+
+### Шаг 3. Обновить `generateTiktokContent` — использовать ДНК/TOV и новый промпт
+
+Заменить текущую реализацию `generateTiktokContent`:
+
+```js
+const { TIKTOK_CAPTION_SYSTEM } = require('../manage/prompts');
+
+async function generateTiktokContent(chatId, topic, dna, tov) {
+  const contextParts = [];
+  if (dna) contextParts.push(`Бренд-ДНК:\n${dna.slice(0, 2000)}`);
+  if (tov) contextParts.push(`Tone of Voice:\n${tov.slice(0, 1000)}`);
+
+  const userMessage = [
+    ...contextParts,
+    `Тема: ${topic.topic || topic}`,
+    topic.focus ? `Фокус: ${topic.focus}` : null
+  ].filter(Boolean).join('\n\n');
+
+  const response = await aiRouterService.chatCompletion(chatId, [
+    { role: 'system', content: TIKTOK_CAPTION_SYSTEM },
+    { role: 'user', content: userMessage }
+  ], { temperature: 1, max_tokens: 512 });
+
+  if (!response?.content) throw new Error('AI response is empty');
+
+  let parsed;
+  try {
+    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    parsed = { caption: response.content.slice(0, 150), hashtags: [] };
+  }
+
+  return {
+    caption: String(parsed.caption || '').slice(0, 150),
+    hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags.slice(0, 5) : []
+  };
+}
+```
+
+---
+
+### Шаг 4. Реализовать публикацию через upload-post.com
+
+Заменить заглушку в `publishTiktokPost` / добавить новую функцию `publishViaUploadPost`:
+
+```js
+async function publishViaUploadPost(videoPath, title) {
+  const jwt = process.env.UPLOAD_POST_JWT;
+  const user = process.env.UPLOAD_POST_USER;
+
+  if (!jwt || !user) {
+    throw new Error('UPLOAD_POST_JWT или UPLOAD_POST_USER не заданы в .env.local');
+  }
+
+  const FormData = require('form-data');
+  const videoBuffer = await fs.readFile(videoPath);
+  const videoFilename = path.basename(videoPath);
+
+  const form = new FormData();
+  form.append('title', title);
+  form.append('user', user);
+  form.append('platform[]', 'tiktok');
+  form.append('video', videoBuffer, { filename: videoFilename, contentType: 'video/mp4' });
+
+  const resp = await fetch('https://api.upload-post.com/api/upload', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${jwt}`,
+      ...form.getHeaders()
+    },
+    body: form,
+    timeout: 120000
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`upload-post.com error: ${resp.status} ${errText.slice(0, 300)}`);
+  }
+
+  const data = await resp.json().catch(() => ({}));
+  console.log(`[TIKTOK][UPLOAD-POST] Published:`, JSON.stringify(data));
+  return data;
+}
+```
+
+---
+
+### Шаг 5. Обновить `handleTiktokGenerateJob` — добавить ДНК/TOV и title
+
+Существующий поток (claimVideo → generateVideo) **оставить без изменений**.
+Обновить только часть генерации контента и черновика:
+
+```js
+async function handleTiktokGenerateJob(chatId, queueJob, bot, correlationId) {
+  const settings = getTiktokSettings(chatId);
+
+  // 1. Видео: существующий shared pipeline (не меняем)
+  let videoPath = '';
+  let videoId = null;
+  // ... (claimVideo / generateVideo — существующий код) ...
+
+  // 2. Контент: загружаем ДНК + TOV, передаём в generateTiktokContent
+  const [dna, tov] = await Promise.all([
+    loadBrandDna(chatId),
+    loadBrandTov(chatId)
+  ]);
+
+  const topic = queueJob?.topic || { topic: 'Product showcase', focus: '' };
+  let tiktokContent;
+  try {
+    tiktokContent = await generateTiktokContent(chatId, topic, dna, tov);
+  } catch (e) {
+    console.error(`[TIKTOK-MVP] Content generation failed: ${e.message}`);
+    tiktokContent = { caption: topic.topic || 'Check this out!', hashtags: [] };
+  }
+
+  // 3. Черновик: добавить title и topicId для жизненного цикла
+  const jobId = Date.now();
+  const draft = {
+    jobId,
+    videoId,
+    videoPath,
+    caption: tiktokContent.caption,
+    hashtags: tiktokContent.hashtags,
+    title: topic.topic || tiktokContent.caption, // для upload-post.com (исправляет {{1.value}})
+    topicId: topic.id || null,                   // для updateTopicStatus после публикации
+    correlationId: queueJob?.correlationId || `tiktok_${jobId}`,
+    rejectedCount: 0,
+    status: 'ready'
+  };
+
+  // 4. Маршрутизация (существующий код)
+  if (settings.autoPublish) {
+    await setTiktokDraft(chatId, String(jobId), draft);
+    await publishTiktokPost(chatId, bot, jobId);
+  } else {
+    await sendTiktokToModerator(chatId, bot, draft);
+  }
+
+  return { success: true, data: { jobId } };
+}
+```
+
+---
+
+### Шаг 6. Обновить `publishTiktokPost` — реальная публикация + updateTopicStatus
+
+```js
+async function publishTiktokPost(chatId, bot, jobId) {
+  const drafts = getTiktokDrafts(chatId);
+  const draft = drafts[String(jobId)];
+  if (!draft) throw new Error(`TikTok draft ${jobId} not found`);
+
+  // Реальная публикация через upload-post.com
+  await publishViaUploadPost(draft.videoPath, draft.title || draft.caption);
+
+  // Завершаем жизненный цикл топика
+  if (draft.topicId) {
+    await repository.updateTopicStatus(chatId, draft.topicId, 'completed').catch(() => {});
+  }
+
+  draft.status = 'published';
+  draft.publishedAt = new Date().toISOString();
+  await setTiktokDraft(chatId, String(jobId), draft);
+  await removeTiktokDraft(chatId, String(jobId));
+
+  if (bot?.telegram) {
+    await bot.telegram.sendMessage(
+      chatId,
+      `✅ TikTok видео опубликовано!\n\n📝 ${draft.caption}\n${draft.hashtags.join(' ')}`
+    ).catch(() => {});
+  }
+}
+```
+
+---
+
+### Шаг 7. Передача topicId при модерации
+
+В `handleTiktokModerationAction`, case `'approve'` вызывает `publishTiktokPost` —
+`topicId` уже будет в черновике из шага 5. Действий не требует, но нужно убедиться
+что `setTiktokDraft` сохраняет `topicId` (он есть в объекте `draft` из шага 5).
+
+---
+
+### Шаг 8. Конфигурация в `.env.local`
+
+```bash
+# upload-post.com (TikTok публикация)
+UPLOAD_POST_JWT=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...   # Bearer JWT токен
+UPLOAD_POST_USER=chevron_mdl                                # имя аккаунта на upload-post.com
+```
+
+---
+
+## 4. Файлы, затрагиваемые изменениями
+
+| Файл | Изменение |
+|------|-----------|
+| `manage/prompts.js` | + константа `TIKTOK_CAPTION_SYSTEM`, экспорт |
+| `services/tiktokMvp.service.js` | + `loadBrandDna`, `loadBrandTov`, `publishViaUploadPost`; обновлены `generateTiktokContent`, `handleTiktokGenerateJob`, `publishTiktokPost` |
+| `.env.local` | + `UPLOAD_POST_JWT`, `UPLOAD_POST_USER` |
+
+`videoPipeline.service.js` — **не изменяется.**
+`manage/store.js` — **не изменяется** (поле `videoMode` не нужно, пайплайн единый).
+
+---
+
+## 5. Что НЕ нужно реализовывать
+
+- Отдельный text-to-video для TikTok — канал уже использует общий image-to-video пайплайн
+- `generateVideoText2Video` — избыточно, видео берётся из `claimVideo` / `generateVideo`
+- `buildContext(chatId, {channel:'tiktok'})` — функции не существует
+- `tickTikTokSchedule` — уже реализован как `publishScheduledPosts`
+- Добавление `'tiktok'` в `VALID_CHANNELS` — уже есть
+- Захардкоженный `dayOfWeek` как отдельная логика — уже реализован через `allowedWeekdays`
+
+---
+
+## 6. Текущее состояние пайплайна (видео уже работает)
+
+```
+reserveNextTopic(chatId, 'tiktok')           ← шаг 1 (уже ✅)
+        ↓
+claimVideo(chatId, 'tiktok')                 ← шаг 2: берём готовое видео из пула (уже ✅)
+  └─ если нет → generateVideo(chatId, 'tiktok')  ← генерируем (уже ✅)
+        ↓
+loadBrandDna + loadBrandTov                  ← шаг 3 (нужно реализовать)
+        ↓
+generateTiktokContent(topic, dna, tov)       ← шаг 4: caption + hashtags (нужно улучшить)
+        ↓
+sendTiktokToModerator → CW Bot (tt_mod:)     ← шаг 5 (уже ✅)
+        ↓ (после approve)
+publishViaUploadPost(videoPath, title)        ← шаг 6 (нужно реализовать)
+        ↓
+updateTopicStatus(chatId, topicId, 'completed') ← шаг 7 (нужно добавить)
+```
+
+---
+
+## 7. Верификация
+
+```bash
+# 1. Unit-тесты — не должны упасть
+npm test
+
+# 2. Проверить что topicId сохраняется в черновике
+# Запустить handleTiktokGenerateJob вручную, проверить draft через manageStore.getState
+
+# 3. Тест publish через upload-post.com
+# Установить UPLOAD_POST_JWT + UPLOAD_POST_USER в .env.local
+# Запустить ручной триггер через /api/manage/channels/tiktok/run-now
+# Проверить ответ от upload-post.com в логах
+
+# 4. Проверить возврат топика при ошибке
+# Имитировать ошибку публикации (неверный JWT)
+# topic.status должен вернуться в 'pending'
+```
+
+---
+
+## 8. Что делать с ДНК/TOV если файлов нет
+
+Если `dna.md` и `tov.md` в `/workspace/input/brand/` отсутствуют — генерация продолжается
+без них (GPT создаёт caption только по теме). Качество будет ниже, но сервис не упадёт.
+Рекомендуется сообщить пользователю в UI канала TikTok что наличие этих файлов улучшает
+релевантность описания.

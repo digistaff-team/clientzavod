@@ -1,0 +1,97 @@
+Интеграция процесса автоматической генерации и публикации статей в WordPress (из Make-сценария `Урок БЛОГ.blueprint`) в платформу `Клиент Завод (Docker-Claw)` требует перевода линейной логики оркестратора в асинхронную событийную архитектуру приложения. 
+
+Ниже представлен детальный архитектурный план интеграции, адаптированный под стек Node.js, PostgreSQL и существующие модули Docker-Claw.
+
+---
+
+### 🏗 1. Архитектурное позиционирование
+В текущей архитектуре Docker-Claw контент-пайплайн работает по принципу **очереди задач (Job Queue) + Worker**. В отличие от линейного Make-сценария, где шаги выполняются строго последовательно в одном цикле, в Docker-Claw процесс будет разделён на этапы жизненного цикла поста, управляемые машиной состояний (`draft → ready → approved → published`).
+
+Новый функционал будет реализован как **дополнительный канал публикации** (`channel: 'wordpress'`) и расширенный AI-скилл генерации длинного контента.
+
+---
+
+### 🛠 2. Пошаговый план интеграции
+
+#### Шаг 1: Расширение модели данных и конфигурации каналов
+Необходимо адаптировать БД и систему конфигурации под требования WordPress.
+*   **Таблица `content_channels`**: Добавить запись `channel_id: 'wordpress'`, `type: 'blog'`, `is_active: true`.
+*   **Хранилище учетных данных**: WP App Password, Base URL, Default Category ID хранить в зашифрованном виде в поле `config` таблицы `content_channels` или в `.env` (если это единый корпоративный блог).
+*   **Расширение `content_posts`**: Добавить поля `wp_media_id`, `wp_post_id`, `seo_title`, `meta_desc`, `featured_image_url`, `category_slug`.
+
+#### Шаг 2: Создание сервиса взаимодействия с WordPress
+По аналогии с `vkMvp.service.js` и `buffer.service.js`, создаём модуль `services/wordpressMvp.service.js`.
+*   **Реализация**: Использование WP REST API (`/wp/v2/media` для загрузки изображений, `/wp/v2/posts` для создания записей).
+*   **Аутентификация**: HTTP Basic Auth через `username:app_password`.
+*   **Методы**:
+  *   `uploadFeaturedImage(imageBuffer, filename, altText, title)` → возвращает `media_id`.
+  *   `publishPost({ title, content, excerpt, status, categories, featured_media })` → создаёт запись, возвращает `post_id` и `permalink`.
+  *   `updatePostSeo(postId, yoast/rankmath_meta)` (опционально).
+
+#### Шаг 3: Адаптация AI-пайплайна генерации (Ядро интеграции)
+Логика Make-модулей `5, 9, 13, 14, 15, 22, 27` переносится в новый модуль `services/blogGenerator.service.js`. Вместо прямых вызовов OpenAI используется штатный `services/ai_router_service.js`.
+
+1.  **Загрузка контекста бренда**: Правила из Google Sheets (`Урок Дзен`) заменяются на чтение из `content_templates` или констант в `manage/prompts.js`.
+2.  **Цепочка генерации (Prompt Chaining)**:
+   *   **Этап 1 (Структура)**: `ai_router_service.chat()` с системным промптом из модуля `5`. Возвращает JSON с `format`, `target_audience`, `structure`.
+   *   **Этап 2 (Промпт для картинки)**: На основе структуры генерируется запрос для `Kie.ai` (модуль `27`). Вызов `Kie.ai` идёт через штатный `services/image.service.js` или прямой HTTP-запрос.
+   *   **Этап 3 (Написание статьи)**: `ai_router_service.chat()` с моделью `gpt-5` (или `gpt-4o`). В промпт передаётся структура, ДНК бренда, SEO-правила и URL сгенерированной картинки для вставки HTML-баннера (модуль `9`).
+   *   **Этап 4 (SEO-метаданные)**: Параллельные вызовы для генерации `title`, `description`, `filename` (модули `13, 14, 15`).
+3.  **Компиляция**: Использование библиотеки `marked` или встроенного шаблонизатора для склейки HTML-контента, соцсетей и баннеров (замена модулей `11, 12`).
+
+#### Шаг 4: Интеграция в контент-очередь и Worker
+Модуль `services/content/worker.js` дорабатывается для обработки канала `wordpress`.
+*   При создании задачи с `channel: 'wordpress'` и `status: 'draft'` воркер вызывает `blogGenerator.service.js`.
+*   После успешной генерации статус меняется на `ready`.
+*   Если включена премодерация (`premoderationEnabled: true`), задача отправляется в CW_BOT. Иначе сразу переходит в `approved`.
+*   При статусе `approved` воркер вызывает `wordpressMvp.service.js` для загрузки медиа и публикации поста. Статус меняется на `published`.
+
+#### Шаг 5: Модерация через CW_BOT
+Добавляем поддержку коллбэков WordPress в `manage/telegram/runner.js` и `toolHandlers.js`:
+*   Паттерн: `wp_mod:approve_{jobId}`, `wp_mod:rewrite_{jobId}`, `wp_mod:reject_{jobId}`.
+*   При нажатии `✅` воркер получает сигнал и запускает финальную публикацию в WP.
+*   При `🔁` или `❌` задача возвращается в `draft`/`failed` с комментарием модератора для AI-доработки или ручного вмешательства.
+
+#### Шаг 6: API и Фронтенд
+*   **Routes**: В `routes/content.routes.js` добавляется поддержка `wordpress` в валидаторах (`limits.js`, `validators.js`).
+*   **Web UI**: В `public/channels.html` добавляется карточка подключения WordPress. В `public/content.html` отображаются посты со статусом `published` и ссылкой на сайт.
+*   **Источники тем**: Вместо парсинга Google Sheets используется внутренний API `/api/content/topics` или команда бота `/blog_topic <тема> <ключи>`, которая создаёт запись в `content_jobs`.
+
+---
+
+### 🔄 3. Матрица переноса логики (Make → Node.js)
+
+| Модуль Make.com | Аналог в Docker-Claw | Реализация |
+|:---|:---|:---|
+| `google-sheets:filterRows` (Темы) | `content_routes.js` + `content_jobs` DB | REST API endpoint или Telegram command `/new_blog` |
+| `openai-gpt` (Структура, Текст, SEO) | `ai_router_service.js` | Множественные вызовы через `chat()` с разными `system_prompts` |
+| `ogenerat` (Картинки) | `services/image.service.js` / Kie.ai API | Прямой HTTP POST к `kie.ai` с промптом из AI |
+| `markdown:Compile` + Variables | `marked` + JS Template Literals | Сборка строки HTML в `blogGenerator.service.js` |
+| `http:ActionGetFile` (Скачивание) | `axios` / `node-fetch` | Загрузка в `Buffer` или `tmp` файл на сервере |
+| `wordpress:createMedia` / `createPost` | `services/wordpressMvp.service.js` | WP REST API (`/wp/v2/media`, `/wp/v2/posts`) |
+| `google-sheets:deleteRow` | `repository.updateStatus()` | Обновление статуса на `published`, архивация в `content_analytics` |
+
+---
+
+### ⚠️ 4. Ключевые архитектурные отличия и преимущества
+
+1.  **Асинхронность и Отказоустойчивость**: 
+    *   В Make сбой на шаге `9` (написание статьи) приводит к остановке всего сценария. 
+    *   В Docker-Claw задача остаётся в очереди `draft`/`error`. Worker автоматически повторит попытку (retry policy), а админ получит алерт через `services/content/alerts.js`.
+2.  **Биллинг и Лимиты**: 
+    *   Интеграция с `manage/tokenBilling.js` позволит списывать токены за генерацию статей с баланса пользователя или компании. 
+    *   `limits.js` предотвратит спам генерацией (например, не более 3 статей в день на канал).
+3.  **Многопоточность**: 
+    *   Worker может обрабатывать генерацию текста для одной статьи и загрузку картинок для другой параллельно, используя `Promise.all` и пул соединений.
+4.  **Безопасность данных**: 
+    *   Учетные данные WordPress не передаются через внешние API-агрегаторы, а хранятся в изолированном окружении сервера (`/var/sandbox-data` или зашифрованные env-переменные).
+
+### 🚀 5. Рекомендуемый порядок внедрения
+1.  Создать скелет `services/wordpressMvp.service.js` и протестировать ручную публикацию тестового поста.
+2.  Реализовать `services/blogGenerator.service.js`, связав его с `ai_router_service.js` и `Kie.ai`.
+3.  Настроить маппинг статусов в `services/content/worker.js` для канала `wordpress`.
+4.  Добавить коллбэки модерации в CW_BOT (`wp_mod:`).
+5.  Написать миграцию БД (`migrations/002_add_wordpress_channel.sql`) и обновить фронтенд `channels.html`.
+6.  Провести нагрузочное тестирование генерации (учесть лимиты RPM OpenAI/Kie.ai) и настроить rate-limiting в воркере.
+
+Такая интеграция превращает внешний Make-сценарий в **нативный, масштабируемый и полностью контролируемый модуль** платформы `Клиент Завод`, сохраняя при этом всю мощь AI-агента и систему модерации.

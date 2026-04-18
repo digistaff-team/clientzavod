@@ -14,6 +14,7 @@ const blogGenerator = require('../services/blogGenerator.service');
 const wpRepo = require('../services/content/wordpress.repository');
 const contentRepo = require('../services/content/repository');
 const contentLimits = require('../services/content/limits');
+const contentWorker = require('../services/content/worker');
 const telegramRunner = require('../manage/telegram/runner');
 const manageStore = require('../manage/store');
 
@@ -1047,6 +1048,7 @@ router.post('/wordpress/run-now', async (req, res) => {
 
   let topicRow = null;
   try {
+    await contentRepo.ensureSchema(chatId);
     const wpConfig = manageStore.getWpConfig(chatId);
     if (!wpConfig || !wpConfig.enabled) {
       return res.status(400).json({ error: 'WordPress is not enabled' });
@@ -1112,10 +1114,15 @@ router.post('/wordpress/run-now', async (req, res) => {
       publishStatus: wpConfig.autoPublish ? 'approved' : 'ready'
     });
 
-    // Если авто-публикация — публикуем сразу
+    // Если авто-публикация — публикуем сразу, иначе отправляем на модерацию
     if (wpConfig.autoPublish) {
       await wordpressMvpService.publishPost(chatId, draftResult.id);
       await wpRepo.markPublished(chatId, postId);
+    } else {
+      await wpRepo.markReady(chatId, postId);
+      if (wpConfig.premoderationEnabled !== false) {
+        await contentWorker.sendBlogModerationRequest(chatId, postId, null);
+      }
     }
 
     return res.json({
