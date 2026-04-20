@@ -69,6 +69,31 @@ function isValidTz(tz) {
   } catch { return false; }
 }
 
+function getDrafts(chatId) {
+  const data = manageStore.getState(chatId) || {};
+  return data.facebookDrafts || {};
+}
+
+async function saveDraft(chatId, draftId, draft) {
+  const states = manageStore.getAllStates();
+  let data = states[chatId];
+  if (!data) {
+    states[chatId] = {};
+    data = states[chatId];
+  }
+  data.facebookDrafts = data.facebookDrafts || {};
+  data.facebookDrafts[draftId] = draft;
+  return manageStore.persist(chatId);
+}
+
+async function removeDraft(chatId, draftId) {
+  const data = manageStore.getState(chatId) || {};
+  if (data.facebookDrafts && data.facebookDrafts[draftId]) {
+    delete data.facebookDrafts[draftId];
+    await manageStore.persist(chatId);
+  }
+}
+
 function getFacebookSettings(chatId) {
   const cfg = manageStore.getFacebookConfig(chatId);
   manageStore.migrateIntegrationSettings(chatId);
@@ -423,45 +448,46 @@ async function sendFbToModerator(chatId, bot, draft) {
   const settings = getFacebookSettings(chatId);
   const moderatorId = settings.moderatorUserId || chatId;
 
-  const caption = (draft.postText || '').slice(0, 1000);
-
-  // Клавиатура для модерации
+  const callbackBase = `fb_mod:${draft.jobId}`;
   const keyboard = {
     inline_keyboard: [
       [
-        { text: '✅ Одобрить', callback_data: `fb_approve_${draft.jobId}` },
-        { text: '🔄 Текст', callback_data: `fb_regen_text_${draft.jobId}` }
+        { text: '✅ Одобрить', callback_data: `${callbackBase}:approve` },
+        { text: '🔄 Текст', callback_data: `${callbackBase}:regen_text` }
       ],
       [
-        { text: '🖼️ Картинка', callback_data: `fb_regen_image_${draft.jobId}` },
-        { text: '❌ Отклонить', callback_data: `fb_reject_${draft.jobId}` }
+        { text: '🖼️ Картинка', callback_data: `${callbackBase}:regen_image` },
+        { text: '❌ Отклонить', callback_data: `${callbackBase}:reject` }
       ]
     ]
   };
 
-  const message = `📘 Facebook пост на модерацию
+  const header = `📘 Facebook пост на модерацию\n\n📝 Тема: ${draft.topic}${draft.focus ? `\n🎯 Фокус: ${draft.focus}` : ''}\n\n📄 Текст:\n`;
+  const caption = (header + (draft.postText || '')).slice(0, 1024);
 
-📝 Тема: ${draft.topic}
-${draft.focus ? `🎯 Фокус: ${draft.focus}` : ''}
+  const moderatorBot = cwBot && cwBot.telegram ? cwBot : bot;
+  const hostImagePath = path.join(storageService.getDataDir(chatId), 'cache', 'images', 'facebook', `fb_${draft.jobId}.png`);
 
-📄 Текст:
-${caption}
-
-Выберите действие:`;
+  let hasImage = false;
+  try {
+    const stat = await fs.stat(hostImagePath);
+    hasImage = stat.size > 0;
+  } catch (_) {}
 
   try {
     await safeSendToModerator({
       sendFn: () => {
-        if (cwBot && cwBot.telegram) {
-          return cwBot.telegram.sendMessage(moderatorId, message, { reply_markup: keyboard });
-        } else if (bot && bot.telegram) {
-          return bot.telegram.sendMessage(moderatorId, message, { reply_markup: keyboard });
+        if (!moderatorBot?.telegram) return;
+        if (hasImage) {
+          return moderatorBot.telegram.sendPhoto(moderatorId, { source: hostImagePath }, { caption, reply_markup: keyboard });
         }
+        return moderatorBot.telegram.sendMessage(moderatorId, caption, { reply_markup: keyboard });
       },
       chatId,
       moderatorId,
       notifyBot: cwBot || bot
     });
+    await saveDraft(chatId, String(draft.jobId), { chatId, jobId: draft.jobId });
   } catch (e) {
     console.error('[FB] Failed to send to moderator:', e);
   }
@@ -475,9 +501,8 @@ async function handleFacebookModerationAction(chatId, bot, jobId, action) {
     return { ok: false, message: 'Задача не найдена' };
   }
 
-  const settings = getFacebookSettings(chatId);
-
   if (action === 'approve') {
+    await removeDraft(chatId, String(jobId));
     await publishFbPost(chatId, bot, jobId, job.correlation_id);
     return { ok: true, message: 'Facebook пост опубликован' };
   }

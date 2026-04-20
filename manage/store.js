@@ -1475,11 +1475,22 @@ module.exports = {
     // === WordPress Blog Config ===
     getWpConfig(chatId) {
         const data = statesCache[chatId];
-        return data?.wordpressConfig || null;
+        if (!data) return null;
+        // Migrate from old 'wpConfig' key
+        if (!data.wordpressConfig && data.wpConfig) {
+            data.wordpressConfig = data.wpConfig;
+            delete data.wpConfig;
+        }
+        return data.wordpressConfig || null;
     },
 
     setWpConfig(chatId, patch = {}) {
         if (!statesCache[chatId]) statesCache[chatId] = {};
+        // Migrate old key on write
+        if (statesCache[chatId].wpConfig && !statesCache[chatId].wordpressConfig) {
+            statesCache[chatId].wordpressConfig = statesCache[chatId].wpConfig;
+            delete statesCache[chatId].wpConfig;
+        }
         const current = statesCache[chatId].wordpressConfig || {};
         const next = { ...current };
 

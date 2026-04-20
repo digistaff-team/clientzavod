@@ -545,6 +545,51 @@ async function startServer() {
             }
         });
 
+        // Facebook moderation callbacks for CW_BOT_TOKEN users
+        cwBot.action(/^fb_mod:(\d+):(approve|reject|regen_text|regen_image)$/, async (ctx) => {
+            const fromId = String(ctx.from?.id || '');
+            const jobId = Number(ctx.match?.[1]);
+            const action = ctx.match?.[2];
+
+            console.log(`[CW-BOT-FB] ${action} job ${jobId} (fromId=${fromId})`);
+
+            let resolvedChatId = null;
+            const allStatesFb = manageStore.getAllStates();
+            for (const [cid, data] of Object.entries(allStatesFb)) {
+                const drafts = data.facebookDrafts || {};
+                if (!drafts[String(jobId)]) continue;
+
+                const fbConfig = manageStore.getFacebookConfig?.(cid) || {};
+                const globalSettings = data.contentSettings || {};
+                const channelModeratorId = fbConfig.moderatorUserId ||
+                                           globalSettings.moderatorUserId ||
+                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                const ownerTgId = String(data.verifiedTelegramId || '');
+                const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
+
+                if (allowedIds.has(fromId)) {
+                    resolvedChatId = cid;
+                    break;
+                }
+            }
+
+            if (!resolvedChatId) {
+                await ctx.answerCbQuery('Черновик не найден').catch(() => {});
+                return;
+            }
+
+            try {
+                const fbSvc = require('./services/facebookMvp.service');
+                const result = await fbSvc.handleFacebookModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
+                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
+                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+            } catch (e) {
+                console.error(`[CW-BOT-FB] Error:`, e);
+                await ctx.answerCbQuery('Ошибка').catch(() => {});
+                await ctx.reply(`Ошибка модерации Facebook: ${e.message}`).catch(() => {});
+            }
+        });
+
         // VK Video moderation callbacks for CW_BOT_TOKEN users
         cwBot.action(/^vk_vid_mod:(\d+):(approve|reject|regen_text)$/, async (ctx) => {
             const fromId = String(ctx.from?.id || '');
