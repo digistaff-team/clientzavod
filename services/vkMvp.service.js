@@ -377,6 +377,7 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
 
 async function publishVkPost(chatId, bot, jobId, correlationId) {
   const corrId = correlationId || generateCorrelationId();
+  console.log(`[VK-MVP] publishVkPost START chatId=${chatId}, jobId=${jobId}, corr=${corrId}`);
   const job = await vkRepo.getJobById(chatId, jobId);
   if (!job) throw new Error(`VK job ${jobId} not found`);
 
@@ -396,15 +397,16 @@ async function publishVkPost(chatId, bot, jobId, correlationId) {
   // Копируем изображение из контейнера
   let imageBuffer = null;
   if (job.image_path) {
+    console.log(`[VK-MVP] Copying image from container: ${job.image_path}`);
     const session = await sessionService.getOrCreateSession(chatId);
     const tempPath = path.join(os.tmpdir(), `vk-publish-${chatId}-${jobId}.png`);
     await dockerService.copyFromContainer(session.containerId, job.image_path, tempPath);
     imageBuffer = await fs.readFile(tempPath);
     await fs.unlink(tempPath).catch(() => {});
-
   }
 
   // Публикация через VK API
+  console.log(`[VK-MVP] Calling VK API publishPhotoPost, groupId=${groupId}, hasImage=${!!imageBuffer}`);
   const result = await vkService.publishPhotoPost({
     serviceKey,
     groupId,
@@ -421,6 +423,8 @@ async function publishVkPost(chatId, bot, jobId, correlationId) {
     status: 'published',
     correlationId: corrId
   });
+
+  console.log(`[VK-MVP] Published successfully, vkPostId=${result.full_id || result.post_id}`);
 
   // Обновить статус
   await vkRepo.updateJob(chatId, jobId, {
@@ -600,6 +604,7 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'regen_text') {
+    console.log(`[VK-MODERATION-ACTION] Regenerating text for jobId=${jobId}`);
     try {
       const [materialsText, personaText] = await Promise.all([
         loadMaterialsText(chatId, 12),
@@ -615,27 +620,33 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
         imagePrompt: vkText.imagePrompt
       });
       await sendVkToModerator(chatId, bot, draft);
+      console.log(`[VK-MODERATION-ACTION] Text regenerated for jobId=${jobId}`);
       return { ok: true, message: 'Текст VK-поста перегенерирован.' };
     } catch (e) {
+      console.error(`[VK-MODERATION-ACTION] regen_text failed for jobId=${jobId}:`, e.message);
       return { ok: false, message: `Ошибка перегенерации текста: ${e.message}` };
     }
   }
 
   if (action === 'regen_image') {
+    console.log(`[VK-MODERATION-ACTION] Regenerating image for jobId=${jobId}`);
     try {
       const imageBuffer = await generateVkImage(chatId, draft.topic, draft.imagePrompt);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
       await vkRepo.updateJob(chatId, jobId, { imagePath });
       await sendVkToModerator(chatId, bot, draft);
+      console.log(`[VK-MODERATION-ACTION] Image regenerated for jobId=${jobId}`);
       return { ok: true, message: 'Изображение VK-поста перегенерировано.' };
     } catch (e) {
+      console.error(`[VK-MODERATION-ACTION] regen_image failed for jobId=${jobId}:`, e.message);
       return { ok: false, message: `Ошибка перегенерации изображения: ${e.message}` };
     }
   }
 
   if (action === 'reject') {
     draft.rejectedCount = (draft.rejectedCount || 0) + 1;
+    console.log(`[VK-MODERATION-ACTION] Rejected jobId=${jobId}, count=${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}`);
     await setDraft(chatId, String(jobId), draft);
 
     if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
@@ -693,14 +704,14 @@ async function tickVkSchedule(chatId, bot) {
   // Дневной лимит
   const publishedToday = await vkRepo.countPublishedToday(chatId, tz);
   if (publishedToday >= settings.dailyLimit) {
-    // Не логируем - это нормальное поведение
+    console.log(`[VK-SCHEDULE] ${chatId} daily limit reached (${publishedToday}/${settings.dailyLimit})`);
     return;
   }
 
   // День недели
   const dayOfWeek = new Date().getDay();
   if (!settings.allowedWeekdays.includes(dayOfWeek)) {
-    // Не логируем - это нормальное поведение (например воскресенье не в разрешённых днях)
+    console.log(`[VK-SCHEDULE] ${chatId} skipping: weekday ${dayOfWeek} not in allowed [${settings.allowedWeekdays}]`);
     return;
   }
 

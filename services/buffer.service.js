@@ -25,7 +25,7 @@ const BUFFER_GRAPHQL_URL = 'https://api.buffer.com/graphql';
 const MAX_RETRIES = 3;
 const BACKOFF_MS = [15000, 30000, 60000];
 
-async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbnailUrl, boardServiceId, youtubeTitle, youtubeCategoryId }) {
+async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbnailUrl, boardServiceId, youtubeTitle, youtubeCategoryId, postType }) {
   const query = `
     mutation CreatePost($input: CreatePostInput!) {
       createPost(input: $input) {
@@ -82,6 +82,14 @@ async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbna
     };
   }
 
+  // Facebook post type (post, story, reel)
+  if (postType) {
+    input.metadata = {
+      ...input.metadata,
+      facebook: { type: postType }
+    };
+  }
+
   const variables = { input };
   console.log('[BUFFER] createPost input:', JSON.stringify(input));
 
@@ -130,6 +138,10 @@ async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbna
     const postId = result?.post?.id;
     if (!postId) {
       throw new Error('Buffer createPost: no post id in response');
+    }
+
+    if (result?.post?.status === 'error') {
+      throw new Error(`Buffer post created but failed to publish (status=error). Check Buffer dashboard for details.`);
     }
 
     return { postId };

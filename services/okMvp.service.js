@@ -601,6 +601,7 @@ async function sendOkToModerator(chatId, bot, draft) {
 }
 
 async function handleOkModerationAction(chatId, bot, jobId, action) {
+  console.log(`[OK-MODERATION-ACTION] chatId=${chatId}, jobId=${jobId}, action=${action}`);
   const draft = getDrafts(chatId)[String(jobId)];
   if (!draft) return { ok: false, message: 'Черновик ОК-поста не найден.' };
 
@@ -621,6 +622,7 @@ async function handleOkModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'regen_text') {
+    console.log(`[OK-MODERATION-ACTION] Regenerating text for jobId=${jobId}`);
     try {
       const [materialsText, personaText] = await Promise.all([
         loadMaterialsText(chatId, 12),
@@ -636,27 +638,33 @@ async function handleOkModerationAction(chatId, bot, jobId, action) {
         imagePrompt: okText.imagePrompt
       });
       await sendOkToModerator(chatId, bot, draft);
+      console.log(`[OK-MODERATION-ACTION] Text regenerated for jobId=${jobId}`);
       return { ok: true, message: 'Текст ОК-поста перегенерирован.' };
     } catch (e) {
+      console.error(`[OK-MODERATION-ACTION] regen_text failed for jobId=${jobId}:`, e.message);
       return { ok: false, message: `Ошибка перегенерации текста: ${e.message}` };
     }
   }
 
   if (action === 'regen_image') {
+    console.log(`[OK-MODERATION-ACTION] Regenerating image for jobId=${jobId}`);
     try {
       const imageBuffer = await generateOkImage(chatId, draft.topic, draft.imagePrompt);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
       await okRepo.updateJob(chatId, jobId, { imagePath });
       await sendOkToModerator(chatId, bot, draft);
+      console.log(`[OK-MODERATION-ACTION] Image regenerated for jobId=${jobId}`);
       return { ok: true, message: 'Изображение ОК-поста перегенерировано.' };
     } catch (e) {
+      console.error(`[OK-MODERATION-ACTION] regen_image failed for jobId=${jobId}:`, e.message);
       return { ok: false, message: `Ошибка перегенерации изображения: ${e.message}` };
     }
   }
 
   if (action === 'reject') {
     draft.rejectedCount = (draft.rejectedCount || 0) + 1;
+    console.log(`[OK-MODERATION-ACTION] Rejected jobId=${jobId}, count=${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}`);
     await setDraft(chatId, String(jobId), draft);
 
     if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
@@ -689,8 +697,10 @@ async function handleOkModerationAction(chatId, bot, jobId, action) {
       });
 
       await sendOkToModerator(chatId, bot, draft);
+      console.log(`[OK-MODERATION-ACTION] Full regen done for jobId=${jobId} (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS})`);
       return { ok: true, message: `ОК-пост перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
     } catch (e) {
+      console.error(`[OK-MODERATION-ACTION] reject regen failed for jobId=${jobId}:`, e.message);
       return { ok: false, message: `Ошибка перегенерации: ${e.message}` };
     }
   }
@@ -714,14 +724,14 @@ async function tickOkSchedule(chatId, bot) {
   // Дневной лимит
   const publishedToday = await okRepo.countPublishedToday(chatId, tz);
   if (publishedToday >= settings.dailyLimit) {
-    // Не логируем - это нормальное поведение
+    console.log(`[OK-SCHEDULE] ${chatId} daily limit reached (${publishedToday}/${settings.dailyLimit})`);
     return;
   }
 
   // День недели
   const dayOfWeek = new Date().getDay();
   if (!settings.allowedWeekdays.includes(dayOfWeek)) {
-    // Не логируем - это нормальное поведение (например воскресенье не в разрешённых днях)
+    console.log(`[OK-SCHEDULE] ${chatId} skipping: weekday ${dayOfWeek} not in allowed [${settings.allowedWeekdays}]`);
     return;
   }
 

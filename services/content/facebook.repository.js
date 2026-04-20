@@ -44,6 +44,7 @@ async function ensureSchema(chatId) {
         post_text TEXT,
         image_prompt TEXT,
         image_path TEXT,
+        telegram_image_url TEXT,
         status TEXT NOT NULL DEFAULT 'draft',
         error_text TEXT,
         image_attempts INT NOT NULL DEFAULT 0,
@@ -62,6 +63,10 @@ async function ensureSchema(chatId) {
 
     await client.query(`
       ALTER TABLE facebook_jobs ADD COLUMN IF NOT EXISTS topic_id BIGINT
+    `);
+
+    await client.query(`
+      ALTER TABLE facebook_jobs ADD COLUMN IF NOT EXISTS telegram_image_url TEXT
     `);
 
     await client.query(`
@@ -137,6 +142,7 @@ async function updateJob(chatId, jobId, data) {
       postText: 'post_text',
       imagePrompt: 'image_prompt',
       imagePath: 'image_path',
+      telegramImageUrl: 'telegram_image_url',
       status: 'status',
       errorText: 'error_text',
       imageAttempts: 'image_attempts',
