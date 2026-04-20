@@ -446,13 +446,23 @@ async function scheduleBlogPostsForChat(chatId) {
 
   // Проверяем лимиты
   const perDayLimit = wpConfig.dailyLimit || wpConfig.postsPerDay || 3;
-  const publishedToday = await contentLimits.getUsageStats(chatId, now.date, tz);
+  let publishedToday = { today: { blogGenerated: 0 } };
+  try {
+    publishedToday = await contentLimits.getUsageStats(chatId, now.date, tz);
+  } catch (statsErr) {
+    console.warn(`[CONTENT-WORKER-BLOG] getUsageStats failed, skipping limit check: ${statsErr.message}`);
+  }
   if (publishedToday.today.blogGenerated >= perDayLimit) {
     return;
   }
 
   // [П1] Queue overflow guard: не добавляем в очередь если уже достаточно задач
-  const queueStats = await queueRepo.getQueueStats(chatId);
+  let queueStats = { queued: 0, processing: 0 };
+  try {
+    queueStats = await queueRepo.getQueueStats(chatId);
+  } catch (statsErr) {
+    console.warn(`[CONTENT-WORKER-BLOG] getQueueStats failed, skipping queue guard: ${statsErr.message}`);
+  }
   const inFlight = (queueStats.queued || 0) + (queueStats.processing || 0);
   if (inFlight >= perDayLimit) {
     return;
