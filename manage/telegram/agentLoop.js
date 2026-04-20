@@ -1,6 +1,7 @@
 const aiRouterService = require('../../services/ai_router_service');
 const { dispatchTool } = require('./toolHandlers');
 const manageStore = require('../store');
+const TokenBilling = require('../tokenBilling');
 
 /**
  * Санитизирует массив сообщений перед отправкой в API.
@@ -387,6 +388,24 @@ async function executeAgentLoop(chatId, data, messages, tools, agentCtx, maxIter
             }
 
             console.log(`[AGENT-LOOP] [iter ${i+1}/${maxIterations}] → callAI (${sanitized.length} msgs в контексте)`);
+
+            // Проверка баланса токенов перед LLM вызовом (если биллинг включён)
+            if (TokenBilling.isBillingEnabled()) {
+                try {
+                    const canAfford = await TokenBilling.canAfford(chatId, 5000); // Примерная минимальная стоимость
+                    if (!canAfford) {
+                        const balance = await TokenBilling.getBalance(chatId);
+                        console.error(`[AGENT-LOOP] ✗ Insufficient token balance: ${balance.balance_tokens} tokens available`);
+                        return {
+                            error: '❌ Недостаточно токенов для продолжения. Пополните баланс через /balance'
+                        };
+                    }
+                } catch (balanceErr) {
+                    console.error(`[AGENT-LOOP] ⚠️  Token balance check failed:`, balanceErr.message);
+                    // Продолжаем, если проверка не удалась (временная ошибка БД)
+                }
+            }
+
             const aiResp = await aiRouterService.callAI(chatId, data.aiAuthToken, data.aiModel, sanitized, tools, data.aiUserEmail);
             resp = aiResp.choices[0].message;
 
@@ -403,6 +422,29 @@ async function executeAgentLoop(chatId, data, messages, tools, agentCtx, maxIter
                 // Обновляем счётчик токенов в UI
                 if (agentCtx && agentCtx.updateTokens) {
                     await agentCtx.updateTokens(totalPromptTokens, totalCompletionTokens, totalTokens);
+                }
+
+                // Расходование токенов из баланса пользователя (если биллинг включён)
+                if (TokenBilling.isBillingEnabled()) {
+                    try {
+                        const tokensSpent = await TokenBilling.spendTokens(
+                            chatId,
+                            iterPrompt,
+                            iterCompletion,
+                            data.aiModel || 'unknown',
+                            'Agent Loop iteration'
+                        );
+                        console.log(`[AGENT-LOOP] [iter ${i+1}] ✓ Spent ${tokensSpent} tokens from balance`);
+                    } catch (billErr) {
+                        if (billErr.code === 'NOT_ENOUGH_TOKENS') {
+                            console.error(`[AGENT-LOOP] ✗ Insufficient tokens: required=${billErr.required}, available=${billErr.balance}`);
+                            return {
+                                error: `❌ Токены закончились! Требуется ${billErr.required} токенов, доступно ${billErr.balance}.`
+                            };
+                        }
+                        console.error(`[AGENT-LOOP] ⚠️  Token spending failed:`, billErr.message);
+                        // Продолжаем, если расходование не удалось (временная ошибка БД)
+                    }
                 }
             }
         } catch (e) {
@@ -723,11 +765,44 @@ async function executeAgentLoop(chatId, data, messages, tools, agentCtx, maxIter
 
 async function classifyTask(chatId, data, userMessage) {
     try {
+        // Проверка баланса токенов перед LLM вызовом (если биллинг включён)
+        if (TokenBilling.isBillingEnabled()) {
+            try {
+                const canAfford = await TokenBilling.canAfford(chatId, 1000); // Классификация обычно дешевле
+                if (!canAfford) {
+                    const balance = await TokenBilling.getBalance(chatId);
+                    console.error(`[CLASSIFY-TASK] ✗ Insufficient token balance: ${balance.balance_tokens} tokens available`);
+                    return 'CHAT'; // Fallback к CHAT вместо ошибки, чтобы не ломать workflow
+                }
+            } catch (balanceErr) {
+                console.error(`[CLASSIFY-TASK] ⚠️  Token balance check failed:`, balanceErr.message);
+                // Продолжаем, если проверка не удалась (временная ошибка БД)
+            }
+        }
+
         const resp = await aiRouterService.callAI(chatId, data.aiAuthToken, data.aiModel, [
             { role: 'system', content: 'Классифицируй запрос пользователя одним словом: CHAT (просто поболтать, объяснить теорию, ответить на вопрос без действий), WORKSPACE (написать код, создать файлы, изменить файлы, удалить файлы) или TERMINAL (выполнить bash команды, установить пакеты, запустить скрипты, посмотреть логи).' },
             { role: 'user', content: userMessage }
         ], null, data.aiUserEmail);
-        
+
+        // Расходование токенов (классификация)
+        if (TokenBilling.isBillingEnabled() && resp.usage) {
+            try {
+                await TokenBilling.spendTokens(
+                    chatId,
+                    resp.usage.prompt_tokens || 0,
+                    resp.usage.completion_tokens || 0,
+                    data.aiModel || 'unknown',
+                    'Task classification'
+                );
+            } catch (billErr) {
+                if (billErr.code !== 'NOT_ENOUGH_TOKENS') {
+                    console.error(`[CLASSIFY-TASK] ⚠️  Token spending failed:`, billErr.message);
+                }
+                // Игнорируем ошибку биллинга при классификации
+            }
+        }
+
         const content = (resp.choices[0].message.content || '').toUpperCase();
         if (content.includes('WORKSPACE')) return 'WORKSPACE';
         if (content.includes('TERMINAL')) return 'TERMINAL';

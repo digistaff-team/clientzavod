@@ -2,11 +2,14 @@ const { Pool } = require('pg');
 const config = require('../config');
 
 /**
- * Token Billing Service - Centralized token management for Docker-Claw SaaS
- * 
- * Tracks LLM token consumption across all users, manages balances,
- * supports monthly resets, and integrates with payment providers.
- * 
+ * Token Billing Service - Consumption-based token management for Docker-Claw
+ *
+ * Implements pay-as-you-go model:
+ * - Users purchase token packages (predefined options at various price points)
+ * - Tokens persist indefinitely until consumed
+ * - No monthly resets or expiration
+ * - Every consumption is logged with model name and reason
+ *
  * Key Principle: Tokens are spent ONLY on LLM calls (Agent Loop + Content Pipeline).
  * Docker, per-user DB, MySQL skills, and file operations do NOT consume tokens.
  */
@@ -25,21 +28,16 @@ const pool = new Pool({
 
 class TokenBilling {
     /**
-     * Get user balance and plan info
+     * Get user token balance
      * @param {number|string} telegramId
-     * @returns {Promise<{balance_tokens: number, monthly_included_tokens: number, plan_id: string, next_reset_date: Date}>}
+     * @returns {Promise<{balance_tokens: number}>}
      */
     static async getBalance(telegramId) {
         const res = await pool.query(
-            'SELECT balance_tokens, monthly_included_tokens, plan_id, next_reset_date FROM users WHERE telegram_id = $1',
+            'SELECT balance_tokens FROM users WHERE telegram_id = $1',
             [telegramId]
         );
-        return res.rows[0] || {
-            balance_tokens: 0,
-            monthly_included_tokens: 0,
-            plan_id: 'free',
-            next_reset_date: null
-        };
+        return res.rows[0] || { balance_tokens: 0 };
     }
 
     /**
@@ -131,21 +129,61 @@ class TokenBilling {
     }
 
     /**
-     * Monthly token reset for all users
-     * Call via scheduler on the 1st of each month
-     * @returns {Promise<number>} number of users updated
+     * Purchase token package
+     * Adds tokens to user balance and records transaction
+     * @param {number|string} telegramId
+     * @param {string} packageId - package ID from token_packages table
+     * @returns {Promise<{balance_tokens: number, tokens_purchased: number}>}
      */
-    static async monthlyReset() {
-        const result = await pool.query(`
-            UPDATE users
-            SET balance_tokens = monthly_included_tokens,
-                next_reset_date = CURRENT_DATE + INTERVAL '1 month'
-            WHERE next_reset_date <= CURRENT_DATE
-              AND monthly_included_tokens > 0
-        `);
+    static async purchasePackage(telegramId, packageId) {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
 
-        console.log(`[BILLING] Monthly reset completed: ${result.rowCount} users updated`);
-        return result.rowCount;
+            // Get package details
+            const pkgRes = await client.query(
+                'SELECT tokens_amount FROM token_packages WHERE package_id = $1 AND is_active = true',
+                [packageId]
+            );
+
+            if (!pkgRes.rows[0]) {
+                throw new Error(`Invalid package: ${packageId}`);
+            }
+
+            const tokensAmount = pkgRes.rows[0].tokens_amount;
+
+            // Add tokens to balance
+            await client.query(`
+                UPDATE users
+                SET balance_tokens = balance_tokens + $2
+                WHERE telegram_id = $1
+            `, [telegramId, tokensAmount]);
+
+            // Record transaction
+            await client.query(`
+                INSERT INTO token_transactions
+                (telegram_id, amount, reason)
+                VALUES ($1, $2, $3)
+            `, [telegramId, tokensAmount, `Package purchase: ${packageId}`]);
+
+            // Get new balance
+            const balRes = await client.query(
+                'SELECT balance_tokens FROM users WHERE telegram_id = $1',
+                [telegramId]
+            );
+
+            await client.query('COMMIT');
+
+            return {
+                balance_tokens: balRes.rows[0]?.balance_tokens || 0,
+                tokens_purchased: tokensAmount
+            };
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
     }
 
     /**
@@ -167,34 +205,14 @@ class TokenBilling {
     }
 
     /**
-     * Update user plan
-     * @param {number|string} telegramId
-     * @param {string} planId
-     * @param {number} monthlyTokens
+     * Get available token packages for purchase
+     * @returns {Promise<Array>} list of token packages
      */
-    static async updatePlan(telegramId, planId, monthlyTokens) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-
-            await client.query(`
-                UPDATE users
-                SET plan_id = $2,
-                    monthly_included_tokens = $3,
-                    next_reset_date = CURRENT_DATE + INTERVAL '1 month'
-                WHERE telegram_id = $1
-            `, [telegramId, planId, monthlyTokens]);
-
-            await client.query('COMMIT');
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
-        }
-
-        // Reset balance to new plan's included tokens
-        await this.addTokens(telegramId, monthlyTokens, `Plan upgrade to ${planId}`);
+    static async getAvailablePackages() {
+        const res = await pool.query(
+            'SELECT package_id, name, tokens_amount, price_rub FROM token_packages WHERE is_active = true ORDER BY tokens_amount'
+        );
+        return res.rows;
     }
 
     /**
@@ -222,29 +240,6 @@ class TokenBilling {
         return Math.ceil(charCount / avgTokenLength);
     }
 
-    /**
-     * Get billing plan details
-     * @param {string} planId
-     * @returns {Promise<{plan_id: string, name: string, monthly_price_rub: number, monthly_included_tokens: number, overage_rate_per_million: number}>}
-     */
-    static async getPlan(planId) {
-        const res = await pool.query(
-            'SELECT plan_id, name, monthly_price_rub, monthly_included_tokens, overage_rate_per_million FROM billing_plans WHERE plan_id = $1 AND is_active = true',
-            [planId]
-        );
-        return res.rows[0] || null;
-    }
-
-    /**
-     * Get all available billing plans
-     * @returns {Promise<Array>}
-     */
-    static async getAllPlans() {
-        const res = await pool.query(
-            'SELECT plan_id, name, monthly_price_rub, monthly_included_tokens, overage_rate_per_million FROM billing_plans WHERE is_active = true ORDER BY monthly_price_rub'
-        );
-        return res.rows;
-    }
 
     /**
      * Get total tokens spent by user in a date range
