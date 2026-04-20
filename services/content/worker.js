@@ -614,7 +614,10 @@ async function handleWordPressGeneration(chatId, job, bot) {
     // [П2c] Алерт модератору с правильной сигнатурой sendAlertToModerator(bot, userId, alert)
     try {
       const stateData = manageStore.getState(chatId);
-      const moderatorId = process.env.CONTENT_MVP_MODERATOR_USER_ID || stateData?.verifiedTelegramId;
+      const wpConfig = manageStore.getWpConfig(chatId);
+      const moderatorId = wpConfig?.moderatorUserId
+        || process.env.CONTENT_MVP_MODERATOR_USER_ID
+        || stateData?.verifiedTelegramId;
       if (bot && moderatorId) {
         await alerts.sendAlertToModerator(bot, moderatorId, {
           type: e.name === 'InsufficientBalanceError' ? 'kie_insufficient_balance'
