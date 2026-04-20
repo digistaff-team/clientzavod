@@ -10,6 +10,7 @@ const plansRoutes = require('./plans.routes');
 const appsRoutes = require('./apps.routes');
 const contentRoutes = require('./content.routes');
 const authRoutes = require('./auth.routes');
+const billingRoutes = require('./billing.routes');
 
 router.use('/session', sessionRoutes);
 router.use('/execute', executeRoutes);
@@ -20,6 +21,7 @@ router.use('/plans', plansRoutes);
 router.use('/apps', appsRoutes);
 router.use('/content', contentRoutes);
 router.use('/auth', authRoutes);
+router.use('/billing', billingRoutes);
 
 // Output content cleanup manual trigger
 router.post('/cleanup/output-content', async (req, res) => {
