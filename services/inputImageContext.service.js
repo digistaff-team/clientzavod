@@ -126,8 +126,13 @@ async function _generateI2I(prompt, imagePublicUrl, aspectRatio, model) {
   });
 
   if (!createResp.ok) {
-    const err = await createResp.text();
-    throw new Error(`KIE i2i createTask failed: ${createResp.status} ${err.slice(0, 300)}`);
+    if (createResp.status === 402) {
+      const balanceErr = new Error('KIE.ai insufficient balance (402)');
+      balanceErr.name = 'InsufficientBalanceError';
+      throw balanceErr;
+    }
+    const errText = await createResp.text();
+    throw new Error(`KIE i2i createTask failed: ${createResp.status} ${errText.slice(0, 300)}`);
   }
   const createData = await createResp.json();
   if (createData.code !== 200) throw new Error(`KIE i2i error: ${createData.msg}`);
@@ -182,8 +187,13 @@ async function _generateT2I(prompt, aspectRatio, model) {
     timeout: 30000
   });
   if (!createResp.ok) {
-    const err = await createResp.text();
-    throw new Error(`Image t2i createTask failed: ${createResp.status} ${err.slice(0, 300)}`);
+    if (createResp.status === 402) {
+      const balanceErr = new Error('KIE.ai insufficient balance (402)');
+      balanceErr.name = 'InsufficientBalanceError';
+      throw balanceErr;
+    }
+    const errText = await createResp.text();
+    throw new Error(`Image t2i createTask failed: ${createResp.status} ${errText.slice(0, 300)}`);
   }
   const createData = await createResp.json();
   if (createData.code !== 200) throw new Error(`Image t2i error: ${createData.msg}`);
