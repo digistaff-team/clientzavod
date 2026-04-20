@@ -250,7 +250,13 @@ async function processJob(chatId, job, bot) {
   
   try {
     const result = await handler(chatId, job, bot, corrId);
-    
+
+    if (!result) {
+      console.error(`[CONTENT-WORKER] Job ${id} handler returned undefined`);
+      await queueRepo.markFailed(chatId, id, 'Handler returned undefined', false);
+      return;
+    }
+
     if (result.success) {
       await queueRepo.markDone(chatId, id);
       console.log(`[CONTENT-WORKER] Job ${id} completed successfully`);
@@ -440,8 +446,15 @@ async function scheduleBlogPostsForChat(chatId) {
 
   // Проверяем лимиты
   const perDayLimit = wpConfig.dailyLimit || wpConfig.postsPerDay || 3;
-  const publishedToday = await contentLimits.getUsageStats(chatId, contentLimits.QUOTA_TYPES.BLOG_GENERATION);
-  if (publishedToday.today >= perDayLimit) {
+  const publishedToday = await contentLimits.getUsageStats(chatId, now.date, tz);
+  if (publishedToday.today.blogGenerated >= perDayLimit) {
+    return;
+  }
+
+  // [П1] Queue overflow guard: не добавляем в очередь если уже достаточно задач
+  const queueStats = await queueRepo.getQueueStats(chatId);
+  const inFlight = (queueStats.queued || 0) + (queueStats.processing || 0);
+  if (inFlight >= perDayLimit) {
     return;
   }
 
@@ -496,7 +509,7 @@ async function handleWordPressGeneration(chatId, job, bot) {
 
     // 2. Создаём черновик поста в БД
     const postId = await wpRepo.createDraftPost(chatId, {
-      jobId: job.id,
+      jobId: null, // content_job_queue.id != content_jobs.id, FK references content_jobs
       bodyHtml: article.bodyHtml,
       seoTitle: article.seoTitle,
       metaDesc: article.metaDesc,
@@ -550,26 +563,33 @@ async function handleWordPressGeneration(chatId, job, bot) {
     await wpRepo.markReady(chatId, postId);
 
     // 7. Отправляем на модерацию (если включено)
-    const premoderationEnabled = wpConfig.premoderation !== false; // По умолчанию включена
+    const wpConfig = manageStore.getWpConfig(chatId);
+    const premoderationEnabled = wpConfig?.premoderationEnabled !== false; // По умолчанию включена
     if (premoderationEnabled) {
       await sendBlogModerationRequest(chatId, postId, bot);
     } else {
-      // Автопубликация без модерации
+      // Автопубликация без модерации — ставим в очередь на публикацию
       await wpRepo.markApproved(chatId, postId);
+      await enqueueJob(chatId, { jobType: 'wordpress_publish', payload: { postId } });
     }
 
     // 8. Тема уже отмечена как использованная в reserveNextTopic
     // (content_topics.used_at проставлен автоматически)
 
-    console.log(`[CONTENT-WORKER-BLOG] Post ${postId} ready for moderation`);
+    console.log(`[CONTENT-WORKER-BLOG] Post ${postId} ${premoderationEnabled ? 'sent to moderation' : 'queued for publish'}`);
 
     return { success: true };
   } catch (e) {
     console.error('[CONTENT-WORKER-BLOG] Generation failed:', e.message);
 
+    // Освобождаем тему обратно в pending
+    if (job.payload?.topicId) {
+      const contentRepo = require('./repository');
+      await contentRepo.releaseTopic(chatId, job.payload.topicId).catch(() => {});
+    }
+
     // Пытаемся отметить ошибку в БД
     try {
-      const contentRepo = require('./repository');
       const posts = await wpRepo.findByStatus(chatId, 'draft');
       if (posts.length > 0) {
         const postId = posts[0].id;
@@ -581,12 +601,13 @@ async function handleWordPressGeneration(chatId, job, bot) {
 
     // Уведомляем админа
     try {
-      await alerts.notifyAdmin(`Blog generation failed for chat ${chatId}: ${e.message}`);
+      await alerts.sendAlertToModerator(chatId, `Blog generation failed: ${e.message}`);
     } catch (alertError) {
       console.error('[CONTENT-WORKER-BLOG] Failed to send alert:', alertError.message);
     }
 
-    return { success: false, error: e.message, retry: e.name === 'InsufficientBalanceError' ? false : true };
+    const noRetry = e.name === 'InsufficientBalanceError' || e.message.includes('foreign key constraint');
+    return { success: false, error: e.message, retry: !noRetry };
   }
 }
 
@@ -668,6 +689,18 @@ async function handleWordPressPublish(chatId, job, bot) {
 
     // Обновляем статус
     await wpRepo.markPublished(chatId, postId, published.link);
+
+    // Уведомляем владельца об успешной публикации
+    try {
+      if (bot && bot.telegram) {
+        await bot.telegram.sendMessage(
+          chatId,
+          `✅ Статья опубликована!\n\n📝 ${post.seo_title || 'Без заголовка'}\n\n🔗 ${published.link}`
+        );
+      }
+    } catch (notifyErr) {
+      console.warn('[CONTENT-WORKER-BLOG] Failed to notify owner:', notifyErr.message);
+    }
 
     // Публикуем анонс в Telegram канале пользователя
     await publishBlogAnnouncement(chatId, post);
