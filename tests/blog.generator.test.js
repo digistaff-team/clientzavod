@@ -10,40 +10,72 @@ const assert = require('assert');
 
 // Мокаем ai_router_service
 const aiRouterCalls = [];
+
+function makeAiReply(text) {
+  return { choices: [{ message: { content: text } }] };
+}
+
 const mockAiRouterService = {
   processMessage: async (chatId, payload) => {
     aiRouterCalls.push({ chatId, payload });
     const systemMsg = payload.messages?.[0]?.content || '';
-    const userMsg = payload.messages?.[1]?.content || '';
 
-    // Имитируем ответы на основе промпта
     if (systemMsg.includes('планировщик') || systemMsg.includes('редактор')) {
-      return {
-        reply: JSON.stringify({
-          target_audience: 'начинающие разработчики',
-          structure: 'введение, 3 раздела, заключение',
-          key_points: ['точка 1', 'точка 2', 'точка 3'],
-          tone: 'технический'
-        })
-      };
+      return makeAiReply(JSON.stringify({
+        target_audience: 'начинающие разработчики',
+        structure: 'введение, 3 раздела, заключение',
+        key_points: ['точка 1', 'точка 2', 'точка 3'],
+        tone: 'технический'
+      }));
     }
     if (systemMsg.includes('визуальным') || systemMsg.includes('изображения')) {
-      return { reply: 'A modern tech illustration with computers and code' };
+      return makeAiReply('A modern tech illustration with computers and code');
     }
     if (systemMsg.includes('автор статей') || systemMsg.includes('SEO')) {
-      return { reply: '<h2>Introduction</h2><p>Article body here</p><h2>Conclusion</h2>' };
+      return makeAiReply('<h2>Introduction</h2><p>Article body here</p><h2>Conclusion</h2>');
     }
     if (systemMsg.includes('SEO-специалист') && systemMsg.includes('заголовок')) {
-      return { reply: 'Как выбрать инструмент: полное руководство' };
+      return makeAiReply('Как выбрать инструмент: полное руководство');
     }
     if (systemMsg.includes('SEO-специалист') && systemMsg.includes('описание')) {
-      return { reply: 'Подробное руководство по выбору инструментов с примерами.' };
+      return makeAiReply('Подробное руководство по выбору инструментов с примерами.');
     }
     if (systemMsg.includes('URL-slug') || systemMsg.includes('веб-разработчик')) {
-      return { reply: 'kak-vybrat-instrument' };
+      return makeAiReply('kak-vybrat-instrument');
     }
 
-    return { reply: 'default response' };
+    return makeAiReply('default response');
+  },
+  callAI: async (chatId, _a, _b, messages, _c, _d) => {
+    const payload = { messages };
+    aiRouterCalls.push({ chatId, payload });
+    const systemMsg = messages?.[0]?.content || '';
+
+    if (systemMsg.includes('планировщик') || systemMsg.includes('редактор')) {
+      return makeAiReply(JSON.stringify({
+        target_audience: 'начинающие разработчики',
+        structure: 'введение, 3 раздела, заключение',
+        key_points: ['точка 1', 'точка 2', 'точка 3'],
+        tone: 'технический'
+      }));
+    }
+    if (systemMsg.includes('визуальным') || systemMsg.includes('изображения')) {
+      return makeAiReply('A modern tech illustration with computers and code');
+    }
+    if (systemMsg.includes('автор статей') || systemMsg.includes('SEO')) {
+      return makeAiReply('<h2>Introduction</h2><p>Article body here</p><h2>Conclusion</h2>');
+    }
+    if (systemMsg.includes('SEO-специалист') && systemMsg.includes('заголовок')) {
+      return makeAiReply('Как выбрать инструмент: полное руководство');
+    }
+    if (systemMsg.includes('SEO-специалист') && systemMsg.includes('описание')) {
+      return makeAiReply('Подробное руководство по выбору инструментов с примерами.');
+    }
+    if (systemMsg.includes('URL-slug') || systemMsg.includes('веб-разработчик')) {
+      return makeAiReply('kak-vybrat-instrument');
+    }
+
+    return makeAiReply('default response');
   }
 };
 
@@ -97,6 +129,17 @@ require.cache[require.resolve('../services/content/repository')] = {
   loaded: true,
   exports: {
     withClient: async (chatId, fn) => fn({ query: async () => ({ rows: [] }) })
+  }
+};
+
+// Мокаем inputImageContext.service
+let mockGenerateImageFn = async () => Buffer.from('fakeimagedata');
+require.cache[require.resolve('../services/inputImageContext.service')] = {
+  id: require.resolve('../services/inputImageContext.service'),
+  filename: require.resolve('../services/inputImageContext.service'),
+  loaded: true,
+  exports: {
+    generateImage: async (...args) => mockGenerateImageFn(...args)
   }
 };
 
@@ -161,10 +204,10 @@ async function testImageGenerationCalled() {
   aiRouterCalls.length = 0;
 
   let imageGenCalled = false;
-  const originalGenerateCover = mockImageGenService.generateCover;
-  mockImageGenService.generateCover = async (...args) => {
+  const originalFn = mockGenerateImageFn;
+  mockGenerateImageFn = async (...args) => {
     imageGenCalled = true;
-    return originalGenerateCover(...args);
+    return originalFn(...args);
   };
 
   await blogGenerator.generate('testChat', {
@@ -173,32 +216,30 @@ async function testImageGenerationCalled() {
   });
 
   assert.strictEqual(imageGenCalled, true, 'Image generation should be called');
-  mockImageGenService.generateCover = originalGenerateCover;
+  mockGenerateImageFn = originalFn;
   console.log('✓ Image generation called passed\n');
 }
 
 async function testInsufficientBalance() {
   console.log('Test: InsufficientBalanceError on low balance');
 
-  // Мокаем баланс = 0
-  require.cache[require.resolve('../manage/tokenBilling')].exports = {
-    hasBalance: async () => ({ canUse: false, reason: 'No tokens' })
+  // Мокаем generateImage чтобы выбросить InsufficientBalanceError
+  const originalFn = mockGenerateImageFn;
+  mockGenerateImageFn = async () => {
+    const err = new Error('KIE.ai insufficient balance (402)');
+    err.name = 'InsufficientBalanceError';
+    throw err;
   };
 
-  // Перезагружаем модуль чтобы подхватить новый мок
-  delete require.cache[require.resolve('../services/blogGenerator.service')];
-  const blogGeneratorFresh = require('../services/blogGenerator.service');
-
   try {
-    await blogGeneratorFresh.generate('testChat', { topic: 'Test', keywords: 'keys' });
+    await blogGenerator.generate('testChat', { topic: 'Test', keywords: 'keys' });
     assert.fail('Should have thrown InsufficientBalanceError');
   } catch (e) {
     assert.strictEqual(e.name, 'InsufficientBalanceError', 'Should throw InsufficientBalanceError');
     console.log('✓ InsufficientBalanceError passed\n');
+  } finally {
+    mockGenerateImageFn = originalFn;
   }
-
-  // Восстанавливаем
-  require.cache[require.resolve('../manage/tokenBilling')].exports = mockTokenBilling;
 }
 
 async function testModeratorNoteInPrompt() {
@@ -222,13 +263,15 @@ async function testSlugSanitization() {
   aiRouterCalls.length = 0;
 
   // Мокаем AI чтобы вернуть "плохой" slug
-  require.cache[require.resolve('../services/ai_router_service')].exports.processMessage = async (chatId, payload) => {
-    const systemMsg = payload.messages?.[0]?.content || '';
+  const originalCallAI = mockAiRouterService.callAI;
+  mockAiRouterService.callAI = async (chatId, _a, _b, messages) => {
+    const systemMsg = messages?.[0]?.content || '';
     if (systemMsg.includes('URL-slug')) {
-      return { reply: '!!!Test Post/Slug@!!!' };
+      return makeAiReply('!!!Test Post/Slug@!!!');
     }
-    return { reply: '{}' };
+    return makeAiReply('{}');
   };
+  require.cache[require.resolve('../services/ai_router_service')].exports.callAI = mockAiRouterService.callAI;
 
   const result = await blogGenerator.generate('testChat', { topic: 'Test', keywords: 'keys' });
 
@@ -236,7 +279,61 @@ async function testSlugSanitization() {
   assert.ok(!result.slug.includes('/'), 'Slug should not contain /');
   assert.ok(!result.slug.includes('@'), 'Slug should not contain @');
   assert.ok(result.slug.includes('-'), 'Slug should contain dashes');
+
+  // Восстанавливаем
+  mockAiRouterService.callAI = originalCallAI;
+  require.cache[require.resolve('../services/ai_router_service')].exports.callAI = originalCallAI;
   console.log('✓ Slug sanitization passed\n');
+}
+
+async function testInsufficientBalanceErrorPropagates() {
+  console.log('Test: InsufficientBalanceError from generateImage propagates out of generate()');
+
+  const originalFn = mockGenerateImageFn;
+  mockGenerateImageFn = async () => {
+    const err = new Error('KIE.ai insufficient balance (402)');
+    err.name = 'InsufficientBalanceError';
+    throw err;
+  };
+
+  delete require.cache[require.resolve('../services/blogGenerator.service')];
+  const freshGenerator = require('../services/blogGenerator.service');
+
+  try {
+    await freshGenerator.generate('testChat', { topic: 'Test', keywords: 'keys' });
+    assert.fail('Should have thrown InsufficientBalanceError');
+  } catch (e) {
+    assert.strictEqual(e.name, 'InsufficientBalanceError', `Expected InsufficientBalanceError, got ${e.name}: ${e.message}`);
+    console.log('✓ InsufficientBalanceError propagation passed\n');
+  } finally {
+    mockGenerateImageFn = originalFn;
+    delete require.cache[require.resolve('../services/blogGenerator.service')];
+  }
+}
+
+async function testKieDailyLimitErrorPropagates() {
+  console.log('Test: KieDailyLimitError from generateImage propagates out of generate()');
+
+  const originalFn = mockGenerateImageFn;
+  mockGenerateImageFn = async () => {
+    const err = new Error('KIE.ai daily limit reached: 30/30');
+    err.name = 'KieDailyLimitError';
+    throw err;
+  };
+
+  delete require.cache[require.resolve('../services/blogGenerator.service')];
+  const freshGenerator = require('../services/blogGenerator.service');
+
+  try {
+    await freshGenerator.generate('testChat', { topic: 'Test', keywords: 'keys' });
+    assert.fail('Should have thrown KieDailyLimitError');
+  } catch (e) {
+    assert.strictEqual(e.name, 'KieDailyLimitError', `Expected KieDailyLimitError, got ${e.name}: ${e.message}`);
+    console.log('✓ KieDailyLimitError propagation passed\n');
+  } finally {
+    mockGenerateImageFn = originalFn;
+    delete require.cache[require.resolve('../services/blogGenerator.service')];
+  }
 }
 
 // ============================================
@@ -254,7 +351,9 @@ async function runTests() {
     testImageGenerationCalled,
     testInsufficientBalance,
     testModeratorNoteInPrompt,
-    testSlugSanitization
+    testSlugSanitization,
+    testInsufficientBalanceErrorPropagates,
+    testKieDailyLimitErrorPropagates
   ];
 
   for (const testFn of tests) {
