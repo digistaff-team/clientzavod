@@ -89,6 +89,10 @@ app.use('/admin', adminRoutes);
 // API Routes
 app.use('/api', routes);
 
+// Billing Routes (if enabled)
+const billingRoutes = require('./routes/billing.routes');
+app.use('/api/billing', billingRoutes);
+
 // ==================== STARTUP ====================
 
 async function startServer() {
@@ -126,7 +130,7 @@ async function startServer() {
     } catch (e) {
         console.warn('[MYSQL] ⚠️  Initialization skipped:', e.message);
     }
-    
+
     // Управление: загрузка состояния и запуск Telegram-ботов
     const manageStore = require('./manage/store');
     const telegramRunner = require('./manage/telegram/runner');
