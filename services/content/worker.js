@@ -503,6 +503,7 @@ async function scheduleBlogPostsForChat(chatId) {
 async function handleWordPressGeneration(chatId, job, bot) {
   const { topicId, topic, keywords, techDocId } = job.payload;
   const corrId = job.correlation_id || generateCorrelationId();
+  let kieAiAlreadyCalled = false; // [П3] взводится после успешного вызова blogGenerator.generate()
 
   console.log(`[CONTENT-WORKER-BLOG] Generating post for topic ${topicId}: ${topic}`);
 
@@ -514,6 +515,7 @@ async function handleWordPressGeneration(chatId, job, bot) {
       techDocId,
       moderatorNote: null
     });
+    kieAiAlreadyCalled = true; // [П3] KIE.ai вызван внутри generate() — дальнейшие ретраи не должны вызывать его снова
 
     console.log(`[CONTENT-WORKER-BLOG] Article generated: ${article.seoTitle}`);
 
@@ -609,14 +611,32 @@ async function handleWordPressGeneration(chatId, job, bot) {
       console.error('[CONTENT-WORKER-BLOG] Failed to update error status:', dbError.message);
     }
 
-    // Уведомляем админа
+    // [П2c] Алерт модератору с правильной сигнатурой sendAlertToModerator(bot, userId, alert)
     try {
-      await alerts.sendAlertToModerator(chatId, `Blog generation failed: ${e.message}`);
+      const stateData = manageStore.getState(chatId);
+      const moderatorId = process.env.CONTENT_MVP_MODERATOR_USER_ID || stateData?.verifiedTelegramId;
+      if (bot && moderatorId) {
+        await alerts.sendAlertToModerator(bot, moderatorId, {
+          type: e.name === 'InsufficientBalanceError' ? 'kie_insufficient_balance'
+              : e.name === 'KieDailyLimitError' ? 'kie_daily_limit'
+              : 'blog_generation_failed',
+          severity: (e.name === 'InsufficientBalanceError' || e.name === 'KieDailyLimitError') ? 'critical' : 'warning',
+          message: e.name === 'InsufficientBalanceError'
+            ? '🚨 KIE.ai: баланс исчерпан (402) — генерация остановлена'
+            : e.name === 'KieDailyLimitError'
+            ? '🚨 KIE.ai: достигнут дневной лимит вызовов — генерация остановлена'
+            : `Ошибка генерации блога: ${e.message}`
+        });
+      }
     } catch (alertError) {
       console.error('[CONTENT-WORKER-BLOG] Failed to send alert:', alertError.message);
     }
 
-    const noRetry = e.name === 'InsufficientBalanceError' || e.message.includes('foreign key constraint');
+    // [П3] retry:false если KIE.ai уже был вызван — не тратить токены повторно
+    const noRetry = kieAiAlreadyCalled
+      || e.name === 'InsufficientBalanceError'
+      || e.name === 'KieDailyLimitError'
+      || e.message.includes('foreign key constraint');
     return { success: false, error: e.message, retry: !noRetry };
   }
 }
