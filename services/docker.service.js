@@ -267,7 +267,8 @@ async function executeInContainer(containerId, command, timeout) {
         // Используем прямую передачу аргументов для правильной работы с quoting
         const res = await execDockerDirect(['exec', containerId, 'bash', '-c', command], {
             timeout: (timeout || 30) * 1000,
-            maxBuffer: 10 * 1024 * 1024
+            maxBuffer: 10 * 1024 * 1024,
+            encoding: 'utf8'
         });
         return {
             success: true,

@@ -1,8 +1,6 @@
 // Facebook Channels UI
 
 const API = `${window.location.origin}/api`;
-const API_MANAGE = `${window.location.origin}/api/manage`;
-const API_CONTENT = `${window.location.origin}/api/content`;
 
 /**
  * Загрузка каналов из Buffer API
@@ -117,8 +115,9 @@ window.loadFacebookConfig = async function() {
         const cfg = result.config;
         window.facebookConfig = cfg;
 
+        // Если есть сохранённый канал — загружаем список из Buffer, чтобы select был заполнен
         if (cfg.buffer_channel_id) {
-            $('fbBufferChannelId').value = cfg.buffer_channel_id;
+            await window.fetchFacebookBufferChannels();
         }
 
         // Load scheduler settings
@@ -273,6 +272,7 @@ window.saveFacebookConfig = async function() {
         const premoderation = !!document.getElementById('facebookPremoderation')?.checked;
         const payload = {
             chat_id: chatId,
+            is_active: true,
             buffer_channel_id: $('fbBufferChannelId').value || null,
             page_name: window.facebookConfig?.page_name || null,
             schedule_time: scheduleTime,
@@ -321,7 +321,7 @@ window.runFacebookNow = async function() {
             btn.textContent = '⏳ Генерация...';
         }
 
-        setFbStatus('Запуск генерации...', '#666');
+        setFbSettingsStatus('Запуск генерации...', '#666');
 
         await jfetch(`${API_CONTENT}/facebook/run-now`, {
             method: 'POST',
@@ -332,11 +332,11 @@ window.runFacebookNow = async function() {
             })
         });
 
-        setFbStatus('✅ Генерация запущена. Проверьте статус в разделе "Контент"', '#0a0');
+        setFbSettingsStatus('✅ Генерация запущена. Проверьте статус в разделе "Контент"', '#0a0');
         showToast('Facebook генерация запущена', 'success');
 
     } catch (e) {
-        setFbStatus(`❌ ${e.message}`, '#c00');
+        setFbSettingsStatus(`❌ ${e.message}`, '#c00');
         console.error('runFacebookNow:', e);
     } finally {
         const btn = $('fbRunNowBtn');
@@ -355,6 +355,14 @@ function $(id) {
 
 function setFbStatus(msg, color) {
     const el = $('facebookStatus');
+    if (el) {
+        el.textContent = msg;
+        el.style.color = color || '#666';
+    }
+}
+
+function setFbSettingsStatus(msg, color) {
+    const el = $('facebookSettingsStatus');
     if (el) {
         el.textContent = msg;
         el.style.color = color || '#666';

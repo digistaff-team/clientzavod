@@ -619,8 +619,10 @@ router.get('/channels/pinterest/boards', async (req, res) => {
 
 // Проверка соединения с Buffer API
 router.post('/channels/pinterest/test-buffer', async (req, res) => {
-    const { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+    if (stored) buffer_api_key = stored;
     if (!buffer_api_key || !buffer_channel_id) {
         return res.status(400).json({ error: 'buffer_api_key и buffer_channel_id обязательны' });
     }
@@ -802,8 +804,10 @@ router.delete('/channels/instagram', async (req, res) => {
 });
 
 router.post('/channels/instagram/test-buffer', async (req, res) => {
-    const { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+    if (stored) buffer_api_key = stored;
     if (!buffer_api_key || !buffer_channel_id) {
         return res.status(400).json({ error: 'buffer_api_key и buffer_channel_id обязательны' });
     }
@@ -1331,7 +1335,11 @@ router.delete('/channels/youtube', async (req, res) => {
  */
 router.post('/channels/youtube/test-buffer', async (req, res) => {
     try {
-        const { buffer_api_key, buffer_channel_id } = req.body;
+        let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+        if (chatId) {
+            const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+            if (stored) buffer_api_key = stored;
+        }
         if (!buffer_api_key || !buffer_channel_id) {
             return res.status(400).json({ ok: false, error: 'buffer_api_key и buffer_channel_id обязательны' });
         }
@@ -1382,15 +1390,22 @@ router.post('/channels/youtube/run-now', async (req, res) => {
 router.post('/channels/buffer/channels', async (req, res) => {
     try {
         let { buffer_api_key, chat_id } = req.body;
-        // Если ключ маскирован или не передан — читаем реальный из store
-        if (chat_id && (!buffer_api_key || String(buffer_api_key).endsWith('***'))) {
+        // Всегда используем токен из store если он сохранён (приоритет над полем)
+        // Поле используется только при первоначальной настройке (ещё нет сохранённого токена)
+        if (chat_id) {
             manageStore.migrateIntegrationSettings(chat_id);
-            buffer_api_key = manageStore.getIntegrationSettings(chat_id)?.buffer_api_key || null;
+            const stored = manageStore.getIntegrationSettings(chat_id)?.buffer_api_key;
+            if (stored) {
+                buffer_api_key = stored;
+            } else if (!buffer_api_key || String(buffer_api_key).endsWith('***')) {
+                buffer_api_key = null;
+            }
         }
         if (!buffer_api_key) {
             return res.status(400).json({ error: 'buffer_api_key обязателен' });
         }
 
+        console.log('[BUFFER-CHANNELS] using token:', buffer_api_key ? buffer_api_key.slice(0, 8) + '...' : 'EMPTY', 'len:', buffer_api_key?.length);
         const bufferService = require('../services/buffer.service');
         const channels = await bufferService.getChannels(buffer_api_key);
 
@@ -1432,7 +1447,7 @@ router.post('/channels/facebook', async (req, res) => {
             'is_active', 'auto_publish',
             'schedule_time', 'schedule_end_time', 'schedule_tz', 'daily_limit',
             'publish_interval_hours', 'allowed_weekdays',
-            'random_publish', 'moderator_user_id'
+            'random_publish', 'premoderation', 'moderator_user_id'
         ];
         for (const f of fields) {
             if (req.body[f] !== undefined) patch[f] = req.body[f];
@@ -1466,8 +1481,12 @@ router.delete('/channels/facebook', async (req, res) => {
  * POST /api/manage/channels/facebook/test-buffer — тест соединения
  */
 router.post('/channels/facebook/test-buffer', async (req, res) => {
-    const { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    if (chatId) {
+        const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+        if (stored) buffer_api_key = stored;
+    }
     if (!buffer_api_key || !buffer_channel_id) {
         return res.status(400).json({ error: 'buffer_api_key и buffer_channel_id обязательны' });
     }
@@ -1491,8 +1510,10 @@ router.post('/channels/facebook/test-buffer', async (req, res) => {
  * POST /api/manage/channels/tiktok/test-buffer — тест соединения с Buffer
  */
 router.post('/channels/tiktok/test-buffer', async (req, res) => {
-    const { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+    if (stored) buffer_api_key = stored;
     try {
         const bufferService = require('../services/buffer.service');
         const result = await bufferService.testConnection(buffer_api_key, buffer_channel_id);

@@ -739,6 +739,7 @@ function setFacebookConfig(chatId, patch = {}) {
     if (patch.daily_limit !== undefined) next.daily_limit = Number.isFinite(patch.daily_limit) ? patch.daily_limit : 10;
     if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = Number.isFinite(patch.publish_interval_hours) ? patch.publish_interval_hours : 4;
     if (patch.random_publish !== undefined) next.random_publish = !!patch.random_publish;
+    if (patch.premoderation !== undefined) next.premoderation = !!patch.premoderation;
     if (patch.allowed_weekdays !== undefined && Array.isArray(patch.allowed_weekdays)) next.allowed_weekdays = patch.allowed_weekdays;
     if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
     if (patch.stats !== undefined) next.stats = { ...(next.stats || {}), ...patch.stats };

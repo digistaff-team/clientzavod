@@ -651,6 +651,7 @@ async function startServer() {
     const instagramMvpService = require('./services/instagramMvp.service');
     const youtubeMvpService = require('./services/youtubeMvp.service');
     const facebookMvpService = require('./services/facebookMvp.service');
+    facebookMvpService.registerWorkerHandlers();
     const wordpressMvpService = require('./services/wordpressMvp.service');
 
     pinterestMvpService.setPinterestCwBot(cwBot);

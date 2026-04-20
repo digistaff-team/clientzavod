@@ -229,7 +229,7 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
       errorText: 'No topic available',
       correlationId
     });
-    return;
+    return { success: true };
   }
 
   // Создаём задачу
@@ -300,6 +300,8 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
       await sendFbToModerator(chatId, bot, { ...topic, jobId, postText: fullPostText, imagePath });
     }
 
+    return { success: true };
+
   } catch (e) {
     console.error(`[FB] Error in job ${jobId}:`, e);
     try { await repository.releaseTopic(chatId, topic.id); } catch {}
@@ -307,6 +309,7 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
       status: 'failed',
       errorText: e.message
     });
+    return { success: false, error: e.message, retry: false };
   }
 }
 
@@ -540,6 +543,11 @@ async function handleFacebookModerationAction(chatId, bot, jobId, action) {
   if (action === 'reject') {
     const rejectedCount = (job.rejected_count || 0) + 1;
 
+    // Освобождаем тему в любом случае
+    if (job.topic_id) {
+      await repository.releaseTopic(chatId, job.topic_id).catch(() => {});
+    }
+
     if (rejectedCount >= MAX_REJECT_ATTEMPTS) {
       await fbRepo.updateJob(chatId, jobId, {
         status: 'failed',
@@ -584,6 +592,8 @@ async function tickFacebookSchedule(chatId, bot) {
     console.log(`[FB] Not active for ${chatId}`);
     return;
   }
+
+  await fbRepo.ensureSchema(chatId);
 
   const now = getNowInTz(settings.scheduleTz);
   const currentWeekday = new Date().getDay(); // 0 = Sunday
@@ -663,6 +673,8 @@ async function runNow(chatId, bot, reason = 'api') {
     throw new Error('Facebook channel is not active');
   }
 
+  await fbRepo.ensureSchema(chatId);
+
   // Проверка дневного лимита
   const publishedToday = await fbRepo.countPublishedToday(chatId, settings.scheduleTz);
   if (publishedToday >= settings.dailyLimit) {
@@ -687,6 +699,7 @@ function startScheduler(getBots) {
   console.log('[FB] Starting Facebook scheduler');
 
   botsGetter = getBots;
+  registerWorkerHandlers();
 
   if (!schedulerHandle) {
     schedulerHandle = setInterval(async () => {

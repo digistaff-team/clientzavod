@@ -204,7 +204,7 @@
                                     <div class="scheduler-field-row">
                                         <label for="pinterestBufferApiKey">Buffer API Token</label>
                                         <div style="display: flex; gap: 6px; align-items: center;">
-                                            <input type="password" class="buffer-api-key-input" id="pinterestBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
+                                            <input type="text" class="buffer-api-key-input" id="pinterestBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
                                             <button class="btn btn-secondary" onclick="testPinterestBufferConnection()" style="white-space: nowrap; padding: 12px 14px;" title="Проверить токен">🧪</button>
                                         </div>
                                     </div>
@@ -360,7 +360,7 @@
                                     <div class="scheduler-field-row">
                                         <label for="instagramBufferApiKey">Buffer API Token</label>
                                         <div style="display: flex; gap: 6px; align-items: center;">
-                                            <input type="password" class="buffer-api-key-input" id="instagramBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
+                                            <input type="text" class="buffer-api-key-input" id="instagramBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
                                             <button class="btn btn-secondary" onclick="testInstagramBufferConnection()" style="white-space: nowrap; padding: 12px 14px;" title="Проверить токен">🧪</button>
                                         </div>
                                     </div>
@@ -750,7 +750,7 @@
                                     <div class="scheduler-field-row">
                                         <label for="youtubeBufferApiKey">Buffer API Token</label>
                                         <div style="display: flex; gap: 6px; align-items: center;">
-                                            <input type="password" class="buffer-api-key-input" id="youtubeBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
+                                            <input type="text" class="buffer-api-key-input" id="youtubeBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
                                             <button class="btn btn-secondary" onclick="testYoutubeBufferConnection()" style="white-space: nowrap; padding: 12px 14px;" title="Проверить токен">🧪</button>
                                         </div>
                                     </div>
@@ -887,7 +887,7 @@
                                     <div class="scheduler-field-row">
                                         <label for="facebookBufferApiKey">Buffer API Token</label>
                                         <div style="display: flex; gap: 6px; align-items: center;">
-                                            <input type="password" class="buffer-api-key-input" id="facebookBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
+                                            <input type="text" class="buffer-api-key-input" id="facebookBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
                                             <button class="btn btn-secondary" onclick="testFacebookBufferConnection()" style="white-space: nowrap; padding: 12px 14px;" title="Проверить токен">🧪</button>
                                         </div>
                                     </div>
@@ -989,7 +989,7 @@
                             <!-- Action Buttons -->
                             <div class="scheduler-controls">
                                 <button class="btn btn-primary" onclick="saveFacebookConfig()">Сохранить настройки</button>
-                                <button class="btn btn-success" onclick="runFacebookNow()">▶️ Тест сейчас</button>
+                                <button id="fbRunNowBtn" class="btn btn-success" onclick="runFacebookNow()">▶️ Тест сейчас</button>
                             </div>
                             <div id="facebookSettingsStatus" class="scheduler-status"></div>
                         </div>
@@ -1436,7 +1436,7 @@
                                     <div class="scheduler-field-row">
                                         <label for="tiktokBufferApiKey">Buffer API Token</label>
                                         <div style="display: flex; gap: 6px; align-items: center;">
-                                            <input type="password" class="buffer-api-key-input" id="tiktokBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
+                                            <input type="text" class="buffer-api-key-input" id="tiktokBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
                                             <button class="btn btn-secondary" onclick="testTiktokBufferConnection()" style="white-space: nowrap; padding: 12px 14px;" title="Проверить токен">🧪</button>
                                         </div>
                                     </div>
@@ -1567,7 +1567,7 @@
                                     <div class="scheduler-field-row">
                                         <label for="instagramReelsBufferApiKey">Buffer API Token</label>
                                         <div style="display: flex; gap: 6px; align-items: center;">
-                                            <input type="password" class="buffer-api-key-input" id="instagramReelsBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
+                                            <input type="text" class="buffer-api-key-input" id="instagramReelsBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
                                             <button class="btn btn-secondary" onclick="testInstagramReelsBufferConnection()" style="white-space: nowrap; padding: 12px 14px;" title="Проверить токен">🧪</button>
                                         </div>
                                     </div>
