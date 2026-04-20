@@ -314,6 +314,7 @@ async function generateImage(chatId, basePrompt, aspectRatio, t2iModel, channel 
       console.log(`${tag} i2i SUCCESS model=${t2iModel}`);
       return result;
     } catch (e) {
+      if (e.name === 'InsufficientBalanceError') throw e;
       console.warn(`${tag} i2i FAILED (${e.message}), falling back to t2i`);
     }
   }
