@@ -295,6 +295,25 @@ function _buildPrompt(productContext, interior, lighting, angle) {
 async function generateImage(chatId, basePrompt, aspectRatio, t2iModel, channel = 'unknown') {
   const tag = `[IMAGE-CTX][${channel}][${chatId}]`;
 
+  // [П4] Pre-flight: проверяем дневной лимит вызовов KIE.ai
+  const KIE_DAILY_LIMIT = parseInt(process.env.KIE_DAILY_LIMIT || '30', 10);
+  const kieUsageRepo = require('./content/kieUsage.repository');
+  try {
+    await kieUsageRepo.ensureKieUsageSchema(chatId);
+    const count = await kieUsageRepo.incrementAndGetKieCallCount(chatId);
+    if (count > KIE_DAILY_LIMIT) {
+      await kieUsageRepo.decrementKieCallCount(chatId); // откат оптимистичного инкремента
+      const limitErr = new Error(`KIE.ai daily limit reached: ${count - 1}/${KIE_DAILY_LIMIT}`);
+      limitErr.name = 'KieDailyLimitError';
+      throw limitErr;
+    }
+    console.log(`${tag} KIE daily usage: ${count}/${KIE_DAILY_LIMIT}`);
+  } catch (e) {
+    if (e.name === 'KieDailyLimitError') throw e;
+    console.warn(`${tag} KIE usage tracking failed (non-blocking): ${e.message}`);
+    // Если трекинг упал по технической причине — не блокируем вызов (fail-open)
+  }
+
   const [{ textPrompt, imageFile }, interior] = await Promise.all([
     getInputContext(chatId),
     vpRepo.ensureSchema(chatId)
