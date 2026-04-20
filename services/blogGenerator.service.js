@@ -101,7 +101,15 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
 
   // 4. Генерация изображения (с референсом из /workspace/input если есть)
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  const imageBuffer = await inputImageContext.generateImage(chatId, imagePromptText.trim(), '16:9', imageModel, 'wordpress');
+  let imageBuffer = null;
+  try {
+    imageBuffer = await inputImageContext.generateImage(chatId, imagePromptText.trim(), '16:9', imageModel, 'wordpress');
+  } catch (imgErr) {
+    if (imgErr.name === 'InsufficientBalanceError' || imgErr.name === 'KieDailyLimitError') {
+      throw imgErr;
+    }
+    console.warn(`[BLOG-GENERATOR] Image generation failed, continuing without image: ${imgErr.message}`);
+  }
 
   // 5. Генерация статьи в HTML
   const blogWritePrompt = await channelSkills.buildSystemPrompt('blog-copywriter', BLOG_PROMPT_WRITE);
