@@ -16,13 +16,14 @@ const manageStore = require('../manage/store');
 const sessionService = require('./session.service');
 const dockerService = require('./docker.service');
 const storageService = require('./storage.service');
-const imageService = require('./image.service');
 const videoService = require('./content/video.service');
 const videoPipeline = require('./videoPipeline.service');
 const youtubeRepo = require('./content/youtube.repository');
 const bufferService = require('./buffer.service');
+const { safeSendToModerator } = require('./telegram.utils');
 
 const contentModules = require('./content/index');
+const channelSkills = require('./channelSkills');
 const {
   generateCorrelationId,
   repository,
@@ -61,13 +62,17 @@ function getNowInTz(tz) {
 
 function getYoutubeSettings(chatId) {
   const cfg = manageStore.getYoutubeConfig(chatId);
+  manageStore.migrateIntegrationSettings(chatId);
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
   return {
     isActive: !!cfg?.is_active,
     autoPublish: !!cfg?.auto_publish,
     scheduleTime: cfg?.schedule_time || '10:00',
+    scheduleEndTime: cfg?.schedule_end_time || null,
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 24,
     randomPublish: !!cfg?.random_publish,
-    moderatorUserId: cfg?.moderator_user_id || null,
+    bufferApiKey: globalInt.buffer_api_key || cfg?.buffer_api_key || null,
+    moderatorUserId: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
     scheduleTz: cfg?.schedule_tz || SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.daily_limit) ? cfg.daily_limit : DAILY_YT_LIMIT,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
@@ -127,8 +132,13 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 - Язык: русский
 - Не используй эмодзи в заголовке`;
 
+  const sysPrompt = await channelSkills.buildSystemPrompt(
+    'youtube-copywriter',
+    'Ты YouTube-маркетолог.',
+    'Отвечай только JSON.'
+  );
   const messages = [
-    { role: 'system', content: 'Ты YouTube-маркетолог. Отвечай только JSON.' },
+    { role: 'system', content: sysPrompt },
     { role: 'user', content: prompt }
   ];
 
@@ -290,7 +300,7 @@ async function handleYoutubeGenerateJob(chatId, queueJob, bot, correlationId) {
   }
 
   // Выбор темы
-  const topicRow = await repository.reserveNextTopic(chatId);
+  const topicRow = await repository.reserveNextTopic(chatId, 'youtube');
   if (!topicRow) {
     return { success: false, error: 'Нет доступных тем', retry: false };
   }
@@ -398,7 +408,10 @@ async function publishYoutubePost(chatId, bot, jobId, correlationId) {
 
   const cfg = manageStore.getYoutubeConfig(chatId);
   if (!cfg) throw new Error('YouTube не настроен');
-  if (!cfg.buffer_api_key || !cfg.buffer_channel_id) {
+  manageStore.migrateIntegrationSettings(chatId);
+  const ytGlobalInt = manageStore.getIntegrationSettings(chatId) || {};
+  const ytBufferApiKey = ytGlobalInt.buffer_api_key || cfg.buffer_api_key;
+  if (!ytBufferApiKey || !cfg.buffer_channel_id) {
     throw new Error('Buffer API key или channel_id не настроены');
   }
 
@@ -422,7 +435,7 @@ async function publishYoutubePost(chatId, bot, jobId, correlationId) {
   }
 
   // Публикация через Buffer
-  const bufferResult = await bufferService.createPost(cfg.buffer_api_key, cfg.buffer_channel_id, {
+  const bufferResult = await bufferService.createPost(ytBufferApiKey, cfg.buffer_channel_id, {
     text,
     videoUrl,
     youtubeTitle: job.video_title || 'YouTube Short',
@@ -508,21 +521,23 @@ async function sendYtToModerator(chatId, bot, draft) {
 
   const moderatorBot = cwBot && cwBot.token !== bot?.token ? cwBot : bot;
 
-  try {
-    const sent = await moderatorBot.telegram.sendVideo(moderatorId, { source: videoLocalPath }, { caption, reply_markup: kb });
-    await setYtDraft(chatId, String(draft.jobId), {
-      ...draft,
-      moderationMessageId: sent.message_id
-    });
-  } catch (e) {
-    // Если видео недоступ — отправляем только текст
-    console.warn(`[YOUTUBE-MVP] Video send failed, sending text only: ${e.message}`);
-    const sent = await moderatorBot.telegram.sendMessage(moderatorId, caption, { reply_markup: kb });
-    await setYtDraft(chatId, String(draft.jobId), {
-      ...draft,
-      moderationMessageId: sent.message_id
-    });
-  }
+  const sent = await safeSendToModerator({
+    sendFn: async () => {
+      try {
+        return await moderatorBot.telegram.sendVideo(moderatorId, { source: videoLocalPath }, { caption, reply_markup: kb });
+      } catch (e) {
+        console.warn(`[YOUTUBE-MVP] Video send failed, sending text only: ${e.message}`);
+        return await moderatorBot.telegram.sendMessage(moderatorId, caption, { reply_markup: kb });
+      }
+    },
+    chatId,
+    moderatorId,
+    notifyBot: cwBot || bot
+  });
+  await setYtDraft(chatId, String(draft.jobId), {
+    ...draft,
+    moderationMessageId: sent.message_id
+  });
 }
 
 async function handleYtModerationAction(chatId, bot, jobId, action) {
@@ -640,6 +655,12 @@ async function tickYoutubeSchedule(chatId, bot) {
   const [nowH, nowM] = now.time.split(':').map(Number);
   const startMinutes = startH * 60 + startM;
   const nowMinutes = nowH * 60 + nowM;
+
+  if (settings.scheduleEndTime) {
+    const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
+    if (nowMinutes >= endH * 60 + endM) return;
+  }
+
   const intervalMinutes = Math.round((settings.publishIntervalHours || 24) * 60);
 
   const data = manageStore.getState(chatId) || {};
@@ -657,18 +678,19 @@ async function tickYoutubeSchedule(chatId, bot) {
 
     if (data[runKey] === now.date) return;
 
+    // Смещение 0-15% от интервала: пост выходит близко к началу слота с небольшим разбросом
+    const maxJitter = Math.round(intervalMinutes * 0.15);
     let needRegenerate = !data[slotKey] || data[slotKey].split('|')[0] !== now.date;
     if (!needRegenerate && data[slotKey]) {
       const existingTarget = parseInt(data[slotKey].split('|')[1], 10);
-      const minAllowed = currentSlot + Math.round(intervalMinutes * 0.85);
-      const maxAllowed = currentSlot + intervalMinutes;
+      const minAllowed = currentSlot;
+      const maxAllowed = currentSlot + maxJitter;
       if (existingTarget < minAllowed || existingTarget > maxAllowed) {
         needRegenerate = true;
       }
     }
     if (needRegenerate) {
-      const minOffset = Math.round(intervalMinutes * 0.85);
-      const randomOffset = minOffset + Math.floor(Math.random() * (intervalMinutes - minOffset + 1));
+      const randomOffset = Math.floor(Math.random() * (maxJitter + 1));
       const targetMinute = currentSlot + randomOffset;
       data[slotKey] = `${now.date}|${targetMinute}`;
       await manageStore.persist(chatId);

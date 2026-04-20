@@ -1,0 +1,433 @@
+# План интеграции сценария публикации в VK в систему «Клиент Завод»
+
+## 🎯 Цель
+Интегрировать функционал автопостинга во ВКонтакте из Make.com-сценария в нативную архитектуру Docker-Claw с поддержкой премодерации через Telegram-бота.
+
+---
+
+## 📐 Архитектурная схема
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Генерация      │     │  Премодерация    │     │  Публикация     │
+│  контента       │────▶│  (Telegram Bot)  │────▶│  VK API         │
+│  (AI/Tools)     │     │  Draft → Review  │     │  (VK Plus SDK)  │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  content_jobs   │     │  moderation_queue│     │  publish_logs   │
+│  (per-user DB)  │     │  (central DB)    │     │  (audit trail)  │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+```
+
+---
+
+## 🗄️ 1. Модификации базы данных
+
+### Центральная БД (`clientzavod`)
+
+```sql
+-- Таблица каналов с поддержкой VK
+ALTER TABLE content_channels ADD COLUMN IF NOT EXISTS vk_group_id BIGINT;
+ALTER TABLE content_channels ADD COLUMN IF NOT EXISTS vk_upload_method VARCHAR(20) DEFAULT 'wall';
+ALTER TABLE content_channels ADD COLUMN IF NOT EXISTS vk_publish_location VARCHAR(20) DEFAULT 'group';
+ALTER TABLE content_channels ADD COLUMN IF NOT EXISTS vk_signed BOOLEAN DEFAULT true;
+ALTER TABLE content_channels ADD COLUMN IF NOT EXISTS vk_primary_attachments_mode VARCHAR(20) DEFAULT 'carousel';
+
+-- Таблица премодерации
+CREATE TABLE IF NOT EXISTS vk_moderation_queue (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id UUID NOT NULL,
+    moderator_chat_id BIGINT NOT NULL,
+    draft_text TEXT,
+    draft_image_url TEXT,
+    draft_video_url TEXT,
+    vk_params JSONB,
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'published')),
+    moderator_comment TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    reviewed_at TIMESTAMPTZ,
+    published_at TIMESTAMPTZ,
+    FOREIGN KEY (job_id) REFERENCES content_jobs(id) ON DELETE CASCADE
+);
+
+-- Индексы для ускорения выборки
+CREATE INDEX idx_vk_moderation_status ON vk_moderation_queue(status, created_at);
+CREATE INDEX idx_vk_moderation_moderator ON vk_moderation_queue(moderator_chat_id, status);
+```
+
+### Per-user БД (`db_{chatId}`)
+
+```sql
+-- Расширение content_jobs для VK-параметров
+ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS vk_content_type VARCHAR(20) CHECK (vk_content_type IN ('photo', 'video', 'story'));
+ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS vk_generated_image BYTEA;
+ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS vk_generated_video BYTEA;
+ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS vk_prompt TEXT;
+ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS vk_hook TEXT;
+```
+
+---
+
+## 🔧 2. Сервисный слой
+
+### `services/vk/vk.publisher.service.js` (новый)
+
+```javascript
+class VkPublisherService {
+  // Публикация поста с изображением
+  async publishPhotoPost({ groupId, text, imageData, params }) {
+    // Реализация через VK API или VK Plus SDK
+    // Параметры: signed, from_group, primary_attachments_mode и др.
+  }
+
+  // Публикация видео с обложкой
+  async publishVideoWithCover({ groupId, videoData, coverData, description, params }) {
+    // Загрузка видео → получение video_id → публикация с thumb
+  }
+
+  // Публикация в Stories
+  async publishStory({ groupId, mediaData, linkUrl, params }) {
+    // VK Stories API с поддержкой clickable link
+  }
+
+  // Валидация параметров перед публикацией
+  validateVkParams(params) {
+    // Проверка group_id, текстов на лимиты, форматов файлов
+  }
+}
+```
+
+### `services/content/vk.moderation.service.js` (новый)
+
+```javascript
+class VkModerationService {
+  // Создание задачи на премодерацию
+  async createModerationTask({ jobId, moderatorChatId, draft, vkParams }) {
+    // Сохранение в vk_moderation_queue
+    // Отправка уведомления модератору через Telegram
+  }
+
+  // Обработка решения модератора
+  async processModerationDecision({ taskId, decision, comment }) {
+    // decision: 'approve' | 'reject'
+    // При approve → запуск vkPublisherService.publish*()
+    // Обновление статусов в content_jobs и vk_moderation_queue
+  }
+
+  // Получение задач для модератора
+  async getPendingTasksForModerator({ moderatorChatId, limit = 10 }) {
+    // Выборка из vk_moderation_queue
+  }
+}
+```
+
+---
+
+## 🤖 3. Telegram-бот: команды премодерации
+
+### Регистрация хендлеров в `manage/telegram/runner.js`
+
+```javascript
+// Команды для модератора
+bot.onText(/\/vk_pending$/, async (msg) => {
+  // Показать список ожидающих премодерации задач
+});
+
+bot.onText(/\/vk_review (\S+)/, async (msg, match) => {
+  // Показать черновик для ревью: текст + превью медиа + параметры публикации
+  // Кнопки: [✅ Одобрить] [❌ Отклонить] [✏️ Редактировать]
+});
+
+// Callback queries для кнопок
+bot.on('callback_query', async (query) => {
+  const [action, taskId] = query.data.split(':');
+  
+  if (action === 'vk_approve') {
+    await moderationService.processModerationDecision({
+      taskId, decision: 'approved', comment: null
+    });
+    await bot.answerCallbackQuery(query.id, { text: '✅ Опубликовано в VK' });
+  }
+  
+  if (action === 'vk_reject') {
+    // Запрос комментария от модератора
+    // Обновление статуса на 'rejected'
+  }
+});
+```
+
+### Формат сообщения для премодерации
+
+```
+🔍 ПРЕМОДЕРАЦИЯ VK #abc123
+
+📝 Текст поста:
+{draft_text}
+
+🖼️ Медиа: {photo|video|story}
+{preview_image_or_video}
+
+⚙️ Параметры публикации:
+• Группа: {group_id}
+• Тип: {upload_method}
+• Подпись от группы: {signed ? '✅' : '❌'}
+• Режим вложений: {primary_attachments_mode}
+
+[✅ Одобрить] [❌ Отклонить] [✏️ Редактировать текст]
+```
+
+---
+
+## 🌐 4. API Endpoints
+
+### `routes/content.routes.js` — новые маршруты
+
+```javascript
+// POST /api/content/vk/draft — создание черновика для VK
+router.post('/vk/draft', authMiddleware, async (req, res) => {
+  const { topic, content_type, vk_params } = req.body;
+  // Генерация контента через AI → сохранение draft → отправка на модерацию
+});
+
+// GET /api/content/vk/moderation — список задач для модератора
+router.get('/vk/moderation', authMiddleware, moderatorMiddleware, async (req, res) => {
+  // Возвращает pending-задачи для текущего модератора
+});
+
+// POST /api/content/vk/moderation/:id/decision — решение модератора
+router.post('/vk/moderation/:id/decision', authMiddleware, moderatorMiddleware, async (req, res) => {
+  const { decision, comment, edited_text } = req.body;
+  // Обработка approve/reject с обновлением статусов
+});
+
+// POST /api/content/vk/publish — ручная публикация (для админов)
+router.post('/vk/publish', authMiddleware, adminMiddleware, async (req, res) => {
+  // Прямая публикация без премодерации (emergency flow)
+});
+```
+
+---
+
+## ⚙️ 5. Конфигурация и переменные окружения
+
+### `.env` — новые переменные
+
+```bash
+# VK Integration
+VK_API_VERSION=5.199
+VK_DEFAULT_GROUP_ID=220517053
+VK_UPLOAD_METHOD=wall
+VK_PUBLISH_LOCATION=group
+VK_SIGNED=true
+VK_PRIMARY_ATTACHMENTS_MODE=carousel
+
+# Moderation
+VK_MODERATION_ENABLED=true
+VK_MODERATOR_CHAT_IDS=123456789,987654321
+VK_MODERATION_TIMEOUT_HOURS=24
+
+# AI Prompts for VK
+VK_IMAGE_PROMPT_TEMPLATE=./prompts/vk_image_prompt.txt
+VK_TEXT_PROMPT_TEMPLATE=./prompts/vk_text_prompt.txt
+VK_HOOK_PROMPT_TEMPLATE=./prompts/vk_hook_prompt.txt
+```
+
+### `config.js` — валидация и экспорт
+
+```javascript
+module.exports = {
+  // ...existing config
+  vk: {
+    apiVersion: process.env.VK_API_VERSION || '5.199',
+    moderation: {
+      enabled: process.env.VK_MODERATION_ENABLED === 'true',
+      moderatorChatIds: process.env.VK_MODERATOR_CHAT_IDS?.split(',').map(Number) || [],
+      timeoutHours: parseInt(process.env.VK_MODERATION_TIMEOUT_HOURS) || 24
+    },
+    defaults: {
+      groupId: process.env.VK_DEFAULT_GROUP_ID,
+      uploadMethod: process.env.VK_UPLOAD_METHOD,
+      publishLocation: process.env.VK_PUBLISH_LOCATION,
+      signed: process.env.VK_SIGNED === 'true',
+      primaryAttachmentsMode: process.env.VK_PRIMARY_ATTACHMENTS_MODE
+    }
+  }
+};
+```
+
+---
+
+## 🔄 6. Workflow: полный цикл публикации
+
+```
+1. Пользователь создаёт задачу через /content create или API
+   ↓
+2. AI-агент генерирует:
+   • Промпт для изображения (если photo/video)
+   • Хук (4-6 слов) для наложения
+   • Текст поста (до 800/2000 символов)
+   ↓
+3. Контент сохраняется в content_jobs со статусом 'draft'
+   ↓
+4. VkModerationService создаёт запись в vk_moderation_queue
+   ↓
+5. Telegram-бот отправляет уведомление модератору с кнопками
+   ↓
+6. Модератор принимает решение:
+   ├─✅ APPROVE → VkPublisherService публикует в VK
+   │            → Обновление статусов: draft → approved → published
+   │            → Запись в publish_logs
+   │
+   ├─❌ REJECT → Статус: rejected + комментарий
+   │           → Уведомление пользователю о причине
+   │
+   └─✏️ EDIT → Модератор правит текст → повторная отправка на approve
+   ↓
+7. Scheduler (каждые 60 сек) проверяет истёкшие задачи премодерации
+   → При timeout: авто-отклонение или эскалация (настраивается)
+```
+
+---
+
+## 🧪 7. Тестирование
+
+### Новые тесты в `tests/`
+
+```javascript
+// tests/vk.moderation.test.js
+describe('VK Moderation Flow', () => {
+  test('creates moderation task on draft save', async () => { ... });
+  test('sends telegram notification to moderator', async () => { ... });
+  test('publishes to VK on approval', async () => { ... });
+  test('rejects with comment and notifies user', async () => { ... });
+  test('handles timeout for pending tasks', async () => { ... });
+});
+
+// tests/vk.publisher.test.js
+describe('VK Publisher Service', () => {
+  test('validates vk parameters before publish', async () => { ... });
+  test('publishes photo post with correct attachments', async () => { ... });
+  test('publishes video with cover image', async () => { ... });
+  test('handles VK API errors gracefully', async () => { ... });
+});
+```
+
+### Запуск тестов
+```bash
+npm test -- tests/vk.moderation.test.js
+npm test -- tests/vk.publisher.test.js
+```
+
+---
+
+## 🚀 8. План внедрения (по этапам)
+
+| Этап | Задачи | Срок |
+|------|--------|------|
+| **1. Подготовка** | • Создание миграций БД • Настройка VK API-ключей • Добавление переменных в `.env.example` | 2 дня |
+| **2. Сервисы** | • Реализация VkPublisherService • Реализация VkModerationService • Интеграция с AI-генерацией | 5 дней |
+| **3. Telegram-бот** | • Хендлеры команд `/vk_*` • Inline-кнопки для премодерации • Форматирование превью | 3 дня |
+| **4. API** | • Endpoints для черновиков и модерации • Валидация и middleware • Документация Swagger | 2 дня |
+| **5. Тестирование** | • Юнит-тесты сервисов • Интеграционные тесты потока • E2E-тест через Telegram | 3 дня |
+| **6. Деплой** | • Миграции на prod • Настройка модераторов • Мониторинг и логирование | 1 день |
+
+**Итого: ~16 рабочих дней**
+
+---
+
+## ⚠️ Риски и рекомендации
+
+1. **Лимиты VK API** — реализовать retry-логику с экспоненциальной задержкой
+2. **Размер медиафайлов** — валидировать до загрузки (макс. 2 ГБ для видео)
+3. **Безопасность** — хранить VK access tokens в зашифрованном виде (использовать существующий механизм `content_channels`)
+4. **Откаты** — при ошибке публикации сохранять черновик для повторной отправки
+5. **Мониторинг** — добавить метрики: время премодерации, % одобрений, ошибки публикации
+
+---
+
+## 📦 Артефакты для разработки
+
+```
+src/
+├── services/
+│   ├── vk/
+│   │   ├── vk.publisher.service.js    # Публикация в VK
+│   │   ├── vk.moderation.service.js   # Премодерация
+│   │   └── vk.validator.js            # Валидация параметров
+│   └── content/
+│       └── vk.content.generator.js    # AI-генерация для VK
+├── manage/
+│   └── telegram/
+│       └── vk.moderation.handlers.js  # Хендлеры бота
+├── routes/
+│   └── content.vk.routes.js           # API endpoints
+├── migrations/
+│   └── 20260325_add_vk_moderation.sql # Миграции БД
+├── tests/
+│   ├── vk.moderation.test.js
+│   └── vk.publisher.test.js
+└── prompts/
+    ├── vk_image_prompt.txt
+    ├── vk_text_prompt.txt
+    └── vk_hook_prompt.txt
+```
+
+---
+
+Начните с MVP — поддержка только фото-постов с премодерацией. Видео и Stories можно добавить во второй итерации после отладки базового потока.
+
+
+
+Вот итог интеграции VK:
+
+  Созданные файлы
+
+  ┌────────────────────────────────────────────┬──────────────────────────────────────┐
+  │                    Файл                    │               Описание               │
+  ├────────────────────────────────────────────┼──────────────────────────────────────┤
+  │ services/vk.service.js                     │ VK API v5.199 клиент: публикация на  │
+  │                                            │ стену, загрузка фото, retry-логика   │
+  ├────────────────────────────────────────────┼──────────────────────────────────────┤
+  │                                            │ MVP пайплайн: AI-генерация           │
+  │ services/vkMvp.service.js                  │ текста/изображений, модерация через  │
+  │                                            │ Telegram, планировщик                │
+  ├────────────────────────────────────────────┼──────────────────────────────────────┤
+  │ services/content/vk.repository.js          │ Репозиторий vk_jobs и                │
+  │                                            │ vk_publish_logs (per-user DB)        │
+  ├────────────────────────────────────────────┼──────────────────────────────────────┤
+  │ migrations/20260325_add_vk_integration.sql │ SQL миграция для центральной БД      │
+  ├────────────────────────────────────────────┼──────────────────────────────────────┤
+  │ tests/vk.publisher.test.js                 │ 7 тестов VK API клиента              │
+  ├────────────────────────────────────────────┼──────────────────────────────────────┤  
+  │ tests/vk.moderation.test.js                │ 20 тестов модерации и MVP-сервиса    │
+  └────────────────────────────────────────────┴──────────────────────────────────────┘  
+                                                                                       
+  Изменённые файлы                                                                       
+                                                                                       
+  ┌────────────────────────────────┬──────────────────────────────────────────────────┐  
+  │              Файл              │                    Изменение                     │
+  ├────────────────────────────────┼──────────────────────────────────────────────────┤  
+  │ services/content/repository.js │ Добавлены таблицы vk_jobs, vk_publish_logs в     │
+  │                                │ ensureSchema()                                   │
+  ├────────────────────────────────┼──────────────────────────────────────────────────┤  
+  │ config.js                      │ Добавлены VK переменные (VK_API_VERSION,         │
+  │                                │ VK_DAILY_LIMIT, и др.)                           │  
+  ├────────────────────────────────┼──────────────────────────────────────────────────┤
+  │ .env.example                   │ Добавлена секция VK Integration                  │  
+  ├────────────────────────────────┼──────────────────────────────────────────────────┤  
+  │ manage/telegram/runner.js      │ Добавлен импорт vkMvpService + callback handler  │
+  │                                │ vk_mod:                                          │  
+  ├────────────────────────────────┼──────────────────────────────────────────────────┤
+  │ routes/content.routes.js       │ Добавлены VK endpoints: /vk/run-now, /vk/jobs,   │  
+  │                                │ /vk/jobs/:id/:action, /vk/settings               │  
+  ├────────────────────────────────┼──────────────────────────────────────────────────┤
+  │ server.js                      │ Запуск VK-планировщика при старте сервера        │  
+  └────────────────────────────────┴──────────────────────────────────────────────────┘  
+                                                                                       
+  Полный цикл                                                                            
+                                                                                       
+  Тема → AI-генерация (текст + хук + изображение) → vk_jobs (status: ready)            
+    → Модерация в Telegram [✅ Одобрить | ❌ Отклонить | 🔁 Текст | 🖼 Фото]              
+    → VK API wall.post → vk_publish_logs → уведомление в Telegram  

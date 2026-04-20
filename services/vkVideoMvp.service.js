@@ -13,6 +13,9 @@ const aiRouterService = require('./ai_router_service');
 const manageStore = require('../manage/store');
 const storageService = require('./storage.service');
 const videoPipeline = require('./videoPipeline.service');
+const repository = require('./content/repository');
+const { safeSendToModerator } = require('./telegram.utils');
+const channelSkills = require('./channelSkills');
 
 let cwBot = null;
 
@@ -50,6 +53,8 @@ function isValidTz(tz) {
 
 function getVkVideoSettings(chatId) {
   const cfg = manageStore.getVkVideoConfig?.(chatId) || {};
+  manageStore.migrateIntegrationSettings(chatId);
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
   return {
     isActive: !!cfg?.is_active,
     autoPublish: !!cfg?.auto_publish,
@@ -59,7 +64,7 @@ function getVkVideoSettings(chatId) {
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 6,
     randomPublish: !!cfg?.random_publish,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
-    moderatorUserId: cfg?.moderator_user_id || null,
+    moderatorUserId: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
     stats: cfg?.stats || { total_posts: 0, posts_today: 0, last_post_date: null }
   };
 }
@@ -101,7 +106,7 @@ async function loadUserPersona(chatId) {
 // ============================================
 
 async function generateVkVideoContent(chatId, topic, materialsText, personaText) {
-  const systemPrompt = `Ты — профессиональный VK копирайтер. Создай привлекательное описание для видео ВКонтакте.
+  const _fallbackSystemPrompt = `Ты — профессиональный VK копирайтер. Создай привлекательное описание для видео ВКонтакте.
 
 Формат ответа (JSON):
 {
@@ -126,6 +131,12 @@ ${materialsText.slice(0, 3000)}
 ${personaText.slice(0, 2000)}
 
 Создай описание для VK видео.`;
+
+  const systemPrompt = await channelSkills.buildSystemPrompt(
+    'vkvideo-copywriter',
+    _fallbackSystemPrompt,
+    'Отвечай только JSON.'
+  );
 
   const response = await aiRouterService.chatCompletion(chatId, [
     { role: 'system', content: systemPrompt },
@@ -459,33 +470,40 @@ async function sendVkVideoToModerator(chatId, bot, draft) {
 
   try {
     const videoFullPath = path.join(videoPipeline.VIDEO_TEMP_ROOT, chatId, draft.videoPath);
-    try {
-      await cwBot.telegram.sendVideo(moderatorId, { source: videoFullPath }, {
-        caption,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Одобрить', callback_data: `vk_vid_mod:${draft.jobId}:approve` },
-              { text: '❌ Отклонить', callback_data: `vk_vid_mod:${draft.jobId}:reject` }
-            ],
-            [
-              { text: '🔄 Перегенерировать текст', callback_data: `vk_vid_mod:${draft.jobId}:regen_text` }
-            ]
-          ]
+    await safeSendToModerator({
+      sendFn: async () => {
+        try {
+          return await cwBot.telegram.sendVideo(moderatorId, { source: videoFullPath }, {
+            caption,
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '✅ Одобрить', callback_data: `vk_vid_mod:${draft.jobId}:approve` },
+                  { text: '❌ Отклонить', callback_data: `vk_vid_mod:${draft.jobId}:reject` }
+                ],
+                [
+                  { text: '🔄 Перегенерировать текст', callback_data: `vk_vid_mod:${draft.jobId}:regen_text` }
+                ]
+              ]
+            }
+          });
+        } catch {
+          return await cwBot.telegram.sendMessage(moderatorId, caption + `\n\n⚠️ Видео не доступно`, {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '✅ Одобрить', callback_data: `vk_vid_mod:${draft.jobId}:approve` },
+                  { text: '❌ Отклонить', callback_data: `vk_vid_mod:${draft.jobId}:reject` }
+                ]
+              ]
+            }
+          });
         }
-      });
-    } catch {
-      await cwBot.telegram.sendMessage(moderatorId, caption + `\n\n⚠️ Видео не доступно`, {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Одобрить', callback_data: `vk_vid_mod:${draft.jobId}:approve` },
-              { text: '❌ Отклонить', callback_data: `vk_vid_mod:${draft.jobId}:reject` }
-            ]
-          ]
-        }
-      });
-    }
+      },
+      chatId,
+      moderatorId,
+      notifyBot: cwBot
+    });
   } catch (e) {
     console.error(`[VK-VIDEO-MVP] Ошибка отправки модератору: ${e.message}`);
   }
@@ -590,10 +608,26 @@ async function publishScheduledPosts() {
 
       if (settings.stats.posts_today >= settings.dailyLimit) continue;
 
-      const bot = botsGetter?.()?.get(chatId);
-      if (!bot?.bot) continue;
+      // Резервируем тему из content_topics
+      const topic = await repository.reserveNextTopic(chatId, 'vk_video');
+      if (!topic) continue;
 
-      await handleVkVideoGenerateJob(chatId, {}, bot.bot, `vkvideo_schedule_${Date.now()}`);
+      const bot = botsGetter?.()?.get(chatId);
+      if (!bot?.bot) {
+        await repository.releaseTopic(chatId, topic.id);
+        continue;
+      }
+
+      let jobResult;
+      try {
+        jobResult = await handleVkVideoGenerateJob(chatId, { topic }, bot.bot, `vkvideo_schedule_${Date.now()}`);
+      } catch (jobErr) {
+        await repository.releaseTopic(chatId, topic.id);
+        continue;
+      }
+      if (!jobResult?.success) {
+        await repository.releaseTopic(chatId, topic.id);
+      }
     } catch (e) {
       console.error(`[VK-VIDEO-MVP] Failed to publish for ${chatId}: ${e.message}`);
     }

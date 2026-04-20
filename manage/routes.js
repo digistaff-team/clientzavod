@@ -413,6 +413,29 @@ router.post('/cron/poll-now', async (req, res) => {
     }
 });
 
+router.get('/ai/active-skills', async (req, res) => {
+    const chatId = req.query.chat_id;
+    if (!chatId) {
+        return res.status(400).json({ error: 'chat_id is required' });
+    }
+
+    try {
+        const context = require('./context');
+        const structured = await context.buildFullContextStructured(chatId);
+        const skills = (structured.skills || []).map(s => ({
+            id: s.id,
+            name: s.name,
+            slug: s.slug,
+            description: s.description,
+            system_prompt: s.system_prompt,
+        }));
+        res.json({ skills });
+    } catch (e) {
+        console.error('[AI-ACTIVE-SKILLS-ERROR]', e.message);
+        res.json({ skills: [], error: e.message });
+    }
+});
+
 router.get('/ai/skills', async (req, res) => {
     const chatId = req.query.chat_id;
     if (!chatId) {
@@ -474,6 +497,7 @@ router.post('/content/settings', async (req, res) => {
         channel_id: channelId,
         moderator_user_id: moderatorUserId,
         schedule_time: scheduleTime,
+        schedule_end_time: scheduleEndTime,
         schedule_tz: scheduleTz,
         daily_limit: dailyLimit,
         publish_interval_hours: publishIntervalHours,
@@ -490,6 +514,7 @@ router.post('/content/settings', async (req, res) => {
             channelId,
             moderatorUserId,
             scheduleTime,
+            scheduleEndTime,
             scheduleTz,
             dailyLimit,
             publishIntervalHours,
@@ -529,7 +554,8 @@ router.get('/channels/pinterest', (req, res) => {
 router.post('/channels/pinterest', async (req, res) => {
     const { chat_id: chatId, board_id, board_name, website_url, is_active, auto_publish,
         buffer_api_key, buffer_channel_id,
-        schedule_time, schedule_tz, daily_limit, publish_interval_hours, allowed_weekdays } = req.body;
+        schedule_time, schedule_tz, daily_limit, publish_interval_hours, allowed_weekdays,
+        random_publish, premoderation_enabled, moderator_user_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
     try {
         const patch = {};
@@ -541,10 +567,14 @@ router.post('/channels/pinterest', async (req, res) => {
         if (buffer_api_key !== undefined) patch.buffer_api_key = buffer_api_key;
         if (buffer_channel_id !== undefined) patch.buffer_channel_id = buffer_channel_id;
         if (schedule_time !== undefined) patch.schedule_time = schedule_time;
+        if (req.body.schedule_end_time !== undefined) patch.schedule_end_time = req.body.schedule_end_time;
         if (schedule_tz !== undefined) patch.schedule_tz = schedule_tz;
         if (daily_limit !== undefined) patch.daily_limit = daily_limit;
         if (publish_interval_hours !== undefined) patch.publish_interval_hours = publish_interval_hours;
         if (allowed_weekdays !== undefined) patch.allowed_weekdays = allowed_weekdays;
+        if (random_publish !== undefined) patch.random_publish = random_publish;
+        if (premoderation_enabled !== undefined) patch.premoderation_enabled = premoderation_enabled;
+        if (moderator_user_id !== undefined) patch.moderator_user_id = moderator_user_id;
         await manageStore.setPinterestConfig(chatId, patch);
 
         // Создаём таблицы для Pinterest
@@ -589,8 +619,10 @@ router.get('/channels/pinterest/boards', async (req, res) => {
 
 // Проверка соединения с Buffer API
 router.post('/channels/pinterest/test-buffer', async (req, res) => {
-    const { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+    if (stored) buffer_api_key = stored;
     if (!buffer_api_key || !buffer_channel_id) {
         return res.status(400).json({ error: 'buffer_api_key и buffer_channel_id обязательны' });
     }
@@ -609,7 +641,9 @@ router.post('/channels/pinterest/boards/import-buffer', async (req, res) => {
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
     // Берём credentials из store (в UI они замаскированы)
     const cfg = manageStore.getPinterestConfig(chatId) || {};
-    const apiKey = req.body.buffer_api_key || cfg.buffer_api_key;
+    manageStore.migrateIntegrationSettings(chatId);
+    const globalInt = manageStore.getIntegrationSettings(chatId) || {};
+    const apiKey = globalInt.buffer_api_key || req.body.buffer_api_key || cfg.buffer_api_key;
     const channelId = req.body.buffer_channel_id || cfg.buffer_channel_id;
     if (!apiKey || !channelId) {
         return res.status(400).json({ error: 'buffer_api_key и buffer_channel_id не настроены' });
@@ -740,7 +774,7 @@ router.post('/channels/instagram', async (req, res) => {
         const fields = [
             'buffer_api_key', 'buffer_channel_id',
             'is_active', 'auto_publish',
-            'schedule_time', 'schedule_tz', 'daily_limit',
+            'schedule_time', 'schedule_end_time', 'schedule_tz', 'daily_limit',
             'publish_interval_hours', 'allowed_weekdays',
             'random_publish', 'moderator_user_id'
         ];
@@ -770,8 +804,10 @@ router.delete('/channels/instagram', async (req, res) => {
 });
 
 router.post('/channels/instagram/test-buffer', async (req, res) => {
-    const { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+    if (stored) buffer_api_key = stored;
     if (!buffer_api_key || !buffer_channel_id) {
         return res.status(400).json({ error: 'buffer_api_key и buffer_channel_id обязательны' });
     }
@@ -856,6 +892,7 @@ router.post('/channels/vk/settings', async (req, res) => {
         const {
             chat_id,
             schedule_time,
+            schedule_end_time,
             schedule_tz,
             daily_limit,
             publish_interval_hours,
@@ -877,6 +914,7 @@ router.post('/channels/vk/settings', async (req, res) => {
 
         manageStore.setVkSettings(chat_id, {
             schedule_time,
+            schedule_end_time,
             schedule_tz,
             daily_limit,
             publish_interval_hours,
@@ -894,6 +932,77 @@ router.post('/channels/vk/settings', async (req, res) => {
     } catch (e) {
         console.error('POST /api/manage/channels/vk/settings', e);
         res.status(500).json({ error: e.message });
+    }
+});
+
+// === VK Video Channel ===
+
+router.get('/channels/vk-video', async (req, res) => {
+    try {
+        const chatId = req.query.chat_id;
+        if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+
+        const vkConfig = manageStore.getVkConfig(chatId);
+        const vkVideoConfig = manageStore.getVkVideoConfig(chatId) || {};
+
+        res.json({
+            connected: !!vkConfig?.group_id,
+            vk_group_id: vkConfig?.group_id || null,
+            config: vkVideoConfig
+        });
+    } catch (e) {
+        console.error('GET /api/manage/channels/vk-video', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/channels/vk-video/settings', async (req, res) => {
+    try {
+        const {
+            chat_id,
+            schedule_time,
+            schedule_end_time,
+            schedule_tz,
+            daily_limit,
+            publish_interval_hours,
+            random_publish,
+            premoderation_enabled,
+            allowed_weekdays,
+            moderator_user_id
+        } = req.body;
+
+        if (!chat_id) return res.status(400).json({ error: 'chat_id is required' });
+
+        manageStore.setVkVideoConfig(chat_id, {
+            schedule_time,
+            schedule_end_time,
+            schedule_tz,
+            daily_limit: parseInt(daily_limit, 10) || 3,
+            publish_interval_hours: parseFloat(publish_interval_hours) || 6,
+            random_publish: !!random_publish,
+            auto_publish: !premoderation_enabled,
+            allowed_weekdays: Array.isArray(allowed_weekdays) ? allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
+            moderator_user_id: moderator_user_id || null
+        });
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('POST /api/manage/channels/vk-video/settings', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/channels/vk-video/run-now', async (req, res) => {
+    try {
+        const { chat_id: chatId } = req.body;
+        if (!chatId) return res.status(400).json({ error: 'chat_id required' });
+        const vkVideoMvp = require('../services/vkVideoMvp.service');
+        const bots = require('./telegram/runner').bots;
+        const botEntry = bots?.get(chatId);
+        await vkVideoMvp.handleVkVideoGenerateJob(chatId, {}, botEntry?.bot || null, `vkvideo_manual_${Date.now()}`);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
     }
 });
 
@@ -968,6 +1077,7 @@ router.post('/channels/ok/settings', async (req, res) => {
         const {
             chat_id,
             schedule_time,
+            schedule_end_time,
             schedule_tz,
             daily_limit,
             publish_interval_hours,
@@ -984,6 +1094,7 @@ router.post('/channels/ok/settings', async (req, res) => {
 
         manageStore.setOkSettings(chat_id, {
             schedule_time,
+            schedule_end_time,
             schedule_tz,
             daily_limit,
             publish_interval_hours,
@@ -1167,7 +1278,7 @@ router.post('/channels/youtube', async (req, res) => {
     try {
         const {
             chat_id: chatId, buffer_api_key, buffer_channel_id,
-            is_active, auto_publish, schedule_time, schedule_tz,
+            is_active, auto_publish, schedule_time, schedule_end_time, schedule_tz,
             daily_limit, publish_interval_hours, allowed_weekdays,
             moderator_user_id, random_publish
         } = req.body;
@@ -1182,6 +1293,7 @@ router.post('/channels/youtube', async (req, res) => {
         if (is_active !== undefined) patch.is_active = is_active;
         if (auto_publish !== undefined) patch.auto_publish = auto_publish;
         if (schedule_time !== undefined) patch.schedule_time = schedule_time;
+        if (schedule_end_time !== undefined) patch.schedule_end_time = schedule_end_time;
         if (schedule_tz !== undefined) patch.schedule_tz = schedule_tz;
         if (daily_limit !== undefined) patch.daily_limit = daily_limit;
         if (publish_interval_hours !== undefined) patch.publish_interval_hours = publish_interval_hours;
@@ -1223,7 +1335,11 @@ router.delete('/channels/youtube', async (req, res) => {
  */
 router.post('/channels/youtube/test-buffer', async (req, res) => {
     try {
-        const { buffer_api_key, buffer_channel_id } = req.body;
+        let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+        if (chatId) {
+            const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+            if (stored) buffer_api_key = stored;
+        }
         if (!buffer_api_key || !buffer_channel_id) {
             return res.status(400).json({ ok: false, error: 'buffer_api_key и buffer_channel_id обязательны' });
         }
@@ -1273,11 +1389,23 @@ router.post('/channels/youtube/run-now', async (req, res) => {
  */
 router.post('/channels/buffer/channels', async (req, res) => {
     try {
-        const { buffer_api_key } = req.body;
+        let { buffer_api_key, chat_id } = req.body;
+        // Всегда используем токен из store если он сохранён (приоритет над полем)
+        // Поле используется только при первоначальной настройке (ещё нет сохранённого токена)
+        if (chat_id) {
+            manageStore.migrateIntegrationSettings(chat_id);
+            const stored = manageStore.getIntegrationSettings(chat_id)?.buffer_api_key;
+            if (stored) {
+                buffer_api_key = stored;
+            } else if (!buffer_api_key || String(buffer_api_key).endsWith('***')) {
+                buffer_api_key = null;
+            }
+        }
         if (!buffer_api_key) {
             return res.status(400).json({ error: 'buffer_api_key обязателен' });
         }
 
+        console.log('[BUFFER-CHANNELS] using token:', buffer_api_key ? buffer_api_key.slice(0, 8) + '...' : 'EMPTY', 'len:', buffer_api_key?.length);
         const bufferService = require('../services/buffer.service');
         const channels = await bufferService.getChannels(buffer_api_key);
 
@@ -1317,9 +1445,9 @@ router.post('/channels/facebook', async (req, res) => {
         const fields = [
             'buffer_api_key', 'buffer_channel_id', 'page_name',
             'is_active', 'auto_publish',
-            'schedule_time', 'schedule_tz', 'daily_limit',
+            'schedule_time', 'schedule_end_time', 'schedule_tz', 'daily_limit',
             'publish_interval_hours', 'allowed_weekdays',
-            'random_publish', 'moderator_user_id'
+            'random_publish', 'premoderation', 'moderator_user_id'
         ];
         for (const f of fields) {
             if (req.body[f] !== undefined) patch[f] = req.body[f];
@@ -1353,8 +1481,12 @@ router.delete('/channels/facebook', async (req, res) => {
  * POST /api/manage/channels/facebook/test-buffer — тест соединения
  */
 router.post('/channels/facebook/test-buffer', async (req, res) => {
-    const { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    if (chatId) {
+        const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+        if (stored) buffer_api_key = stored;
+    }
     if (!buffer_api_key || !buffer_channel_id) {
         return res.status(400).json({ error: 'buffer_api_key и buffer_channel_id обязательны' });
     }
@@ -1373,6 +1505,23 @@ router.post('/channels/facebook/test-buffer', async (req, res) => {
 // ============================================
 // TikTok Channel
 // ============================================
+
+/**
+ * POST /api/manage/channels/tiktok/test-buffer — тест соединения с Buffer
+ */
+router.post('/channels/tiktok/test-buffer', async (req, res) => {
+    let { chat_id: chatId, buffer_api_key, buffer_channel_id } = req.body;
+    if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    const stored = manageStore.getIntegrationSettings(chatId)?.buffer_api_key;
+    if (stored) buffer_api_key = stored;
+    try {
+        const bufferService = require('../services/buffer.service');
+        const result = await bufferService.testConnection(buffer_api_key, buffer_channel_id);
+        res.json({ ok: true, ...result });
+    } catch (e) {
+        res.status(400).json({ ok: false, error: e.message });
+    }
+});
 
 /**
  * GET /api/manage/channels/tiktok — получить конфигурацию TikTok
@@ -1416,6 +1565,116 @@ router.delete('/channels/tiktok', async (req, res) => {
         res.json({ success: true, message: 'TikTok отключён' });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// === Instagram Reels Channel ===
+
+router.get('/channels/instagram-reels', async (req, res) => {
+    try {
+        const chatId = req.query.chat_id;
+        if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+        const config = manageStore.getInstagramReelsConfig(chatId) || {};
+        res.json({ config });
+    } catch (e) {
+        console.error('GET /api/manage/channels/instagram-reels', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/channels/instagram-reels', async (req, res) => {
+    try {
+        const {
+            chat_id,
+            buffer_channel_id,
+            schedule_time,
+            schedule_end_time,
+            schedule_tz,
+            daily_limit,
+            publish_interval_hours,
+            random_publish,
+            premoderation_enabled,
+            allowed_weekdays,
+            moderator_user_id,
+            is_active
+        } = req.body;
+        if (!chat_id) return res.status(400).json({ error: 'chat_id is required' });
+
+        manageStore.setInstagramReelsConfig(chat_id, {
+            buffer_channel_id: buffer_channel_id || null,
+            schedule_time,
+            schedule_end_time,
+            schedule_tz,
+            daily_limit: parseInt(daily_limit, 10) || 3,
+            publish_interval_hours: parseFloat(publish_interval_hours) || 6,
+            random_publish: !!random_publish,
+            auto_publish: !premoderation_enabled,
+            allowed_weekdays: Array.isArray(allowed_weekdays) ? allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
+            moderator_user_id: moderator_user_id || null,
+            is_active: !!is_active
+        });
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('POST /api/manage/channels/instagram-reels', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/channels/instagram-reels/run-now', async (req, res) => {
+    try {
+        const { chat_id: chatId } = req.body;
+        if (!chatId) return res.status(400).json({ error: 'chat_id required' });
+        const igMvp = require('../services/instagramMvp.service');
+        const bots = require('./telegram/runner').bots;
+        const botEntry = bots?.get(chatId);
+        const result = await igMvp.runNowReels(chatId, botEntry?.bot || null);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
+// GET /api/manage/check-cw-subscriber?moderator_id=X
+// Проверяет, запустил ли пользователь @czcw_bot (т.е. может получать от него сообщения)
+router.get('/check-cw-subscriber', async (req, res) => {
+    const { moderator_id } = req.query;
+    if (!moderator_id) return res.json({ subscribed: false });
+    try {
+        const cwBot = require('../services/telegramMvp.service').getContentBot();
+        if (!cwBot) return res.json({ subscribed: false, error: 'CW bot not available' });
+        await cwBot.telegram.getChat(moderator_id);
+        res.json({ subscribed: true });
+    } catch (e) {
+        res.json({ subscribed: false });
+    }
+});
+
+// GET /api/manage/integrations
+router.get('/integrations', (req, res) => {
+    const chatId = req.query.chat_id;
+    if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    manageStore.migrateIntegrationSettings(chatId);
+    const s = manageStore.getIntegrationSettings(chatId) || {};
+    res.json({ settings: {
+        buffer_api_key: s.buffer_api_key ? s.buffer_api_key.slice(0, 6) + '***' : null,
+        moderator_user_id: s.moderator_user_id || null
+    }});
+});
+
+// POST /api/manage/integrations
+router.post('/integrations', async (req, res) => {
+    const chatId = req.body.chat_id;
+    if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    const patch = {};
+    const { buffer_api_key, moderator_user_id } = req.body;
+    if (buffer_api_key !== undefined && !String(buffer_api_key).endsWith('***')) patch.buffer_api_key = buffer_api_key;
+    if (moderator_user_id !== undefined) patch.moderator_user_id = moderator_user_id;
+    try {
+        await manageStore.setIntegrationSettings(chatId, patch);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(400).json({ error: e.message });
     }
 });
 

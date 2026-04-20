@@ -1248,8 +1248,10 @@ function startBot(chatId, token) {
         try {
             if (action === 'approve') {
                 await wpRepo.markApproved(resolvedChatId, postId);
+                const { enqueueJob } = require('../../services/content/worker');
+                await enqueueJob(resolvedChatId, { jobType: 'wordpress_publish', payload: { postId } });
                 await ctx.answerCbQuery('✅ Одобрено').catch(() => {});
-                await ctx.reply(`✅ Статья #${postId} одобрена и будет опубликована.`);
+                await ctx.reply(`✅ Статья #${postId} одобрена и поставлена в очередь на публикацию.`);
             } else if (action === 'rewrite') {
                 // Запрашиваем комментарий от модератора
                 await ctx.answerCbQuery('🔁 Переписать').catch(() => {});

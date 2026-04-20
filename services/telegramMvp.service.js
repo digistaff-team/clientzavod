@@ -17,6 +17,9 @@ const manageStore = require('../manage/store');
 const sessionService = require('./session.service');
 const dockerService = require('./docker.service');
 const storageService = require('./storage.service');
+const inputImageContext = require('./inputImageContext.service');
+const channelSkills = require('./channelSkills');
+const { safeSendToModerator } = require('./telegram.utils');
 
 // Новые модули
 const contentModules = require('./content/index');
@@ -37,12 +40,31 @@ const {
   VIDEO_STATUS // TASK-015
 } = contentModules;
 
+const videoPipelineRepo = require('./content/videoPipeline.repository');
+
 const SCHEDULE_TIME = process.env.CONTENT_MVP_TIME || '09:00';
 const SCHEDULE_TZ = process.env.CONTENT_MVP_TZ || 'Europe/Moscow';
 const CHANNEL_ID = process.env.CHANNEL_ID || null; // Должен быть указан в настройках пользователя
 const MODERATOR_USER_ID = process.env.CONTENT_MVP_MODERATOR_USER_ID || '128247430';
 const DAILY_LIMIT = parseInt(process.env.CONTENT_MVP_DAILY_LIMIT || '1', 10);
 const MAX_IMAGE_ATTEMPTS = parseInt(process.env.CONTENT_MVP_MAX_IMAGE_ATTEMPTS || '3', 10);
+
+// Ошибки, при которых повторные попытки генерации картинки бессмысленны
+function isFatalImageError(msg) {
+  return /credits insufficient|balance isn't enough|KIE_API_KEY is not set/i.test(msg);
+}
+
+// Человекочитаемое сообщение об ошибке генерации для показа в UI
+function friendlyGenError(msg) {
+  const s = msg || 'Генерация не удалась.';
+  if (/credits insufficient|balance isn't enough/i.test(s)) {
+    return 'Недостаточно средств на балансе KIE.ai для генерации изображения. Пополните баланс и повторите.';
+  }
+  if (/KIE_API_KEY is not set/i.test(s)) {
+    return 'Ключ KIE_API_KEY не настроен. Обратитесь к администратору.';
+  }
+  return s;
+}
 
 // TASK-015: Video configuration
 const DEFAULT_CONTENT_TYPE = process.env.CONTENT_MVP_CONTENT_TYPE || 'text+image'; // 'text+image' | 'text+video'
@@ -76,7 +98,8 @@ function getContentSettings(chatId) {
     publishIntervalHours: Number.isFinite(cfg?.publishIntervalHours) ? cfg.publishIntervalHours : 24,
     allowedWeekdays: Array.isArray(cfg?.allowedWeekdays) ? cfg.allowedWeekdays : [1, 2, 3, 4, 5],
     randomPublish: !!cfg?.randomPublish,
-    premoderationEnabled: cfg?.premoderationEnabled !== false
+    premoderationEnabled: cfg?.premoderationEnabled !== false,
+    scheduleEndTime: cfg?.scheduleEndTime || null
   };
 }
 
@@ -244,7 +267,20 @@ function findHeaderIndex(header, variants) {
 function normalizeImportMode(value) {
   const mode = String(value || 'topics').trim().toLowerCase();
   if (mode === 'materials' || mode === 'material') return 'materials';
+  if (mode === 'interiors' || mode === 'interior') return 'interiors';
   return 'topics';
+}
+
+const VALID_CHANNELS = new Set([
+  'telegram', 'vk', 'vk_video', 'ok',
+  'instagram', 'instagram_reels', 'facebook',
+  'pinterest', 'youtube', 'wordpress', 'tiktok'
+]);
+
+function normalizeChannel(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  return VALID_CHANNELS.has(normalized) ? normalized : null;
 }
 
 async function loadTopicsFromTable(chatId, options = {}) {
@@ -455,6 +491,32 @@ async function previewContentImport(chatId, data = {}) {
   }
 
   const header = rows[0].map(normalizeHeader);
+
+  if (mode === 'interiors') {
+    const idx = {
+      description: findHeaderIndex(header, ['description', 'описание', 'интерьер', 'interior']),
+      style: findHeaderIndex(header, ['style', 'стиль'])
+    };
+    if (idx.description < 0) idx.description = 0;
+
+    const existing = await videoPipelineRepo.getInteriors(chatId);
+    const existingSet = new Set(existing.map((r) => String(r.description || '').trim().toLowerCase()));
+
+    const preview = [];
+    let skippedEmpty = 0;
+    let skippedDuplicates = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const description = String(row[idx.description] || '').trim();
+      if (!description) { skippedEmpty++; continue; }
+      const style = idx.style >= 0 ? String(row[idx.style] || '').trim() : '';
+      const duplicate = existingSet.has(description.toLowerCase());
+      if (duplicate) skippedDuplicates++;
+      preview.push({ row: i + 1, description, style, duplicate });
+    }
+    return { mode, sheetId, gid, totalRows: Math.max(rows.length - 1, 0), preview, skippedEmpty, skippedDuplicates };
+  }
+
   if (mode === 'materials') {
     const idx = {
       title: findHeaderIndex(header, ['title', 'название', 'заголовок', 'material']),
@@ -501,7 +563,8 @@ async function previewContentImport(chatId, data = {}) {
     focus: findHeaderIndex(header, ['фокусный ключ', 'focus', 'focus keyword', 'keyword']),
     secondary: findHeaderIndex(header, ['вторичные ключи', 'secondary', 'secondary keywords']),
     lsi: findHeaderIndex(header, ['lsi-ключи', 'lsi', 'lsi keywords']),
-    status: findHeaderIndex(header, ['статус', 'status'])
+    status: findHeaderIndex(header, ['статус', 'status']),
+    channel: findHeaderIndex(header, ['канал', 'channel'])
   };
   if (idx.topic < 0) idx.topic = 0;
 
@@ -529,6 +592,7 @@ async function previewContentImport(chatId, data = {}) {
       secondary: idx.secondary >= 0 ? String(row[idx.secondary] || '').trim() : '',
       lsi: idx.lsi >= 0 ? String(row[idx.lsi] || '').trim() : '',
       status: idx.status >= 0 ? normalizeStatusValue(row[idx.status], 'pending') : 'pending',
+      channel: idx.channel >= 0 ? normalizeChannel(row[idx.channel]) : null,
       duplicate
     });
   }
@@ -544,7 +608,12 @@ async function importContentFromGoogleSheet(chatId, data = {}) {
   let imported = 0;
   for (const item of previewData.preview) {
     if (item.duplicate) continue;
-    if (mode === 'materials') {
+    if (mode === 'interiors') {
+      await videoPipelineRepo.addInterior(chatId, {
+        description: item.description,
+        style: item.style || null
+      });
+    } else if (mode === 'materials') {
       await repository.createMaterial(chatId, {
         title: item.title,
         content: item.content,
@@ -557,7 +626,8 @@ async function importContentFromGoogleSheet(chatId, data = {}) {
         focus: item.focus || null,
         secondary: item.secondary || null,
         lsi: item.lsi || null,
-        status: item.status || 'pending'
+        status: item.status || 'pending',
+        channel: item.channel || null
       });
     }
     imported++;
@@ -621,8 +691,12 @@ async function generatePostText(chatId, topic, materialsText, personaText = '') 
   if (!data || !hasApiKey || !data.aiModel) {
     throw new Error('AI model is not configured for chat');
   }
+  const sysPrompt = await channelSkills.buildSystemPrompt(
+    'tg-copywriter',
+    'Ты маркетинговый редактор Telegram-канала. Пиши кратко, фактически и без выдумок.'
+  );
   const messages = [
-    { role: 'system', content: 'Ты маркетинговый редактор Telegram-канала. Пиши кратко, фактически и без выдумок.' },
+    { role: 'system', content: sysPrompt },
     { role: 'user', content: buildTextPrompt(topic, materialsText, personaText) }
   ];
   // Передаём aiCustomApiKey для OpenAI или aiAuthToken для ProTalk
@@ -645,174 +719,14 @@ async function generatePostText(chatId, topic, materialsText, personaText = '') 
 }
 
 // ============================================
-// User Input Files Helpers
-// ============================================
-
-/**
- * Получить список файлов в папке input пользователя
- */
-async function getInputFiles(chatId) {
-  try {
-    const session = await sessionService.getOrCreateSession(chatId);
-    const result = await dockerService.executeInContainer(
-      session.containerId,
-      "find /workspace/input -maxdepth 1 -type f -printf '%p\\n' 2>/dev/null"
-    );
-    const files = result.stdout.trim().split('\n').filter(Boolean);
-    return files.map(filepath => ({
-      path: filepath,
-      name: path.basename(filepath),
-      ext: path.extname(filepath).toLowerCase()
-    }));
-  } catch (e) {
-    console.error(`[CONTENT-MVP] Error getting input files for ${chatId}:`, e.message);
-    return [];
-  }
-}
-
-/**
- * Прочитать содержимое файла из input
- */
-async function readInputFile(chatId, filepath) {
-  try {
-    const session = await sessionService.getOrCreateSession(chatId);
-    const result = await dockerService.executeInContainer(
-      session.containerId,
-      `cat "${filepath.replace(/"/g, '\\"')}"`
-    );
-    return result.stdout;
-  } catch (e) {
-    console.error(`[CONTENT-MVP] Error reading input file ${filepath}:`, e.message);
-    return null;
-  }
-}
-
-/**
- * Получить описание для генерации изображения из файлов input
- * Приоритет: .txt/.md файлы с описанием > .png/.jpg изображения (имя файла)
- */
-async function getImageContext(chatId) {
-  const files = await getInputFiles(chatId);
-  if (files.length === 0) {
-    return null;
-  }
-
-  // Ищем текстовые файлы с описанием (приоритет)
-  const textFiles = files.filter(f => ['.txt', '.md'].includes(f.ext));
-  if (textFiles.length > 0) {
-    const descriptions = [];
-    for (const file of textFiles) {
-      const content = await readInputFile(chatId, file.path);
-      if (content && content.trim()) {
-        descriptions.push(`File "${file.name}": ${content.trim().slice(0, 500)}`);
-      }
-    }
-    if (descriptions.length > 0) {
-      return {
-        type: 'text_description',
-        description: descriptions.join('\n\n'),
-        files: textFiles.map(f => f.name)
-      };
-    }
-  }
-
-  // Ищем изображения для использования как референс
-  const imageFiles = files.filter(f => ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(f.ext));
-  if (imageFiles.length > 0) {
-    return {
-      type: 'image_reference',
-      description: `User uploaded image file: ${imageFiles[0].name}. Use visual elements, colors, and composition from this file as inspiration.`,
-      files: imageFiles.map(f => f.name)
-    };
-  }
-
-  // Другие файлы — используем имена как подсказку
-  return {
-    type: 'filename_hint',
-    description: `User uploaded files: ${files.map(f => f.name).join(', ')}. Consider these when creating the image.`,
-    files: files.map(f => f.name)
-  };
-}
-
-// ============================================
 // Image Generation
 // ============================================
 
 // Генерация изображения с помощью сервиса Kie.ai
 async function generateImage(chatId, topic, text) {
-  const apiKey = process.env.KIE_API_KEY;
-  if (!apiKey) throw new Error('KIE_API_KEY is not set');
-
-  // Получаем контекст из файлов пользователя
-  const imageContext = chatId ? await getImageContext(chatId) : null;
-  
-  // Формируем промпт с учётом загруженных файлов
-  let basePrompt = `Image for Telegram post. Topic: ${topic.topic}.`;
-  
-  if (imageContext) {
-    // Добавляем описание из файлов пользователя
-    basePrompt += ` IMPORTANT: ${imageContext.description}`;
-    basePrompt += ` You are an advanced AI image generation assistant. Your purpose is to create high-quality, visually compelling images based on user requests. CORE PRINCIPLES: 1) Quality First - always aim for highest artistic and technical quality. 2) Safety - never generate harmful, illegal, explicit, or dangerous content. 3) Respect - create inclusive, non-discriminatory content. 4) Accuracy - represent subjects truthfully. 5) Creativity - interpret requests creatively while staying true to user intent. WORKFLOW: Analyze request, identify key elements (subject, style, mood, composition, colors), fill missing details with appropriate defaults, apply best practices, optimize prompt for quality. PROMPT ENHANCEMENT: Add details about lighting, composition, perspective, color palette; specify quality modifiers (high resolution, professional, detailed); include style references. TECHNICAL SPECS: Default aspect ratio 1:1, highest quality, photorealistic or artistic based on context. RESTRICTIONS: No violent/gory/harmful content, no explicit sexual content, no hate speech or discriminatory imagery, no real person likeness without consent, no copyrighted material replication, no dangerous activities or illegal acts, no misinformation. HANDLING: If unclear - ask clarification; if violates guidelines - explain and suggest alternatives; if vague - make reasonable assumptions. OUTPUT: Generate detailed optimized prompt including main subject, action, style, aesthetic, composition, framing, lighting, atmosphere, color scheme, quality level. Always prioritize user satisfaction while maintaining ethical standards and safety.`;
-  } else {
-    // Стандартный промпт без пользовательских файлов
-    basePrompt += ` You are an advanced AI image generation assistant. Your purpose is to create high-quality, visually compelling images based on user requests. CORE PRINCIPLES: 1) Quality First - always aim for highest artistic and technical quality. 2) Safety - never generate harmful, illegal, explicit, or dangerous content. 3) Respect - create inclusive, non-discriminatory content. 4) Accuracy - represent subjects truthfully. 5) Creativity - interpret requests creatively while staying true to user intent. WORKFLOW: Analyze request, identify key elements (subject, style, mood, composition, colors), fill missing details with appropriate defaults, apply best practices, optimize prompt for quality. PROMPT ENHANCEMENT: Add details about lighting, composition, perspective, color palette; specify quality modifiers (high resolution, professional, detailed); include style references. TECHNICAL SPECS: Default aspect ratio 1:1, highest quality, photorealistic or artistic based on context. RESTRICTIONS: No violent/gory/harmful content, no explicit sexual content, no hate speech or discriminatory imagery, no real person likeness without consent, no copyrighted material replication, no dangerous activities or illegal acts, no misinformation. HANDLING: If unclear - ask clarification; if violates guidelines - explain and suggest alternatives; if vague - make reasonable assumptions. OUTPUT: Generate detailed optimized prompt including main subject, action, style, aesthetic, composition, framing, lighting, atmosphere, color scheme, quality level. Always prioritize user satisfaction while maintaining ethical standards and safety`;
-  }
-  
-  const prompt = basePrompt.slice(0, 800);
-
-  // Шаг 1: создаём задачу
-  const createResp = await fetch('https://api.kie.ai/api/v1/jobs/createTask', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'nano-banana-2',
-      input: {
-        prompt,
-        aspect_ratio: '1:1',
-        nsfw_checker: true
-      }
-    }),
-    timeout: 30000
-  });
-  if (!createResp.ok) {
-    const err = await createResp.text();
-    throw new Error(`Image API createTask failed: ${createResp.status} ${err.slice(0, 300)}`);
-  }
-  const createData = await createResp.json();
-  if (createData.code !== 200) {
-    throw new Error(`Image API createTask error: ${createData.msg}`);
-  }
-  const taskId = createData?.data?.taskId;
-  if (!taskId) throw new Error('Image API: no taskId in response');
-
-  // Шаг 2: polling результата (max 90 секунд)
-  const pollUrl = `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${taskId}`;
-  const pollHeaders = { Authorization: `Bearer ${apiKey}` };
-  const maxAttempts = 18;
-  const pollInterval = 5000;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await new Promise((r) => setTimeout(r, pollInterval));
-    const pollResp = await fetch(pollUrl, { headers: pollHeaders, timeout: 15000 });
-    if (!pollResp.ok) continue;
-    const pollData = await pollResp.json();
-    const state = pollData?.data?.state;
-    if (state === 'success') {
-      const resultJson = JSON.parse(pollData.data.resultJson || '{}');
-      const imageUrl = resultJson?.resultUrls?.[0];
-      if (!imageUrl) throw new Error('Image API: no result URL in response');
-      const imgResp = await fetch(imageUrl, { timeout: 30000 });
-      if (!imgResp.ok) throw new Error(`Image download failed: ${imgResp.status}`);
-      return await imgResp.buffer();
-    }
-    if (state === 'fail') {
-      throw new Error(`Image generation failed: ${pollData.data.failMsg || 'unknown error'}`);
-    }
-  }
-  throw new Error('Image generation timeout: task did not complete in 90 seconds');
+  const basePrompt = `Topic: ${topic.topic}`.slice(0, 300);
+  const imageModel = manageStore.getImageGenSettings(chatId).model;
+  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'telegram');
 }
 
 async function saveImageToUserWorkspace(chatId, buffer, jobId) {
@@ -832,7 +746,7 @@ async function saveImageToUserWorkspace(chatId, buffer, jobId) {
 
 async function pickNextTopic(chatId) {
   await repository.ensureSchema(chatId);
-  const topic = await repository.reserveNextTopic(chatId);
+  const topic = await repository.reserveNextTopic(chatId, 'telegram');
   if (!topic) return null;
   return {
     sheetRow: topic.id,
@@ -949,11 +863,13 @@ async function handleGenerateJob(chatId, queueJob, bot, correlationId) {
       break;
     } catch (e) {
       imageErr = e?.message || String(e);
+      // Не повторяем при фатальных ошибках (нет баланса, нет ключа)
+      if (isFatalImageError(imageErr)) break;
     }
   }
   if (!imagePath) {
     await releaseTopic(chatId, topic, `image_generation_failed: ${imageErr}`);
-    return { success: false, error: `Image generation failed: ${imageErr}`, retry: true };
+    return { success: false, error: `Image generation failed: ${imageErr}`, retry: !isFatalImageError(imageErr) };
   }
 
   // Создаём job в БД
@@ -1261,9 +1177,12 @@ async function sendVideoDraftToModerator(chatId, bot, draft) {
   };
 
   // Для видео отправляем текстовое сообщение с кнопками
-  const sent = await bot.telegram.sendMessage(settings.moderatorUserId, caption, { 
-    reply_markup: kb,
-    parse_mode: 'HTML'
+  const moderatorId = settings.moderatorUserId;
+  const sent = await safeSendToModerator({
+    sendFn: () => bot.telegram.sendMessage(moderatorId, caption, { reply_markup: kb, parse_mode: 'HTML' }),
+    chatId,
+    moderatorId,
+    notifyBot: cwBot || bot
   });
 
   await setDraft(chatId, String(draft.jobId), {
@@ -1307,6 +1226,8 @@ async function generateDraft(chatId, reason = 'manual', correlationId = null) {
       break;
     } catch (e) {
       imageErr = e?.message || String(e);
+      // Не повторяем при фатальных ошибках (нет баланса, нет ключа)
+      if (isFatalImageError(imageErr)) break;
     }
   }
   if (!imagePath) {
@@ -1384,7 +1305,13 @@ async function sendDraftToModerator(chatId, bot, draft) {
   
   // Используем cwBot если он есть и у пользователя нет своего бота
   const moderatorBot = cwBot && cwBot.token !== bot?.token ? cwBot : bot;
-  const sent = await moderatorBot.telegram.sendPhoto(settings.moderatorUserId, { source: tempPath }, { caption, reply_markup: kb });
+  const moderatorId = settings.moderatorUserId;
+  const sent = await safeSendToModerator({
+    sendFn: () => moderatorBot.telegram.sendPhoto(moderatorId, { source: tempPath }, { caption, reply_markup: kb }),
+    chatId,
+    moderatorId,
+    notifyBot: cwBot || bot
+  });
   await fs.unlink(tempPath).catch(() => {});
 
   await setDraft(chatId, String(draft.jobId), {
@@ -1812,10 +1739,10 @@ async function runNow(chatId, bot, reason = 'manual') {
       if (result.success) {
         return { ok: true, message: 'Генерация выполнена успешно.', correlationId };
       } else {
-        return { ok: false, message: result.error || 'Генерация не удалась.', correlationId };
+        return { ok: false, message: friendlyGenError(result.error), correlationId };
       }
     } catch (e) {
-      return { ok: false, message: `Ошибка генерации: ${e.message}`, correlationId };
+      return { ok: false, message: friendlyGenError(e.message), correlationId };
     }
   }
 
@@ -1854,11 +1781,18 @@ async function tickScheduleForChat(chatId, bot) {
   const nowMinutes = nowH * 60 + nowM;
   const intervalMinutes = Math.round((settings.publishIntervalHours || 24) * 60);
 
+  // Если задано время окончания — не публиковать после него
+  if (settings.scheduleEndTime) {
+    const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
+    const endMinutes = endH * 60 + endM;
+    if (nowMinutes >= endMinutes) return;
+  }
+
   const data = manageStore.getState(chatId) || {};
 
   if (settings.randomPublish) {
     // Рандомный режим: при наступлении каждого слота генерируем случайное
-    // время следующей публикации в диапазоне 85%-100% от интервала.
+    // время публикации в диапазоне 0-15% от интервала (небольшой разброс от начала слота).
     // Слот используется как «окно», внутри которого срабатывает одна публикация.
 
     // Определяем текущий слот (ближайший прошедший)
@@ -1876,19 +1810,20 @@ async function tickScheduleForChat(chatId, bot) {
 
     // Генерируем случайную минуту для этого слота, если ещё не сгенерирована
     // Также пересчитываем если интервал изменился (targetMinute выходит за пределы допустимого диапазона)
+    // Смещение 0-15% от интервала: пост выходит близко к началу слота с небольшим разбросом
+    const maxJitter = Math.round(intervalMinutes * 0.15);
     let needRegenerate = !data[slotKey] || data[slotKey].split('|')[0] !== now.date;
     if (!needRegenerate && data[slotKey]) {
       const existingTarget = parseInt(data[slotKey].split('|')[1], 10);
-      const minAllowed = currentSlot + Math.round(intervalMinutes * 0.85);
-      const maxAllowed = currentSlot + intervalMinutes;
+      const minAllowed = currentSlot;
+      const maxAllowed = currentSlot + maxJitter;
       if (existingTarget < minAllowed || existingTarget > maxAllowed) {
         needRegenerate = true;
       }
     }
     if (needRegenerate) {
-      const minOffset = Math.round(intervalMinutes * 0.85);
-      const randomOffset = minOffset + Math.floor(Math.random() * (intervalMinutes - minOffset + 1));
-      const targetMinute = (currentSlot + randomOffset) % 1440;
+      const randomOffset = Math.floor(Math.random() * (maxJitter + 1));
+      const targetMinute = currentSlot + randomOffset;
       data[slotKey] = `${now.date}|${targetMinute}`;
       const states = manageStore.getAllStates();
       if (!states[chatId]) states[chatId] = data;
@@ -1976,7 +1911,8 @@ async function createTopic(chatId, data = {}) {
     lsi: Array.isArray(data.lsi)
       ? JSON.stringify(data.lsi)
       : String(data.lsi || '').trim() || null,
-    status
+    status,
+    channel: data.channel || null
   });
 }
 
@@ -2003,7 +1939,8 @@ async function updateTopic(chatId, topicId, data = {}) {
     lsi: Array.isArray(data.lsi)
       ? JSON.stringify(data.lsi)
       : (data.lsi ? String(data.lsi).trim() : undefined),
-    status
+    status,
+    channel: 'channel' in data ? (data.channel || null) : undefined
   });
 
   if (!updated) {
@@ -2302,6 +2239,9 @@ module.exports = {
   generateCorrelationId,
   validatePostForPublish: validators.validatePostForPublish,
   autoCorrectPost: validators.autoCorrectPost,
+
+  // Вспомогательные функции
+  normalizeChannel,
   
   // Лимиты (TASK-012)
   checkQuota: limits.checkQuota,

@@ -185,12 +185,15 @@ function setWeekdays(channelPrefix, weekdaysArray) {
  */
 function generateWeekdayCheckboxes(channelPrefix, selectedWeekdays = []) {
     const dayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-    
-    return dayNames.map((dayName, index) => {
-        const checked = selectedWeekdays.includes(index) ? 'checked' : '';
+    // Порядок отображения: Пн..Сб..Вс (неделя начинается с понедельника)
+    const displayOrder = [1, 2, 3, 4, 5, 6, 0];
+
+    return displayOrder.map((index) => {
+        const value = index === 0 ? 7 : index; // 0=Вс → 7 (ISO: 1=Пн..7=Вс)
+        const checked = selectedWeekdays.includes(value) ? 'checked' : '';
         return `<label class="weekday-label">
-            <input type="checkbox" class="${channelPrefix}-weekday" value="${index}" ${checked}>
-            <span>${dayName}</span>
+            <input type="checkbox" class="${channelPrefix}-weekday" value="${value}" ${checked}>
+            <span>${dayNames[index]}</span>
         </label>`;
     }).join('\n');
 }

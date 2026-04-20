@@ -32,7 +32,7 @@ router.get('/:chat_id', async (req, res) => {
     const { chat_id } = req.params;
     const { directory = '/workspace' } = req.query;
     
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -91,7 +91,7 @@ router.get('/:chat_id/download', async (req, res) => {
         return res.status(400).json({ error: 'filepath is required' });
     }
 
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -119,7 +119,7 @@ router.get('/:chat_id/preview', async (req, res) => {
         return res.status(400).json({ error: 'filepath is required' });
     }
 
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -345,14 +345,23 @@ router.post('/:chat_id/upload', upload.single('file'), async (req, res) => {
         }
     }
 
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found. Container must be running for non-personalization files' });
     }
 
     try {
+        // Multer may read filename bytes as Latin-1 (HTTP header encoding).
+        // If name contains only chars <= U+00FF but has non-ASCII → likely mojibake → fix.
+        // If name already contains chars > U+00FF → multer decoded as UTF-8 correctly → leave as-is.
+        const rawName = req.file.originalname;
+        const hasSurrogateOrHighUnicode = /[\u0100-\uFFFF]/.test(rawName);
+        const hasLatin1NonAscii = /[\x80-\xFF]/.test(rawName);
+        const filename = (!hasSurrogateOrHighUnicode && hasLatin1NonAscii)
+            ? Buffer.from(rawName, 'latin1').toString('utf8')
+            : rawName;
         // Use POSIX path for container destinations regardless of host OS.
-        const remotePath = path.posix.join(destination, req.file.originalname);
+        const remotePath = path.posix.join(destination, filename);
         await dockerService.copyToContainer(req.file.path, session.containerId, remotePath);
         await fs.unlink(req.file.path).catch(() => {});
 
@@ -361,7 +370,7 @@ router.post('/:chat_id/upload', upload.single('file'), async (req, res) => {
 
         res.json({
             success: true,
-            filename: req.file.originalname,
+            filename,
             destination: remotePath
         });
     } catch (error) {
@@ -373,7 +382,7 @@ router.post('/:chat_id/upload', upload.single('file'), async (req, res) => {
 router.get('/:chat_id/stats', async (req, res) => {
     const { chat_id } = req.params;
     
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -440,7 +449,7 @@ router.get('/:chat_id/content', async (req, res) => {
         return res.status(400).json({ error: 'filepath is required' });
     }
 
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         // Fallback: читаем файл напрямую с диска для персонализации
         // Это позволяет просматривать IDENTITY.md, SOUL.md, USER.md даже без запущенного контейнера
@@ -504,7 +513,7 @@ router.delete('/:chat_id/folder', async (req, res) => {
         return res.status(400).json({ error: validation.error });
     }
     
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -531,7 +540,7 @@ router.delete('/:chat_id/folder/remove', async (req, res) => {
         return res.status(400).json({ error: validation.error });
     }
     
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -557,7 +566,7 @@ router.delete('/:chat_id', async (req, res) => {
         return res.status(400).json({ error: 'filepath is required' });
     }
     
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -579,7 +588,7 @@ router.post('/:chat_id/cache/invalidate', async (req, res) => {
     const { chat_id } = req.params;
     const { filepath, rebuild = false } = req.body;
     
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
@@ -612,7 +621,7 @@ router.get('/:chat_id/cache', async (req, res) => {
     const { chat_id } = req.params;
     const { rebuild = false } = req.query;
     
-    const session = sessionService.getSession(chat_id);
+    const session = await sessionService.getSessionOrRecover(chat_id);
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }

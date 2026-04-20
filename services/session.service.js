@@ -187,6 +187,15 @@ function getSession(chatId) {
 }
 
 /**
+ * Получает сессию с lazy recovery из существующего контейнера (без создания нового)
+ */
+async function getSessionOrRecover(chatId) {
+    const session = sessions.get(chatId);
+    if (session) return session;
+    return await recoverSession(chatId);
+}
+
+/**
  * Останавливает сессию (контейнер + сохраняет БД)
  * Вызывается при очистке неактивных сессий.
  * Контейнер останавливается, но НЕ удаляется — быстрый рестарт при следующем обращении.
@@ -326,6 +335,7 @@ module.exports = {
     createSession,
     getOrCreateSession,
     getSession,
+    getSessionOrRecover,
     destroySession,
     stopSession,
     executeCommand,

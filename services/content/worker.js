@@ -14,10 +14,21 @@ const contentLimits = require('./limits');
 const manageStore = require('../../manage/store');
 const alerts = require('./alerts');
 
-const POLL_INTERVAL_MS = 5000; // 5 секунд
+function getNowInTz(tz) {
+  const p = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const get = (t) => p.find((x) => x.type === t)?.value;
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, time: `${get('hour')}:${get('minute')}` };
+}
+
+const POLL_INTERVAL_MS = 2000; // OPTIMIZATION: Уменьшили интервал polling с 5с до 2с
 const VIDEO_POLL_INTERVAL_MS = parseInt(process.env.VIDEO_POLL_INTERVAL_MS || '10000', 10); // TASK-015
 const BLOG_POLL_INTERVAL_MS = 60000; // 60 секунд для планировщика тем WordPress
-const MAX_CONCURRENT_JOBS = 1; // Максимум параллельных задач на chat
+const MAX_CONCURRENT_JOBS = 3; // OPTIMIZATION: Увеличили с 1 до 3 для параллельной обработки
 const STUCK_TIMEOUT_MINUTES = 10;
 
 let workerHandle = null;
@@ -239,7 +250,13 @@ async function processJob(chatId, job, bot) {
   
   try {
     const result = await handler(chatId, job, bot, corrId);
-    
+
+    if (!result) {
+      console.error(`[CONTENT-WORKER] Job ${id} handler returned undefined`);
+      await queueRepo.markFailed(chatId, id, 'Handler returned undefined', false);
+      return;
+    }
+
     if (result.success) {
       await queueRepo.markDone(chatId, id);
       console.log(`[CONTENT-WORKER] Job ${id} completed successfully`);
@@ -397,43 +414,87 @@ async function scheduleBlogPostsForChat(chatId) {
   // Проверяем, что WordPress подключён
   const wpConfig = manageStore.getWpConfig(chatId);
   if (!wpConfig || !wpConfig.baseUrl || !wpConfig.username || !wpConfig.appPassword) {
-    return; // WordPress не подключён
+    return;
+  }
+
+  // Автоматический планировщик работает только при настроенном расписании
+  if (!wpConfig.scheduleTime) {
+    return;
+  }
+
+  const tz = wpConfig.scheduleTz || 'Europe/Moscow';
+  const now = getNowInTz(tz);
+
+  // Проверяем день недели (1=Пн, 7=Вс)
+  const scheduleDays = wpConfig.scheduleDays;
+  if (scheduleDays && scheduleDays.length > 0) {
+    const dowDate = new Date(now.date + 'T12:00:00');
+    const dow = dowDate.getDay() || 7; // 0=Вс → 7
+    if (!scheduleDays.includes(dow)) return;
+  }
+
+  // Проверяем временное окно
+  const [startH, startM] = wpConfig.scheduleTime.split(':').map(Number);
+  const [nowH, nowM] = now.time.split(':').map(Number);
+  const startMinutes = startH * 60 + startM;
+  const nowMinutes = nowH * 60 + nowM;
+  if (nowMinutes < startMinutes) return;
+  if (wpConfig.scheduleEndTime) {
+    const [endH, endM] = wpConfig.scheduleEndTime.split(':').map(Number);
+    if (nowMinutes >= endH * 60 + endM) return;
   }
 
   // Проверяем лимиты
-  const publishedToday = await contentLimits.getUsageStats(chatId, contentLimits.QUOTA_TYPES.BLOG_GENERATION);
-  const perDayLimit = wpConfig.postsPerDay || 3; // По умолчанию 3 поста в день
-
-  if (publishedToday.today >= perDayLimit) {
-    return; // Достигнут дневной лимит
+  const perDayLimit = wpConfig.dailyLimit || wpConfig.postsPerDay || 3;
+  let publishedToday = { today: { blogGenerated: 0 } };
+  try {
+    publishedToday = await contentLimits.getUsageStats(chatId, now.date, tz);
+  } catch (statsErr) {
+    console.warn(`[CONTENT-WORKER-BLOG] getUsageStats failed, skipping limit check: ${statsErr.message}`);
+  }
+  if (publishedToday.today.blogGenerated >= perDayLimit) {
+    return;
   }
 
-  // Проверяем, есть ли уже активные задачи wordpress в очереди
-  const queueStats = await queueRepo.getQueueStats(chatId);
-  // Упрощённая проверка — можно расширить до просмотра типов задач
+  // [П1] Queue overflow guard: не добавляем в очередь если уже достаточно задач
+  let queueStats = { queued: 0, processing: 0 };
+  try {
+    queueStats = await queueRepo.getQueueStats(chatId);
+  } catch (statsErr) {
+    console.warn(`[CONTENT-WORKER-BLOG] getQueueStats failed, skipping queue guard: ${statsErr.message}`);
+  }
+  const inFlight = (queueStats.queued || 0) + (queueStats.processing || 0);
+  if (inFlight >= perDayLimit) {
+    return;
+  }
+
+  // Проверяем minIntervalHours (минимальный интервал между постами)
+  if (wpConfig.minIntervalHours && wpConfig.lastPublishedAt) {
+    const hoursSince = (Date.now() - new Date(wpConfig.lastPublishedAt).getTime()) / 3600000;
+    if (hoursSince < wpConfig.minIntervalHours) return;
+  }
 
   // Выбираем следующую тему (резервируем её)
   const contentRepo = require('./repository');
-  const topic = await contentRepo.reserveNextTopic(chatId);
+  const topic = await contentRepo.reserveNextTopic(chatId, 'wordpress');
+  if (!topic) return;
 
-  if (!topic) {
-    return; // Нет доступных тем
+  // Создаём задачу на генерацию с откатом при ошибке
+  try {
+    await enqueueJob(chatId, {
+      jobType: 'wordpress_generate',
+      payload: {
+        topicId: topic.id,
+        topic: topic.topic,
+        keywords: topic.focus || topic.secondary || '',
+        techDocId: topic.tech_doc_id || null
+      }
+    });
+    console.log(`[CONTENT-WORKER-BLOG] Enqueued blog post generation for chat ${chatId}, topic ${topic.id}`);
+  } catch (err) {
+    await contentRepo.releaseTopic(chatId, topic.id).catch(() => {});
+    throw err;
   }
-
-  // Создаём задачу на генерацию
-  await enqueueJob(chatId, {
-    job_type: 'wordpress_generate',
-    payload: {
-      topicId: topic.id,
-      topic: topic.topic,
-      keywords: topic.focus || topic.secondary || '',
-      techDocId: topic.tech_doc_id || null
-    },
-    status: 'queued',
-    channel: 'wordpress'
-  });
-
-  console.log(`[CONTENT-WORKER-BLOG] Enqueued blog post generation for chat ${chatId}, topic ${topic.id}`);
 }
 
 /**
@@ -442,6 +503,7 @@ async function scheduleBlogPostsForChat(chatId) {
 async function handleWordPressGeneration(chatId, job, bot) {
   const { topicId, topic, keywords, techDocId } = job.payload;
   const corrId = job.correlation_id || generateCorrelationId();
+  let kieAiAlreadyCalled = false; // [П3] взводится после успешного вызова blogGenerator.generate()
 
   console.log(`[CONTENT-WORKER-BLOG] Generating post for topic ${topicId}: ${topic}`);
 
@@ -453,12 +515,13 @@ async function handleWordPressGeneration(chatId, job, bot) {
       techDocId,
       moderatorNote: null
     });
+    kieAiAlreadyCalled = true; // [П3] KIE.ai вызван внутри generate() — дальнейшие ретраи не должны вызывать его снова
 
     console.log(`[CONTENT-WORKER-BLOG] Article generated: ${article.seoTitle}`);
 
     // 2. Создаём черновик поста в БД
     const postId = await wpRepo.createDraftPost(chatId, {
-      jobId: job.id,
+      jobId: null, // content_job_queue.id != content_jobs.id, FK references content_jobs
       bodyHtml: article.bodyHtml,
       seoTitle: article.seoTitle,
       metaDesc: article.metaDesc,
@@ -512,26 +575,33 @@ async function handleWordPressGeneration(chatId, job, bot) {
     await wpRepo.markReady(chatId, postId);
 
     // 7. Отправляем на модерацию (если включено)
-    const premoderationEnabled = wpConfig.premoderation !== false; // По умолчанию включена
+    const wpConfig = manageStore.getWpConfig(chatId);
+    const premoderationEnabled = wpConfig?.premoderationEnabled !== false; // По умолчанию включена
     if (premoderationEnabled) {
       await sendBlogModerationRequest(chatId, postId, bot);
     } else {
-      // Автопубликация без модерации
+      // Автопубликация без модерации — ставим в очередь на публикацию
       await wpRepo.markApproved(chatId, postId);
+      await enqueueJob(chatId, { jobType: 'wordpress_publish', payload: { postId } });
     }
 
     // 8. Тема уже отмечена как использованная в reserveNextTopic
     // (content_topics.used_at проставлен автоматически)
 
-    console.log(`[CONTENT-WORKER-BLOG] Post ${postId} ready for moderation`);
+    console.log(`[CONTENT-WORKER-BLOG] Post ${postId} ${premoderationEnabled ? 'sent to moderation' : 'queued for publish'}`);
 
     return { success: true };
   } catch (e) {
     console.error('[CONTENT-WORKER-BLOG] Generation failed:', e.message);
 
+    // Освобождаем тему обратно в pending
+    if (job.payload?.topicId) {
+      const contentRepo = require('./repository');
+      await contentRepo.releaseTopic(chatId, job.payload.topicId).catch(() => {});
+    }
+
     // Пытаемся отметить ошибку в БД
     try {
-      const contentRepo = require('./repository');
       const posts = await wpRepo.findByStatus(chatId, 'draft');
       if (posts.length > 0) {
         const postId = posts[0].id;
@@ -541,14 +611,36 @@ async function handleWordPressGeneration(chatId, job, bot) {
       console.error('[CONTENT-WORKER-BLOG] Failed to update error status:', dbError.message);
     }
 
-    // Уведомляем админа
+    // [П2c] Алерт модератору с правильной сигнатурой sendAlertToModerator(bot, userId, alert)
     try {
-      await alerts.notifyAdmin(`Blog generation failed for chat ${chatId}: ${e.message}`);
+      const stateData = manageStore.getState(chatId);
+      const wpConfig = manageStore.getWpConfig(chatId);
+      const moderatorId = wpConfig?.moderatorUserId
+        || process.env.CONTENT_MVP_MODERATOR_USER_ID
+        || stateData?.verifiedTelegramId;
+      if (bot && moderatorId) {
+        await alerts.sendAlertToModerator(bot, moderatorId, {
+          type: e.name === 'InsufficientBalanceError' ? 'kie_insufficient_balance'
+              : e.name === 'KieDailyLimitError' ? 'kie_daily_limit'
+              : 'blog_generation_failed',
+          severity: (e.name === 'InsufficientBalanceError' || e.name === 'KieDailyLimitError') ? 'critical' : 'warning',
+          message: e.name === 'InsufficientBalanceError'
+            ? '🚨 KIE.ai: баланс исчерпан (402) — генерация остановлена'
+            : e.name === 'KieDailyLimitError'
+            ? '🚨 KIE.ai: достигнут дневной лимит вызовов — генерация остановлена'
+            : `Ошибка генерации блога: ${e.message}`
+        });
+      }
     } catch (alertError) {
       console.error('[CONTENT-WORKER-BLOG] Failed to send alert:', alertError.message);
     }
 
-    return { success: false, error: e.message, retry: e.name === 'InsufficientBalanceError' ? false : true };
+    // [П3] retry:false если KIE.ai уже был вызван — не тратить токены повторно
+    const noRetry = kieAiAlreadyCalled
+      || e.name === 'InsufficientBalanceError'
+      || e.name === 'KieDailyLimitError'
+      || e.message.includes('foreign key constraint');
+    return { success: false, error: e.message, retry: !noRetry };
   }
 }
 
@@ -631,6 +723,18 @@ async function handleWordPressPublish(chatId, job, bot) {
     // Обновляем статус
     await wpRepo.markPublished(chatId, postId, published.link);
 
+    // Уведомляем владельца об успешной публикации
+    try {
+      if (bot && bot.telegram) {
+        await bot.telegram.sendMessage(
+          chatId,
+          `✅ Статья опубликована!\n\n📝 ${post.seo_title || 'Без заголовка'}\n\n🔗 ${published.link}`
+        );
+      }
+    } catch (notifyErr) {
+      console.warn('[CONTENT-WORKER-BLOG] Failed to notify owner:', notifyErr.message);
+    }
+
     // Публикуем анонс в Telegram канале пользователя
     await publishBlogAnnouncement(chatId, post);
 
@@ -701,6 +805,7 @@ module.exports = {
   handleWordPressGeneration,
   handleWordPressPublish,
   publishBlogAnnouncement,
+  sendBlogModerationRequest,
   POLL_INTERVAL_MS,
   MAX_CONCURRENT_JOBS
 };

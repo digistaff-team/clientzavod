@@ -177,6 +177,9 @@ async function ensureSchema(chatId) {
     // Миграция: добавить недостающие колонки content_posts для таблиц старой схемы
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS body_text TEXT`);
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS hashtags TEXT`);
+    try {
+      await client.query(`ALTER TABLE content_posts ALTER COLUMN job_id DROP NOT NULL`);
+    } catch (_) {}
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'text+image'`);
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS publish_status TEXT NOT NULL DEFAULT 'ready'`);
     await client.query(`ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
@@ -892,7 +895,7 @@ async function countVideoGeneratedToday(chatId, dateStr, tz = 'Europe/Moscow') {
   });
 }
 
-async function reserveNextTopic(chatId) {
+async function reserveNextTopic(chatId, channel = null) {
   return withClient(chatId, async (client) => {
     await client.query('BEGIN');
     try {
@@ -900,9 +903,11 @@ async function reserveNextTopic(chatId) {
         `SELECT id, topic, focus, secondary, lsi, status, created_at, used_at
          FROM content_topics
          WHERE status = 'pending'
+           AND ($1::text IS NULL OR channel = $1 OR channel IS NULL)
          ORDER BY created_at ASC, id ASC
          FOR UPDATE SKIP LOCKED
-         LIMIT 1`
+         LIMIT 1`,
+        [channel]
       );
       const row = result.rows[0];
       if (!row) {
@@ -926,6 +931,11 @@ async function reserveNextTopic(chatId) {
   });
 }
 
+async function releaseTopic(chatId, topicId) {
+  // Release a reserved topic back to 'pending' status when an error occurs
+  return updateTopicStatus(chatId, topicId, 'pending');
+}
+
 async function listTopics(chatId, options = {}) {
   const status = options.status ? String(options.status).trim().toLowerCase() : null;
   const limit = Math.min(Math.max(parseInt(options.limit, 10) || 100, 1), 500);
@@ -947,7 +957,7 @@ async function listTopics(chatId, options = {}) {
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const result = await client.query(
-      `SELECT id, topic, focus, secondary, lsi, status, created_at, used_at
+      `SELECT id, topic, focus, secondary, lsi, status, channel, created_at, used_at
        FROM content_topics
        ${whereSql}
        ORDER BY created_at DESC, id DESC
@@ -1023,12 +1033,12 @@ async function updateTopic(chatId, topicId, data) {
       values.push(data.lsi);
     }
     if (data.status !== undefined) {
-      fields.push(`status = ${paramIndex++}::text`);
+      fields.push(`status = $${paramIndex++}::text`);
       values.push(data.status);
-      fields.push(`used_at = CASE WHEN ${paramIndex - 1}::text = 'pending' THEN NULL ELSE COALESCE(used_at, NOW()) END`);
+      fields.push(`used_at = CASE WHEN $${paramIndex - 1}::text = 'pending' THEN NULL ELSE COALESCE(used_at, NOW()) END`);
     }
     if (data.channel !== undefined) {
-      fields.push(`channel = ${paramIndex++}::text`);
+      fields.push(`channel = $${paramIndex++}::text`);
       values.push(data.channel);
     }
 
@@ -1041,7 +1051,7 @@ async function updateTopic(chatId, topicId, data) {
     const result = await client.query(
       `UPDATE content_topics
        SET ${fields.join(', ')}
-       WHERE id = ${paramIndex}
+       WHERE id = $${paramIndex}
        RETURNING id, topic, focus, secondary, lsi, status, channel, created_at, used_at`,
       values
     );
@@ -1414,6 +1424,7 @@ module.exports = {
   updateJobVideoPath,
   countVideoGeneratedToday,
   reserveNextTopic,
+  releaseTopic,
   listTopics,
   createTopic,
   getTopicById,

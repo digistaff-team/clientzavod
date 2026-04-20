@@ -3115,6 +3115,32 @@ select {
     margin-bottom: 12px;
 }
 
+/* Пара временных полей "Начать в" / "Завершить в" в одну строку */
+.scheduler-time-pair {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}
+
+.scheduler-time-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.scheduler-time-group label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    margin-bottom: 0;
+}
+
+.scheduler-time-group .scheduler-time-row {
+    margin-bottom: 0;
+}
+
 .scheduler-time-row select,
 .scheduler-time-row input[type="text"] {
     padding: 8px 12px;
@@ -3132,7 +3158,22 @@ select {
     text-align: center;
 }
 
-/* Timezone selector */
+/* Timezone selector — inline group inside scheduler-time-pair */
+.scheduler-tz-group {
+    flex: 1 1 auto;
+    min-width: 160px;
+}
+
+.scheduler-tz-group select {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 14px;
+    background: white;
+}
+
+/* Legacy standalone row (kept for backward compat) */
 .scheduler-tz-row {
     margin-bottom: 12px;
 }

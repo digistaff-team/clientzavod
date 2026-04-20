@@ -4,8 +4,8 @@
  */
 const config = require('../config');
 const aiRouterService = require('./ai_router_service');
-const imageGenService = require('./imageGen.service');
-const tokenBilling = require('../manage/tokenBilling');
+const inputImageContext = require('./inputImageContext.service');
+const manageStore = require('../manage/store');
 const wpRepo = require('./content/wordpress.repository');
 const contentRepo = require('./content/repository');
 
@@ -18,16 +18,8 @@ const {
   BLOG_PROMPT_SEO_DESC,
   BLOG_PROMPT_SEO_SLUG
 } = require('../manage/prompts');
+const channelSkills = require('./channelSkills');
 
-// Оценка токенов для проверки баланса (приблизительно)
-const ESTIMATED_TOKENS_PER_ARTICLE = 15000; // ~15k tokens на полную генерацию
-
-class InsufficientBalanceError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'InsufficientBalanceError';
-  }
-}
 
 /**
  * Загрузить технический документ из базы знаний
@@ -48,21 +40,13 @@ async function loadKnowledge(chatId, techDocId) {
  * Вызвать AI router с проверкой баланса
  */
 async function aiChat(chatId, systemPrompt, userPrompt) {
-  // Используем aiRouterService напрямую
-  // Передаём messages в формате OpenAI
   const messages = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt }
   ];
 
-  // Создаём временную "сессию" для AI router
-  const result = await aiRouterService.processMessage(
-    chatId,
-    { messages, model: null }, // модель возьмётся из настроек пользователя
-    null // bot — не требуется для прямой генерации
-  );
-
-  return result.reply || result.text || result;
+  const result = await aiRouterService.callAI(chatId, null, null, messages, null, null);
+  return result?.choices?.[0]?.message?.content || '';
 }
 
 /**
@@ -76,14 +60,6 @@ async function aiChat(chatId, systemPrompt, userPrompt) {
  * @returns {Promise<{bodyHtml: string, seoTitle: string, metaDesc: string, slug: string, imageBuffer: Buffer, imageMime: string, imageFilename: string}>}
  */
 async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
-  // 0. Проверка баланса
-  const balanceCheck = await tokenBilling.hasBalance(chatId, ESTIMATED_TOKENS_PER_ARTICLE);
-  if (!balanceCheck.canUse) {
-    throw new InsufficientBalanceError(
-      `Insufficient token balance for article generation. ${balanceCheck.reason || ''}`
-    );
-  }
-
   // 1. Загрузка базы знаний (если указана)
   const knowledgeDoc = await loadKnowledge(chatId, techDocId);
   const knowledgeContext = knowledgeDoc
@@ -123,18 +99,23 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
     `Структура статьи:\n${JSON.stringify(formatData, null, 2)}\nТема: ${topic}`
   );
 
-  // 4. Генерация изображения
-  const imageResult = await imageGenService.generateCover({
-    prompt: imagePromptText.trim(),
-    aspectRatio: '16:9',
-    style: 'realistic',
-    chatId
-  });
+  // 4. Генерация изображения (с референсом из /workspace/input если есть)
+  const imageModel = manageStore.getImageGenSettings(chatId).model;
+  let imageBuffer = null;
+  try {
+    imageBuffer = await inputImageContext.generateImage(chatId, imagePromptText.trim(), '16:9', imageModel, 'wordpress');
+  } catch (imgErr) {
+    if (imgErr.name === 'InsufficientBalanceError' || imgErr.name === 'KieDailyLimitError') {
+      throw imgErr;
+    }
+    console.warn(`[BLOG-GENERATOR] Image generation failed, continuing without image: ${imgErr.message}`);
+  }
 
   // 5. Генерация статьи в HTML
+  const blogWritePrompt = await channelSkills.buildSystemPrompt('blog-copywriter', BLOG_PROMPT_WRITE);
   const articleHtml = await aiChat(
     chatId,
-    BLOG_PROMPT_WRITE,
+    blogWritePrompt,
     `Структура: ${JSON.stringify(formatData, null, 2)}\n${knowledgeContext}Тема: ${topic}\nКлючевые слова: ${keywords}${moderatorNoteSection}Правила SEO: используй ключевые слова естественно, добавь H2/H3 подзаголовки, списки где уместно`
   );
 
@@ -158,14 +139,10 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
     seoTitle: seoTitle.trim().substring(0, 70), // SEO title limit
     metaDesc: metaDesc.trim().substring(0, 160), // Meta description limit
     slug: cleanSlug,
-    imageBuffer: imageResult.buffer,
-    imageMime: imageResult.mimeType,
-    imageFilename: imageResult.filename
+    imageBuffer: imageBuffer,
+    imageMime: 'image/jpeg',
+    imageFilename: 'cover.jpg'
   };
 }
 
-module.exports = {
-  generate,
-  InsufficientBalanceError,
-  ESTIMATED_TOKENS_PER_ARTICLE
-};
+module.exports = { generate };

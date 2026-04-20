@@ -514,6 +514,13 @@ function setContentSettings(chatId, patch = {}) {
         }
         next.scheduleTime = scheduleTime || null;
     }
+    if (patch.scheduleEndTime !== undefined) {
+        const scheduleEndTime = String(patch.scheduleEndTime || '').trim();
+        if (scheduleEndTime && !/^\d{2}:\d{2}$/.test(scheduleEndTime)) {
+            throw new Error('scheduleEndTime must be in HH:MM format');
+        }
+        next.scheduleEndTime = scheduleEndTime || null;
+    }
     if (patch.scheduleTz !== undefined) {
         next.scheduleTz = String(patch.scheduleTz || '').trim() || null;
     }
@@ -557,6 +564,42 @@ function setContentSettings(chatId, patch = {}) {
     return persist(chatId);
 }
 
+// === Integration Settings (global) ===
+
+function getIntegrationSettings(chatId) {
+    const data = statesCache[chatId];
+    return data?.integrationSettings || null;
+}
+
+function setIntegrationSettings(chatId, patch = {}) {
+    if (!statesCache[chatId]) statesCache[chatId] = {};
+    const current = statesCache[chatId].integrationSettings || {};
+    const next = { ...current };
+    if (patch.buffer_api_key !== undefined) next.buffer_api_key = patch.buffer_api_key || null;
+    if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
+    statesCache[chatId].integrationSettings = next;
+    return persist(chatId);
+}
+
+function migrateIntegrationSettings(chatId) {
+    const data = statesCache[chatId];
+    if (!data) return;
+    const current = data.integrationSettings || {};
+
+    const patch = {};
+    if (!current.buffer_api_key) {
+        for (const key of ['pinterestConfig', 'instagramConfig', 'youtubeConfig', 'facebookConfig', 'tiktokConfig']) {
+            if (data[key]?.buffer_api_key) { patch.buffer_api_key = data[key].buffer_api_key; break; }
+        }
+    }
+    if (!current.moderator_user_id) {
+        for (const key of ['pinterestConfig', 'instagramConfig', 'youtubeConfig', 'facebookConfig', 'tiktokConfig', 'vkVideoConfig']) {
+            if (data[key]?.moderator_user_id) { patch.moderator_user_id = data[key].moderator_user_id; break; }
+        }
+    }
+    if (Object.keys(patch).length > 0) setIntegrationSettings(chatId, patch);
+}
+
 // === Pinterest Config ===
 
 function getPinterestConfig(chatId) {
@@ -579,6 +622,15 @@ function setPinterestConfig(chatId, patch = {}) {
     if (patch.buffer_channel_id !== undefined) next.buffer_channel_id = String(patch.buffer_channel_id || '').trim() || null;
     if (patch.board_rotation !== undefined) next.board_rotation = patch.board_rotation || 'random';
     if (patch.last_board_index !== undefined) next.last_board_index = parseInt(patch.last_board_index, 10) || 0;
+    if (patch.schedule_time !== undefined) next.schedule_time = patch.schedule_time || null;
+    if (patch.schedule_end_time !== undefined) next.schedule_end_time = patch.schedule_end_time || null;
+    if (patch.schedule_tz !== undefined) next.schedule_tz = patch.schedule_tz || null;
+    if (patch.daily_limit !== undefined) next.daily_limit = parseInt(patch.daily_limit, 10) || null;
+    if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = parseFloat(patch.publish_interval_hours) || null;
+    if (patch.allowed_weekdays !== undefined && Array.isArray(patch.allowed_weekdays)) next.allowed_weekdays = patch.allowed_weekdays;
+    if (patch.random_publish !== undefined) next.random_publish = !!patch.random_publish;
+    if (patch.premoderation_enabled !== undefined) next.premoderation_enabled = !!patch.premoderation_enabled;
+    if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
     if (patch.stats !== undefined) next.stats = { ...(next.stats || {}), ...patch.stats };
 
     statesCache[chatId].pinterestConfig = next;
@@ -607,6 +659,7 @@ function setInstagramConfig(chatId, patch = {}) {
     if (patch.is_active !== undefined) next.is_active = !!patch.is_active;
     if (patch.auto_publish !== undefined) next.auto_publish = !!patch.auto_publish;
     if (patch.schedule_time !== undefined) next.schedule_time = patch.schedule_time || null;
+    if (patch.schedule_end_time !== undefined) next.schedule_end_time = patch.schedule_end_time || null;
     if (patch.schedule_tz !== undefined) next.schedule_tz = patch.schedule_tz || null;
     if (patch.daily_limit !== undefined) next.daily_limit = Math.min(Math.max(parseInt(patch.daily_limit, 10) || 3, 1), 25);
     if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = parseFloat(patch.publish_interval_hours) || 4;
@@ -643,6 +696,7 @@ function setYoutubeConfig(chatId, patch = {}) {
     if (patch.is_active !== undefined) next.is_active = !!patch.is_active;
     if (patch.auto_publish !== undefined) next.auto_publish = !!patch.auto_publish;
     if (patch.schedule_time !== undefined) next.schedule_time = patch.schedule_time || null;
+    if (patch.schedule_end_time !== undefined) next.schedule_end_time = patch.schedule_end_time || null;
     if (patch.schedule_tz !== undefined) next.schedule_tz = patch.schedule_tz || null;
     if (patch.daily_limit !== undefined) next.daily_limit = parseInt(patch.daily_limit, 10) || 1;
     if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = parseInt(patch.publish_interval_hours, 10) || 24;
@@ -680,10 +734,12 @@ function setFacebookConfig(chatId, patch = {}) {
     if (patch.is_active !== undefined) next.is_active = !!patch.is_active;
     if (patch.auto_publish !== undefined) next.auto_publish = !!patch.auto_publish;
     if (patch.schedule_time !== undefined) next.schedule_time = patch.schedule_time || null;
+    if (patch.schedule_end_time !== undefined) next.schedule_end_time = patch.schedule_end_time || null;
     if (patch.schedule_tz !== undefined) next.schedule_tz = patch.schedule_tz || null;
     if (patch.daily_limit !== undefined) next.daily_limit = Number.isFinite(patch.daily_limit) ? patch.daily_limit : 10;
     if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = Number.isFinite(patch.publish_interval_hours) ? patch.publish_interval_hours : 4;
     if (patch.random_publish !== undefined) next.random_publish = !!patch.random_publish;
+    if (patch.premoderation !== undefined) next.premoderation = !!patch.premoderation;
     if (patch.allowed_weekdays !== undefined && Array.isArray(patch.allowed_weekdays)) next.allowed_weekdays = patch.allowed_weekdays;
     if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
     if (patch.stats !== undefined) next.stats = { ...(next.stats || {}), ...patch.stats };
@@ -711,9 +767,12 @@ function setTiktokConfig(chatId, patch = {}) {
     const current = statesCache[chatId].tiktokConfig || {};
     const next = { ...current };
 
+    if (patch.buffer_api_key !== undefined) next.buffer_api_key = patch.buffer_api_key || null;
+    if (patch.buffer_channel_id !== undefined) next.buffer_channel_id = String(patch.buffer_channel_id || '').trim() || null;
     if (patch.is_active !== undefined) next.is_active = !!patch.is_active;
     if (patch.auto_publish !== undefined) next.auto_publish = !!patch.auto_publish;
     if (patch.schedule_time !== undefined) next.schedule_time = patch.schedule_time || null;
+    if (patch.schedule_end_time !== undefined) next.schedule_end_time = patch.schedule_end_time || null;
     if (patch.schedule_tz !== undefined) next.schedule_tz = patch.schedule_tz || null;
     if (patch.daily_limit !== undefined) next.daily_limit = Number.isFinite(patch.daily_limit) ? patch.daily_limit : 3;
     if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = Number.isFinite(patch.publish_interval_hours) ? patch.publish_interval_hours : 6;
@@ -748,6 +807,7 @@ function setVkVideoConfig(chatId, patch = {}) {
     if (patch.is_active !== undefined) next.is_active = !!patch.is_active;
     if (patch.auto_publish !== undefined) next.auto_publish = !!patch.auto_publish;
     if (patch.schedule_time !== undefined) next.schedule_time = patch.schedule_time || null;
+    if (patch.schedule_end_time !== undefined) next.schedule_end_time = patch.schedule_end_time || null;
     if (patch.schedule_tz !== undefined) next.schedule_tz = patch.schedule_tz || null;
     if (patch.daily_limit !== undefined) next.daily_limit = Number.isFinite(patch.daily_limit) ? patch.daily_limit : 3;
     if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = Number.isFinite(patch.publish_interval_hours) ? patch.publish_interval_hours : 6;
@@ -767,12 +827,48 @@ function clearVkVideoConfig(chatId) {
     }
 }
 
+// === Instagram Reels Config ===
+
+function getInstagramReelsConfig(chatId) {
+    const data = statesCache[chatId];
+    return data?.instagramReelsConfig || null;
+}
+
+function setInstagramReelsConfig(chatId, patch = {}) {
+    if (!statesCache[chatId]) statesCache[chatId] = {};
+    const current = statesCache[chatId].instagramReelsConfig || {};
+    const next = { ...current };
+
+    if (patch.buffer_channel_id !== undefined) next.buffer_channel_id = String(patch.buffer_channel_id || '').trim() || null;
+    if (patch.is_active !== undefined) next.is_active = !!patch.is_active;
+    if (patch.auto_publish !== undefined) next.auto_publish = !!patch.auto_publish;
+    if (patch.schedule_time !== undefined) next.schedule_time = patch.schedule_time || null;
+    if (patch.schedule_end_time !== undefined) next.schedule_end_time = patch.schedule_end_time || null;
+    if (patch.schedule_tz !== undefined) next.schedule_tz = patch.schedule_tz || null;
+    if (patch.daily_limit !== undefined) next.daily_limit = Number.isFinite(patch.daily_limit) ? patch.daily_limit : 3;
+    if (patch.publish_interval_hours !== undefined) next.publish_interval_hours = Number.isFinite(patch.publish_interval_hours) ? patch.publish_interval_hours : 6;
+    if (patch.random_publish !== undefined) next.random_publish = !!patch.random_publish;
+    if (patch.allowed_weekdays !== undefined && Array.isArray(patch.allowed_weekdays)) next.allowed_weekdays = patch.allowed_weekdays;
+    if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
+    if (patch.stats !== undefined) next.stats = { ...(next.stats || {}), ...patch.stats };
+
+    statesCache[chatId].instagramReelsConfig = next;
+    return persist(chatId);
+}
+
+function clearInstagramReelsConfig(chatId) {
+    if (statesCache[chatId]) {
+        delete statesCache[chatId].instagramReelsConfig;
+        return persist(chatId);
+    }
+}
+
 // === Video Pipeline Settings ===
 
 const ALLOWED_VIDEO_MODELS = ['veo3.1', 'seedance-2', 'grok-imagine'];
 
 function getVideoPipelineSettings(chatId) {
-    return statesCache[chatId]?.videoPipelineSettings || {};
+    return statesCache[chatId]?.videoPipelineSettings || { model: 'veo3.1' };
 }
 
 function setVideoPipelineSettings(chatId, patch = {}) {
@@ -783,6 +879,28 @@ function setVideoPipelineSettings(chatId, patch = {}) {
         next.model = ALLOWED_VIDEO_MODELS.includes(patch.model) ? patch.model : 'veo3.1';
     }
     statesCache[chatId].videoPipelineSettings = next;
+    return persist(chatId);
+}
+
+// === Image Gen Settings ===
+
+const ALLOWED_IMAGE_MODELS = ['nano-banana-2', 'seedream/4.5-edit', 'flux-2/pro-image-to-image'];
+const DEFAULT_IMAGE_MODEL = 'nano-banana-2';
+
+function getImageGenSettings(chatId) {
+    const saved = statesCache[chatId]?.imageGenSettings;
+    const model = saved?.model && ALLOWED_IMAGE_MODELS.includes(saved.model) ? saved.model : DEFAULT_IMAGE_MODEL;
+    return { model };
+}
+
+function setImageGenSettings(chatId, patch = {}) {
+    if (!statesCache[chatId]) statesCache[chatId] = {};
+    const current = statesCache[chatId].imageGenSettings || {};
+    const next = { ...current };
+    if (patch.model !== undefined) {
+        next.model = ALLOWED_IMAGE_MODELS.includes(patch.model) ? patch.model : DEFAULT_IMAGE_MODEL;
+    }
+    statesCache[chatId].imageGenSettings = next;
     return persist(chatId);
 }
 
@@ -830,6 +948,14 @@ function setVkSettings(chatId, patch = {}) {
             throw new Error('schedule_time must be in HH:MM format');
         }
         next.schedule_time = scheduleTime || null;
+    }
+
+    if (patch.schedule_end_time !== undefined) {
+        const scheduleEndTime = String(patch.schedule_end_time || '').trim();
+        if (scheduleEndTime && !/^\d{2}:\d{2}$/.test(scheduleEndTime)) {
+            throw new Error('schedule_end_time must be in HH:MM format');
+        }
+        next.schedule_end_time = scheduleEndTime || null;
     }
 
     if (patch.schedule_tz !== undefined) {
@@ -948,6 +1074,14 @@ function setOkSettings(chatId, patch = {}) {
             throw new Error('schedule_time must be in HH:MM format');
         }
         next.schedule_time = scheduleTime || null;
+    }
+
+    if (patch.schedule_end_time !== undefined) {
+        const scheduleEndTime = String(patch.schedule_end_time || '').trim();
+        if (scheduleEndTime && !/^\d{2}:\d{2}$/.test(scheduleEndTime)) {
+            throw new Error('schedule_end_time must be in HH:MM format');
+        }
+        next.schedule_end_time = scheduleEndTime || null;
     }
 
     if (patch.schedule_tz !== undefined) {
@@ -1273,6 +1407,9 @@ module.exports = {
     getConfigPath,
     getContentSettings,
     setContentSettings,
+    getIntegrationSettings,
+    setIntegrationSettings,
+    migrateIntegrationSettings,
     getPinterestConfig,
     setPinterestConfig,
     clearPinterestConfig,
@@ -1291,8 +1428,14 @@ module.exports = {
     getVkVideoConfig,
     setVkVideoConfig,
     clearVkVideoConfig,
+    getInstagramReelsConfig,
+    setInstagramReelsConfig,
+    clearInstagramReelsConfig,
     getVideoPipelineSettings,
     setVideoPipelineSettings,
+    getImageGenSettings,
+    setImageGenSettings,
+    ALLOWED_IMAGE_MODELS,
     getVkConfig,
     setVkConfig,
     getVkSettings,
@@ -1332,11 +1475,22 @@ module.exports = {
     // === WordPress Blog Config ===
     getWpConfig(chatId) {
         const data = statesCache[chatId];
-        return data?.wordpressConfig || null;
+        if (!data) return null;
+        // Migrate from old 'wpConfig' key
+        if (!data.wordpressConfig && data.wpConfig) {
+            data.wordpressConfig = data.wpConfig;
+            delete data.wpConfig;
+        }
+        return data.wordpressConfig || null;
     },
 
     setWpConfig(chatId, patch = {}) {
         if (!statesCache[chatId]) statesCache[chatId] = {};
+        // Migrate old key on write
+        if (statesCache[chatId].wpConfig && !statesCache[chatId].wordpressConfig) {
+            statesCache[chatId].wordpressConfig = statesCache[chatId].wpConfig;
+            delete statesCache[chatId].wpConfig;
+        }
         const current = statesCache[chatId].wordpressConfig || {};
         const next = { ...current };
 
@@ -1347,8 +1501,8 @@ module.exports = {
         if (patch.enabled !== undefined) next.enabled = !!patch.enabled;
         if (patch.autoPublish !== undefined) next.autoPublish = !!patch.autoPublish;
         if (patch.announceTelegram !== undefined) next.announceTelegram = !!patch.announceTelegram;
-        if (patch.useKnowledgeBase !== undefined) next.useKnowledgeBase = !!patch.useKnowledgeBase;
         if (patch.scheduleTime !== undefined) next.scheduleTime = patch.scheduleTime || null;
+        if (patch.scheduleEndTime !== undefined) next.scheduleEndTime = patch.scheduleEndTime || null;
         if (patch.scheduleTz !== undefined) next.scheduleTz = patch.scheduleTz || null;
         if (patch.scheduleDays !== undefined) {
             if (Array.isArray(patch.scheduleDays)) {
@@ -1363,6 +1517,9 @@ module.exports = {
             const hours = parseInt(patch.minIntervalHours, 10);
             next.minIntervalHours = Number.isFinite(hours) && hours > 0 ? Math.min(hours, 48) : 6;
         }
+        if (patch.randomPublish !== undefined) next.randomPublish = !!patch.randomPublish;
+        if (patch.premoderationEnabled !== undefined) next.premoderationEnabled = !!patch.premoderationEnabled;
+        if (patch.moderatorUserId !== undefined) next.moderatorUserId = String(patch.moderatorUserId || '').trim() || null;
         if (patch.lastPublishedAt !== undefined) next.lastPublishedAt = patch.lastPublishedAt || null;
         if (patch.consecutiveErrors !== undefined) {
             const errors = parseInt(patch.consecutiveErrors, 10);

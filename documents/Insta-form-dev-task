@@ -1,0 +1,89 @@
+  Задание: Форма настроек Instagram в channels.html
+
+  Цель
+  Реализовать форму подключения Instagram-канала для публикации постов, сторис и
+  reels через Instagram Graph API.
+
+  Требования к форме
+
+  1. Аутентификация (Facebook OAuth)
+   - Кнопка "Подключить через Facebook" — OAuth-флоу
+   - Поля: App ID, App Secret (ручной вод)
+   - Кнопка "Отключить" при активном подключении
+   - Отображение статуса подключения
+
+  2. Выбор акаунта
+   - Выбор Facebook Page (связка с IG)
+   - Выбор Instagram Business Account из привязаных
+   - Поля: Instagram Account ID, Facebook Page ID
+
+  3. Настройки публикации по умолчанию
+   - Default Alt Text — alt-текст для изображений
+   - is_rel — публиковать как Rels по умолчанию
+   - location_id — геолокация (опционально)
+
+  4. Лимиты и расписание
+   - daily_limit — лимит публикаций в день
+   - posting_hours — часы публикации (JSONB)
+
+  5. Сохранение в БД
+   - Таблица: content_channels
+   - Поля:
+    - channel_name = 'instagram'
+    - channel_id = Facebook Page ID
+    - access_token = Instagram Graph API token
+    - api_key = App ID
+    - api_secret = App Secret
+    - channel_metadata = {ig_user_id, fb_page_id}
+
+  UI/UX
+   - Аналогично Telegram-блоку
+   - Классы: channel-card, channel-status
+   - JavaScript: saveInstagramConfig(), loadInstagramConfig(),
+     disconnectInstagram()
+
+  API-эндпоинты
+   - POST /api/manage/channels/instagram — сохранение
+   - GET /api/manage/channels/instagram — загрузка
+   - DELETE /api/manage/channels/instagram — отключение
+   - GET /api/manage/channels/instagram/accounts — список акаунтов
+
+  Особености реализации
+   - Instagram Graph API требует review Meta
+   - Публикация возможна только с бизнес-акаунта
+   - Подерживаемые типы: post, story, rel
+
+  Файлы для изменения
+   - public/channels.html — форма
+   - public/js/channels.js — JS-функции
+   - Возможно новый файл: services/instagram.service.js — интеграция с API
+
+
+Вот что реализовано:                                    
+                                                                                      
+  Instagram-интеграция                                                                   
+   
+  Фронтенд (channels.html):                                                              
+  - Полная форма вместо заглушки: аутентификация (App ID / App Secret), выбор Facebook
+  Page / Instagram Business Account, настройки публикации (alt text, location, reels),   
+  лимиты и расписание (daily_limit, posting_hours)                                    
+  - Кнопки: подключить, отключить, загрузить аккаунты, сохранить                         
+                                                                                      
+  JavaScript (channels.js):                                                              
+  - connectInstagram(), loadInstagramConfig(), loadInstagramAccounts(),               
+  onInstagramPageSelect(), saveInstagramConfig(), disconnectInstagram()                  
+  - Автозагрузка конфига при входе                                                    
+                                                                                         
+  Бэкенд store (store.js):                                                               
+  - getInstagramConfig(chatId), setInstagramConfig(chatId, patch),                    
+  clearInstagramConfig(chatId)                                                           
+  - Структура: app_id, app_secret, access_token, fb_page_id, fb_page_name, ig_user_id,
+  ig_username, default_alt_text, location_id, is_active, auto_publish, is_reel,          
+  daily_limit, posting_hours, stats                                                      
+                                                                                      
+  API endpoints (routes.js):                                                             
+  - GET /api/manage/channels/instagram — загрузка конфига (маскировка секретов)          
+  - POST /api/manage/channels/instagram — сохранение                                     
+  - DELETE /api/manage/channels/instagram — отключение                                   
+  - GET /api/manage/channels/instagram/accounts — список Facebook Pages с привязанными IG
+   Business аккаунтами (через Facebook Graph API v19.0)   

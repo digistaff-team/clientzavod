@@ -40,13 +40,10 @@
         body: JSON.stringify({ chatId, baseUrl, username, appPassword })
       });
       setConnStatus(`✅ Подключено: ${r.siteName || baseUrl}`, '#0a0');
-      $('wordpressSettingsBlock').style.display = 'block';
       $('disconnectWordpressBtn').style.display = 'inline-block';
-      await loadWordpressConfig();
       await loadWordpressCategories();
-      await loadWordpressTopics();
+      await loadWordpressConfig();
       await loadWordpressKnowledge();
-      await loadWordpressRecentPosts();
     } catch (e) {
       setConnStatus(`❌ ${e.message}`, '#c00');
     }
@@ -63,7 +60,6 @@
         body: JSON.stringify({ chatId })
       });
       setConnStatus('Отключено', '#666');
-      $('wordpressSettingsBlock').style.display = 'none';
       $('disconnectWordpressBtn').style.display = 'none';
       $('wordpressBaseUrl').value = '';
       $('wordpressUsername').value = '';
@@ -84,11 +80,11 @@
       if (c.enabled !== undefined) $('wordpressEnabled') && ($('wordpressEnabled').checked = !!c.enabled);
       if (c.autoPublish !== undefined) $('wordpressAutoPublish') && ($('wordpressAutoPublish').checked = !!c.autoPublish);
       $('wordpressAnnounceTelegram').checked = c.announceTelegram !== false;
-      $('wordpressUseKnowledgeBase').checked = c.useKnowledgeBase !== false;
       const time = (c.scheduleTime || '09:00').split(':');
       $('wordpressScheduleHour').value = time[0] || '09';
       $('wordpressScheduleMinute').value = (time[1] || '00').padStart(2, '0');
       updateWordpressScheduleTime();
+      if (c.scheduleEndTime) setWordpressScheduleEndTimeInputs(c.scheduleEndTime);
       if (c.scheduleTz) setWordpressScheduleTzInput(c.scheduleTz);
       $('wordpressDailyLimit').value = c.dailyLimit || 1;
       // Map minIntervalHours to publishInterval
@@ -123,15 +119,16 @@
     const chatId = chat();
     if (!chatId) return;
     updateWordpressScheduleTime();
+    updateWordpressScheduleEndTime();
     const days = getWeekdays('wordpress-weekday');
     const cfg = {
       // Legacy fields for backward compatibility
       enabled: $('wordpressEnabled') ? $('wordpressEnabled').checked : true,
       autoPublish: $('wordpressAutoPublish') ? $('wordpressAutoPublish').checked : false,
       announceTelegram: $('wordpressAnnounceTelegram').checked,
-      useKnowledgeBase: $('wordpressUseKnowledgeBase').checked,
       // New standard fields
       scheduleTime: $('wordpressScheduleTime').value || '09:00',
+      scheduleEndTime: ($('wordpressScheduleEndTime')?.value || '').trim() || null,
       scheduleTz: $('wordpressScheduleTz').value || 'Europe/Moscow',
       scheduleDays: days,
       dailyLimit: parseInt($('wordpressDailyLimit').value, 10) || 1,
@@ -173,6 +170,27 @@
     if ($('wordpressScheduleHour')) $('wordpressScheduleHour').value = (h || '09').padStart(2, '0');
     if ($('wordpressScheduleMinute')) $('wordpressScheduleMinute').value = (m || '00').padStart(2, '0');
     updateWordpressScheduleTime();
+  };
+
+  window.updateWordpressScheduleEndTime = function () {
+    const h = ($('wordpressScheduleEndHour')?.value || '00');
+    const m = ($('wordpressScheduleEndMinute')?.value || '00').padStart(2, '0');
+    if ($('wordpressScheduleEndTime')) $('wordpressScheduleEndTime').value = `${h}:${m}`;
+  };
+  window.validateWordpressEndMinutes = function () {
+    const el = $('wordpressScheduleEndMinute');
+    if (!el) return;
+    let v = el.value.replace(/\D/g, '').slice(0, 2);
+    if (v && parseInt(v, 10) > 59) v = '59';
+    el.value = v;
+    updateWordpressScheduleEndTime();
+  };
+  window.setWordpressScheduleEndTimeInputs = function(timeValue) {
+    if (!timeValue) return;
+    const [h, m] = timeValue.split(':');
+    if ($('wordpressScheduleEndHour')) $('wordpressScheduleEndHour').value = (h || '00').padStart(2, '0');
+    if ($('wordpressScheduleEndMinute')) $('wordpressScheduleEndMinute').value = (m || '00').padStart(2, '0');
+    updateWordpressScheduleEndTime();
   };
   window.setWordpressScheduleTzInput = function(tzValue) {
     const tzSelect = $('wordpressScheduleTz');
@@ -222,68 +240,11 @@
         body: JSON.stringify({ chatId })
       });
       setStatus(`✅ ${r.message || 'Задача поставлена'}`, '#0a0');
-      setTimeout(loadWordpressRecentPosts, 2000);
     } catch (e) {
       setStatus(`❌ ${e.message}`, '#c00');
     }
   };
 
-  // ===== Topics CRUD =====
-  async function loadWordpressTopics() {
-    const chatId = chat();
-    if (!chatId) return;
-    try {
-      const r = await jfetch(`${API}/topics?chatId=${encodeURIComponent(chatId)}&include_used=true&limit=50`);
-      const list = r.topics || [];
-      const el = $('wordpressTopicsList');
-      if (!list.length) { el.innerHTML = '<em style="color:#999">Темы пока не добавлены</em>'; return; }
-      el.innerHTML = list.map(t => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #f0f0f0;">
-          <div>
-            <strong>${escapeHtml(t.topic)}</strong>
-            <span style="color:#666; font-size:12px;"> · ${escapeHtml(t.keywords || '')}</span>
-            ${t.used_at ? `<span style="color:#999; font-size:11px;"> · использована</span>` : ''}
-          </div>
-          <button class="btn btn-secondary" style="padding:4px 8px; font-size:12px;" onclick="deleteWordpressTopic(${t.id})">✕</button>
-        </div>
-      `).join('');
-    } catch (e) {
-      console.warn('loadWordpressTopics:', e.message);
-    }
-  }
-  window.loadWordpressTopics = loadWordpressTopics;
-
-  window.addWordpressTopic = async function () {
-    const chatId = chat();
-    if (!chatId) return;
-    const topic = $('wordpressNewTopic').value.trim();
-    const keywords = $('wordpressNewKeywords').value.trim();
-    const priority = parseInt($('wordpressNewPriority').value, 10) || 1;
-    if (!topic) return setStatus('Введите тему', '#c00');
-    try {
-      await jfetch(`${API}/topics`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId, topic, keywords, priority, channel: 'wordpress' })
-      });
-      $('wordpressNewTopic').value = '';
-      $('wordpressNewKeywords').value = '';
-      await loadWordpressTopics();
-    } catch (e) {
-      setStatus(`❌ ${e.message}`, '#c00');
-    }
-  };
-
-  window.deleteWordpressTopic = async function (id) {
-    const chatId = chat();
-    if (!chatId || !confirm('Удалить тему?')) return;
-    try {
-      await jfetch(`${API}/topics/${id}?chatId=${encodeURIComponent(chatId)}`, { method: 'DELETE' });
-      await loadWordpressTopics();
-    } catch (e) {
-      setStatus(`❌ ${e.message}`, '#c00');
-    }
-  };
 
   // ===== Knowledge CRUD =====
   async function loadWordpressKnowledge() {
@@ -340,29 +301,6 @@
     }
   };
 
-  // ===== Recent posts =====
-  async function loadWordpressRecentPosts() {
-    const chatId = chat();
-    if (!chatId) return;
-    try {
-      const r = await jfetch(`${API}/wordpress/posts?chatId=${encodeURIComponent(chatId)}&limit=10`);
-      const list = r.posts || [];
-      const el = $('wordpressRecentPosts');
-      if (!list.length) { el.innerHTML = '<em style="color:#999">Статей пока нет</em>'; return; }
-      el.innerHTML = list.map(p => {
-        const link = p.wp_permalink || p.wp_preview_url;
-        const status = p.publish_status || 'draft';
-        const color = status === 'published' ? '#0a0' : status === 'error' || status === 'rejected' ? '#c00' : '#888';
-        return `<div style="padding:6px 0; border-bottom:1px solid #f0f0f0;">
-          <div><strong>${escapeHtml(p.seo_title || 'Без заголовка')}</strong> <span style="color:${color}; font-size:11px;">[${status}]</span></div>
-          ${link ? `<div style="font-size:11px;"><a href="${link}" target="_blank">${escapeHtml(link)}</a></div>` : ''}
-        </div>`;
-      }).join('');
-    } catch (e) {
-      console.warn('loadWordpressRecentPosts:', e.message);
-    }
-  }
-  window.loadWordpressRecentPosts = loadWordpressRecentPosts;
 
   // ===== Status (auto on tab open) =====
   async function loadWordpressStatus() {
@@ -372,16 +310,14 @@
       const r = await jfetch(`${API}/wordpress/status?chatId=${encodeURIComponent(chatId)}`);
       if (r.connected) {
         setConnStatus(`✅ Подключено: ${r.config?.baseUrl || ''}`, '#0a0');
-        $('wordpressSettingsBlock').style.display = 'block';
         $('disconnectWordpressBtn').style.display = 'inline-block';
         if (r.config?.baseUrl) $('wordpressBaseUrl').value = r.config.baseUrl;
         if (r.config?.username) $('wordpressUsername').value = r.config.username;
-        await loadWordpressConfig();
+        if (r.config?.appPassword) $('wordpressAppPassword').value = r.config.appPassword;
         await loadWordpressCategories();
-        await loadWordpressTopics();
-        await loadWordpressKnowledge();
-        await loadWordpressRecentPosts();
-      } else {
+        await loadWordpressConfig();
+          await loadWordpressKnowledge();
+        } else {
         setConnStatus('Не подключено', '#888');
       }
     } catch (e) {

@@ -1,4 +1,5 @@
 {
+  "model": "claude-sonnet-4-6",
   "permissions": {
     "allow": [
       "Bash(dir documents:*)",
@@ -11,7 +12,9 @@
       "Bash(git:*)",
       "Bash(node:*)",
       "Bash(docker-compose logs:*)",
-      "Bash(docker-compose restart:*)"
+      "Bash(docker-compose restart:*)",
+      "Bash(cat)",
+      "Read(//tmp/**)"
     ]
   }
 }

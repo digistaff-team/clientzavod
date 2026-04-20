@@ -549,6 +549,51 @@ async function startServer() {
             }
         });
 
+        // Facebook moderation callbacks for CW_BOT_TOKEN users
+        cwBot.action(/^fb_mod:(\d+):(approve|reject|regen_text|regen_image)$/, async (ctx) => {
+            const fromId = String(ctx.from?.id || '');
+            const jobId = Number(ctx.match?.[1]);
+            const action = ctx.match?.[2];
+
+            console.log(`[CW-BOT-FB] ${action} job ${jobId} (fromId=${fromId})`);
+
+            let resolvedChatId = null;
+            const allStatesFb = manageStore.getAllStates();
+            for (const [cid, data] of Object.entries(allStatesFb)) {
+                const drafts = data.facebookDrafts || {};
+                if (!drafts[String(jobId)]) continue;
+
+                const fbConfig = manageStore.getFacebookConfig?.(cid) || {};
+                const globalSettings = data.contentSettings || {};
+                const channelModeratorId = fbConfig.moderatorUserId ||
+                                           globalSettings.moderatorUserId ||
+                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                const ownerTgId = String(data.verifiedTelegramId || '');
+                const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
+
+                if (allowedIds.has(fromId)) {
+                    resolvedChatId = cid;
+                    break;
+                }
+            }
+
+            if (!resolvedChatId) {
+                await ctx.answerCbQuery('Черновик не найден').catch(() => {});
+                return;
+            }
+
+            try {
+                const fbSvc = require('./services/facebookMvp.service');
+                const result = await fbSvc.handleFacebookModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
+                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
+                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+            } catch (e) {
+                console.error(`[CW-BOT-FB] Error:`, e);
+                await ctx.answerCbQuery('Ошибка').catch(() => {});
+                await ctx.reply(`Ошибка модерации Facebook: ${e.message}`).catch(() => {});
+            }
+        });
+
         // VK Video moderation callbacks for CW_BOT_TOKEN users
         cwBot.action(/^vk_vid_mod:(\d+):(approve|reject|regen_text)$/, async (ctx) => {
             const fromId = String(ctx.from?.id || '');
@@ -655,6 +700,7 @@ async function startServer() {
     const instagramMvpService = require('./services/instagramMvp.service');
     const youtubeMvpService = require('./services/youtubeMvp.service');
     const facebookMvpService = require('./services/facebookMvp.service');
+    facebookMvpService.registerWorkerHandlers();
     const wordpressMvpService = require('./services/wordpressMvp.service');
 
     pinterestMvpService.setPinterestCwBot(cwBot);
@@ -718,17 +764,17 @@ async function startServer() {
     const outputContentCleanup = require('./services/outputContentCleanup.service');
     outputContentCleanup.initCleanupScheduler();
 
-    // Подключение Webhook API
-    const webhookRoutes = require('./routes/webhook.routes');
-    app.use('/', webhookRoutes);
+    // Подключение видео-пайплайна (до webhook '/' чтобы избежать перехвата)
+    const videoRoutes = require('./routes/video.routes');
+    app.use('/api/video', videoRoutes);
 
     // Подключение пользовательских вебхуков
     const userHooksRoutes = require('./routes/user_hooks.routes');
     app.use('/hook', userHooksRoutes);
 
-    // Подключение видео-пайплайна
-    const videoRoutes = require('./routes/video.routes');
-    app.use('/api/video', videoRoutes);
+    // Подключение Webhook API (монтируется последним, т.к. перехватывает '/')
+    const webhookRoutes = require('./routes/webhook.routes');
+    app.use('/', webhookRoutes);
     
     // Запуск сервера
     app.listen(config.PORT, () => {

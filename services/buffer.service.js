@@ -278,6 +278,9 @@ async function getChannels(apiKey) {
     }
   `;
 
+  const tokenHex = Buffer.from(apiKey).toString('hex');
+  console.log('[BUFFER-GETCHANNELS] token hex:', tokenHex, 'len:', apiKey.length);
+
   const response = await fetch(BUFFER_GRAPHQL_URL, {
     method: 'POST',
     headers: {

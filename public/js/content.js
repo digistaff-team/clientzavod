@@ -3,6 +3,7 @@ const API_MANAGE = `${window.location.origin}/api/manage`;
 let selectedJobId = null;
 let editingTopicId = null;
 let editingMaterialId = null;
+let selectedTopicIds = new Set();
 
 const STATUS_RU = {
     pending: 'В очереди',
@@ -68,8 +69,79 @@ async function loadDashboard() {
     await Promise.all([
         loadTopics(),
         loadMaterials(),
-        loadJobs()
+        loadJobs(),
+        loadInteriors()
     ]);
+}
+
+// ============================================
+// Interiors
+// ============================================
+
+async function loadInteriors() {
+    const container = document.getElementById('interiorsList');
+    if (!container) return;
+    try {
+        const chatId = getChatId();
+        const resp = await fetch(`/api/video/interiors?chat_id=${encodeURIComponent(chatId)}&limit=50`);
+        const data = await resp.json();
+        if (!data.interiors || data.interiors.length === 0) {
+            container.innerHTML = '<div style="color: #999; font-size: 13px;">Нет интерьеров. Добавьте первый.</div>';
+            return;
+        }
+        container.innerHTML = data.interiors.map(interior => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #f0f0f0;">
+                <div>
+                    <strong style="font-size: 13px;">${interior.style || 'Без стиля'}</strong>
+                    <div style="color: #666; font-size: 12px;">${interior.description.slice(0, 100)}${interior.description.length > 100 ? '...' : ''}</div>
+                    <div style="color: #999; font-size: 11px;">${new Date(interior.created_at).toLocaleString('ru')}</div>
+                </div>
+                <button onclick="deleteInterior(${interior.id})" style="background: #dc3545; color: #fff; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0;">Удалить</button>
+            </div>
+        `).join('');
+    } catch (e) {
+        console.error('Load interiors error:', e);
+    }
+}
+
+async function addInterior() {
+    const chatId = getChatId();
+    const desc = document.getElementById('interiorDesc').value.trim();
+    const style = document.getElementById('interiorStyle').value.trim();
+    if (!desc) { alert('Введите описание интерьера'); return; }
+    try {
+        const resp = await fetch('/api/video/interiors', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, description: desc, style })
+        });
+        const data = await resp.json();
+        if (data.success) {
+            document.getElementById('interiorDesc').value = '';
+            document.getElementById('interiorStyle').value = '';
+            loadInteriors();
+        } else {
+            alert('Ошибка: ' + (data.error || 'Неизвестная'));
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e.message);
+    }
+}
+
+async function deleteInterior(id) {
+    if (!confirm('Удалить этот интерьер?')) return;
+    const chatId = getChatId();
+    try {
+        const resp = await fetch(`/api/video/interiors/${id}?chat_id=${encodeURIComponent(chatId)}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.success) {
+            loadInteriors();
+        } else {
+            alert('Ошибка: ' + (data.error || 'Неизвестная'));
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e.message);
+    }
 }
 
 
@@ -99,9 +171,74 @@ async function loadTopics() {
     if (status) qs.set('status', status);
     try {
         const data = await fetchJson(`${API_CONTENT}/topics?${qs.toString()}`);
+        selectedTopicIds.clear();
+        updateTopicsBulkBar();
         renderTopicsTable(data.items || []);
     } catch (e) {
         setApiStatus(`Темы: ${e.message}`, 'error');
+    }
+}
+
+function updateTopicsBulkBar() {
+    const bar = document.getElementById('topicsBulkBar');
+    const count = document.getElementById('topicsBulkCount');
+    if (!bar) return;
+    if (selectedTopicIds.size === 0) {
+        bar.style.display = 'none';
+    } else {
+        bar.style.display = 'flex';
+        if (count) count.textContent = `Выбрано: ${selectedTopicIds.size}`;
+    }
+    const selectAll = document.getElementById('topicsSelectAll');
+    if (selectAll) {
+        const allCheckboxes = document.querySelectorAll('.topic-row-check');
+        selectAll.checked = allCheckboxes.length > 0 && allCheckboxes.length === selectedTopicIds.size;
+        selectAll.indeterminate = selectedTopicIds.size > 0 && selectedTopicIds.size < allCheckboxes.length;
+    }
+}
+
+function toggleSelectAllTopics(checked) {
+    document.querySelectorAll('.topic-row-check').forEach(cb => {
+        const id = parseInt(cb.dataset.id, 10);
+        if (checked) selectedTopicIds.add(id);
+        else selectedTopicIds.delete(id);
+        cb.checked = checked;
+    });
+    updateTopicsBulkBar();
+}
+
+function toggleTopicSelect(id, checked) {
+    if (checked) selectedTopicIds.add(id);
+    else selectedTopicIds.delete(id);
+    updateTopicsBulkBar();
+}
+
+function clearTopicSelection() {
+    selectedTopicIds.clear();
+    document.querySelectorAll('.topic-row-check').forEach(cb => cb.checked = false);
+    updateTopicsBulkBar();
+}
+
+async function bulkSetTopicStatus() {
+    const chatId = getChatId();
+    if (!chatId || selectedTopicIds.size === 0) return;
+    const status = document.getElementById('topicsBulkStatus')?.value;
+    if (!status) return;
+    const ids = [...selectedTopicIds];
+    try {
+        await Promise.all(ids.map(id =>
+            fetchJson(`${API_CONTENT}/topics/${id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, status })
+            })
+        ));
+        showToast(`Статус обновлён у ${ids.length} тем`, 'success');
+        const filterEl = document.getElementById('topicsStatusFilter');
+        if (filterEl) filterEl.value = '';
+        await loadTopics();
+    } catch (e) {
+        showToast(e.message, 'error');
     }
 }
 
@@ -109,14 +246,16 @@ function renderTopicsTable(items) {
     const body = document.getElementById('topicsTableBody');
     if (!body) return;
     if (!items.length) {
-        body.innerHTML = '<tr><td colspan="7" class="content-empty-cell">Темы не найдены</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="content-empty-cell">Темы не найдены</td></tr>';
         return;
     }
 
     body.innerHTML = items.map((item) => {
         const isEditing = editingTopicId == item.id;
+        const isChecked = selectedTopicIds.has(item.id);
         return `
             <tr>
+                <td><input type="checkbox" class="topic-row-check" data-id="${item.id}" ${isChecked ? 'checked' : ''} onchange="toggleTopicSelect(${item.id}, this.checked)"></td>
                 <td>${item.id}</td>
                 <td>${isEditing
                     ? `<input type="text" id="topic-edit-topic-${item.id}" value="${escapeHtml(item.topic || '')}" class="content-inline-input">`
@@ -132,6 +271,24 @@ function renderTopicsTable(items) {
                         </div>
                     `
                     : escapeHtml([parseMaybeJsonArray(item.secondary), parseMaybeJsonArray(item.lsi)].filter(Boolean).join(' | ') || '-')}</td>
+                <td>${isEditing
+                    ? `
+                        <select id="topic-edit-channel-${item.id}" class="content-inline-input">
+                            <option value="">Все</option>
+                            <option value="telegram" ${item.channel === 'telegram' ? 'selected' : ''}>Telegram</option>
+                            <option value="vk" ${item.channel === 'vk' ? 'selected' : ''}>ВКонтакте</option>
+                            <option value="ok" ${item.channel === 'ok' ? 'selected' : ''}>Одноклассники</option>
+                            <option value="instagram" ${item.channel === 'instagram' ? 'selected' : ''}>Instagram</option>
+                            <option value="instagram_reels" ${item.channel === 'instagram_reels' ? 'selected' : ''}>Instagram Reels</option>
+                            <option value="facebook" ${item.channel === 'facebook' ? 'selected' : ''}>Facebook</option>
+                            <option value="pinterest" ${item.channel === 'pinterest' ? 'selected' : ''}>Pinterest</option>
+                            <option value="wordpress" ${item.channel === 'wordpress' ? 'selected' : ''}>WP-блог</option>
+                            <option value="youtube" ${item.channel === 'youtube' ? 'selected' : ''}>YouTube Shorts</option>
+                            <option value="tiktok" ${item.channel === 'tiktok' ? 'selected' : ''}>TikTok</option>
+                            <option value="vk_video" ${item.channel === 'vk_video' ? 'selected' : ''}>VK Видео</option>
+                        </select>
+                    `
+                    : escapeHtml(item.channel || '—')}</td>
                 <td>${isEditing
                     ? `
                         <select id="topic-edit-status-${item.id}" class="content-inline-input">
@@ -170,11 +327,12 @@ async function createTopic() {
                 topic: document.getElementById('topicTitle')?.value.trim(),
                 focus: document.getElementById('topicFocus')?.value.trim(),
                 secondary: document.getElementById('topicSecondary')?.value.trim(),
-                lsi: document.getElementById('topicLsi')?.value.trim()
+                lsi: document.getElementById('topicLsi')?.value.trim(),
+                channel: document.getElementById('topicChannel')?.value || null
             })
         });
         showToast('Тема добавлена', 'success');
-        ['topicTitle', 'topicFocus', 'topicSecondary', 'topicLsi'].forEach((id) => {
+        ['topicTitle', 'topicFocus', 'topicSecondary', 'topicLsi', 'topicChannel'].forEach((id) => {
             const el = document.getElementById(id);
             if (el) el.value = '';
         });
@@ -227,6 +385,10 @@ async function saveTopicInline(topicId) {
         const val = lsiEl.value.trim();
         if (val) payload.lsi = val;
     }
+    const channelEl = document.getElementById(`topic-edit-channel-${topicId}`);
+    if (channelEl) {
+        payload.channel = channelEl.value || null;
+    }
     if (statusEl) {
         const val = statusEl.value.trim();
         if (val && ['pending', 'used', 'completed'].includes(val)) {
@@ -242,6 +404,8 @@ async function saveTopicInline(topicId) {
         });
         editingTopicId = null;
         showToast('Тема обновлена', 'success');
+        const filterEl = document.getElementById('topicsStatusFilter');
+        if (filterEl) filterEl.value = '';
         await loadTopics();
     } catch (e) {
         showToast(e.message, 'error');
@@ -264,28 +428,38 @@ async function deleteTopic(topicId) {
     }
 }
 
-function getImportPayload() {
+function getImportPrefix(mode) {
+    if (mode === 'materials') return 'materials';
+    if (mode === 'interiors') return 'interiors';
+    return 'topics';
+}
+
+function getImportPayload(mode) {
+    const prefix = getImportPrefix(mode);
     return {
         chat_id: getChatId(),
-        mode: document.getElementById('importMode')?.value || 'topics',
-        sheet_url: document.getElementById('importSheetUrl')?.value.trim(),
-        gid: document.getElementById('importSheetGid')?.value.trim()
+        mode,
+        sheet_url: document.getElementById(`${prefix}SheetUrl`)?.value.trim(),
+        gid: document.getElementById(`${prefix}SheetGid`)?.value.trim()
     };
 }
 
-function renderImportPreview(data) {
-    const wrap = document.getElementById('importPreviewWrap');
-    const head = document.getElementById('importPreviewHead');
-    const body = document.getElementById('importPreviewBody');
-    const meta = document.getElementById('importPreviewMeta');
+function renderImportPreview(data, mode) {
+    const prefix = getImportPrefix(mode);
+    const wrap = document.getElementById(`${prefix}ImportPreviewWrap`);
+    const head = document.getElementById(`${prefix}ImportPreviewHead`);
+    const body = document.getElementById(`${prefix}ImportPreviewBody`);
+    const meta = document.getElementById(`${prefix}ImportPreviewMeta`);
     if (!wrap || !head || !body || !meta) return;
 
     wrap.style.display = 'block';
     meta.textContent = `rows: ${data.totalRows}, duplicates: ${data.skippedDuplicates}, empty: ${data.skippedEmpty}`;
 
-    if (data.mode === 'materials') {
+    const previewRows = (data.preview || []).slice(0, 5);
+
+    if (mode === 'materials') {
         head.innerHTML = '<tr><th>Row</th><th>Title</th><th>Source</th><th>Content</th><th>Duplicate</th></tr>';
-        body.innerHTML = (data.preview || []).map((item) => `
+        body.innerHTML = previewRows.map((item) => `
             <tr>
                 <td>${item.row}</td>
                 <td>${escapeHtml(item.title || '-')}</td>
@@ -294,9 +468,19 @@ function renderImportPreview(data) {
                 <td>${item.duplicate ? 'yes' : 'no'}</td>
             </tr>
         `).join('') || '<tr><td colspan="5" class="content-empty-cell">Нет строк для импорта</td></tr>';
+    } else if (mode === 'interiors') {
+        head.innerHTML = '<tr><th>Row</th><th>Description</th><th>Style</th><th>Duplicate</th></tr>';
+        body.innerHTML = previewRows.map((item) => `
+            <tr>
+                <td>${item.row}</td>
+                <td>${escapeHtml(item.description || '-')}</td>
+                <td>${escapeHtml(item.style || '-')}</td>
+                <td>${item.duplicate ? 'yes' : 'no'}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="4" class="content-empty-cell">Нет строк для импорта</td></tr>';
     } else {
         head.innerHTML = '<tr><th>Row</th><th>Topic</th><th>Focus</th><th>Status</th><th>Duplicate</th></tr>';
-        body.innerHTML = (data.preview || []).map((item) => `
+        body.innerHTML = previewRows.map((item) => `
             <tr>
                 <td>${item.row}</td>
                 <td>${escapeHtml(item.topic || '-')}</td>
@@ -308,10 +492,11 @@ function renderImportPreview(data) {
     }
 }
 
-async function previewSheetImport() {
+async function previewSheetImport(mode) {
     const chatId = getChatId();
     if (!chatId) return;
-    const statusEl = document.getElementById('topicsImportStatus');
+    const prefix = getImportPrefix(mode);
+    const statusEl = document.getElementById(`${prefix}ImportStatus`);
     if (statusEl) {
         statusEl.textContent = 'Собираем предпросмотр...';
         statusEl.className = 'content-status-line';
@@ -320,9 +505,9 @@ async function previewSheetImport() {
         const data = await fetchJson(`${API_CONTENT}/import-google-sheet/preview`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(getImportPayload())
+            body: JSON.stringify(getImportPayload(mode))
         });
-        renderImportPreview(data);
+        renderImportPreview(data, mode);
         if (statusEl) {
             statusEl.textContent = `Предпросмотр готов: ${data.preview?.length || 0} строк`;
             statusEl.className = 'content-status-line ok';
@@ -337,33 +522,35 @@ async function previewSheetImport() {
     }
 }
 
-async function applySheetImport() {
+async function applySheetImport(mode) {
     const chatId = getChatId();
     if (!chatId) return;
-    const statusEl = document.getElementById('topicsImportStatus');
+    const prefix = getImportPrefix(mode);
+    const statusEl = document.getElementById(`${prefix}ImportStatus`);
     if (statusEl) {
         statusEl.textContent = 'Импортируем данные...';
         statusEl.className = 'content-status-line';
     }
     try {
-        const payload = getImportPayload();
-        const mode = payload.mode;
         const data = await fetchJson(`${API_CONTENT}/import-google-sheet`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(getImportPayload(mode))
         });
         if (statusEl) {
             statusEl.textContent = `Импортировано: ${data.imported}, дубликаты: ${data.skippedDuplicates}, пустые строки: ${data.skippedEmpty}`;
             statusEl.className = 'content-status-line ok';
         }
         showToast('Импорт завершён', 'success');
+        const previewWrap = document.getElementById(`${prefix}ImportPreviewWrap`);
+        if (previewWrap) previewWrap.style.display = 'none';
         if (mode === 'materials') {
             await loadMaterials();
+        } else if (mode === 'interiors') {
+            await loadInteriors();
         } else {
             await loadTopics();
         }
-        await previewSheetImport();
     } catch (e) {
         if (statusEl) {
             statusEl.textContent = e.message;

@@ -12,11 +12,13 @@ const manageStore = require('../manage/store');
 const sessionService = require('./session.service');
 const dockerService = require('./docker.service');
 const storageService = require('./storage.service');
-const imageService = require('./image.service');
 const bufferService = require('./buffer.service');
 const fbRepo = require('./content/facebook.repository');
+const inputImageContext = require('./inputImageContext.service');
+const { safeSendToModerator } = require('./telegram.utils');
 
 const contentModules = require('./content/index');
+const channelSkills = require('./channelSkills');
 const {
   generateCorrelationId,
   repository,
@@ -67,21 +69,49 @@ function isValidTz(tz) {
   } catch { return false; }
 }
 
+function getDrafts(chatId) {
+  const data = manageStore.getState(chatId) || {};
+  return data.facebookDrafts || {};
+}
+
+async function saveDraft(chatId, draftId, draft) {
+  const states = manageStore.getAllStates();
+  let data = states[chatId];
+  if (!data) {
+    states[chatId] = {};
+    data = states[chatId];
+  }
+  data.facebookDrafts = data.facebookDrafts || {};
+  data.facebookDrafts[draftId] = draft;
+  return manageStore.persist(chatId);
+}
+
+async function removeDraft(chatId, draftId) {
+  const data = manageStore.getState(chatId) || {};
+  if (data.facebookDrafts && data.facebookDrafts[draftId]) {
+    delete data.facebookDrafts[draftId];
+    await manageStore.persist(chatId);
+  }
+}
+
 function getFacebookSettings(chatId) {
   const cfg = manageStore.getFacebookConfig(chatId);
+  manageStore.migrateIntegrationSettings(chatId);
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
   return {
     isActive: !!cfg?.is_active,
     autoPublish: !!cfg?.auto_publish,
-    bufferApiKey: cfg?.buffer_api_key || null,
+    bufferApiKey: globalInt.buffer_api_key || cfg?.buffer_api_key || null,
     bufferChannelId: cfg?.buffer_channel_id || null,
     pageName: cfg?.page_name || null,
     scheduleTime: cfg?.schedule_time || '10:00',
+    scheduleEndTime: cfg?.schedule_end_time || null,
     scheduleTz: isValidTz(cfg?.schedule_tz) ? cfg.schedule_tz : SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.daily_limit) ? cfg.daily_limit : DAILY_FB_LIMIT,
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 4,
     randomPublish: !!cfg?.random_publish,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
-    moderatorUserId: cfg?.moderator_user_id || null,
+    moderatorUserId: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
     stats: cfg?.stats || { total_posts: 0, posts_today: 0, last_post_date: null }
   };
 }
@@ -156,8 +186,13 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 - Стиль: разговорный, профессиональный, CTA в конце
 - Язык: русский (кроме imagePrompt)`;
 
+  const sysPrompt = await channelSkills.buildSystemPrompt(
+    'facebook-copywriter',
+    'Ты SMM-маркетолог Facebook.',
+    'Отвечай только JSON.'
+  );
   const messages = [
-    { role: 'system', content: 'Ты SMM-маркетолог Facebook. Отвечай только JSON.' },
+    { role: 'system', content: sysPrompt },
     { role: 'user', content: prompt }
   ];
 
@@ -179,68 +214,9 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 }
 
 async function generateFbImage(chatId, topic, imagePrompt, jobId) {
-  // Попытка использовать KIE API
-  try {
-    const apiKey = process.env.KIE_API_KEY;
-    if (apiKey) {
-      const prompt = (imagePrompt || `Facebook post image. Topic: ${topic.topic}. Style: professional, Facebook-optimized, 1.91:1 ratio, no text overlay.`).slice(0, 800);
-
-      const createResp = await fetch('https://api.kie.ai/api/v1/jobs/createTask', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'grok-imagine/text-to-image',
-          input: {
-            prompt,
-            aspect_ratio: FB_IMAGE_ASPECT_RATIO,
-            nsfw_checker: true
-          }
-        }),
-        timeout: 30000
-      });
-
-      if (createResp.ok) {
-        const createData = await createResp.json();
-        if (createData.code === 200 && createData.data?.taskId) {
-          const taskId = createData.data.taskId;
-
-          // Ожидание генерации
-          const maxAttempts = 60;
-          for (let i = 0; i < maxAttempts; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-
-            const pollResp = await fetch(`https://api.kie.ai/api/v1/jobs/getTaskInfo?taskId=${taskId}`);
-            const pollData = await pollResp.json();
-
-            if (pollData.data?.status === 'success' && pollData.data?.imageUrl) {
-              // Скачивание изображения
-              const imgResp = await fetch(pollData.data.imageUrl);
-              const buffer = await imgResp.buffer();
-              return buffer;
-            }
-
-            if (pollData.data?.status === 'failed') {
-              throw new Error('KIE image generation failed');
-            }
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.log('[FB] KIE API failed, trying fallback:', e.message);
-  }
-
-  // Fallback на imageService
-  return await imageService.generateImage(chatId, {
-    prompt: imagePrompt || `Facebook post image about ${topic.topic}`,
-    aspectRatio: FB_IMAGE_ASPECT_RATIO,
-    width: FB_IMAGE_WIDTH,
-    height: FB_IMAGE_HEIGHT,
-    style: 'professional'
-  });
+  const basePrompt = (imagePrompt || `Topic: ${topic.topic}`).slice(0, 300);
+  const imageModel = manageStore.getImageGenSettings(chatId).model;
+  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'facebook');
 }
 
 async function saveImageToContainer(chatId, imageBuffer, jobId) {
@@ -269,7 +245,7 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
   await repository.ensureSchema(chatId);
   await fbRepo.ensureSchema(chatId);
 
-  const topic = await repository.pickTopic(chatId);
+  const topic = await repository.reserveNextTopic(chatId, 'facebook');
   if (!topic) {
     console.log(`[FB] No topic available for ${chatId}`);
     await fbRepo.addPublishLog(chatId, {
@@ -278,7 +254,7 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
       errorText: 'No topic available',
       correlationId
     });
-    return;
+    return { success: true };
   }
 
   // Создаём задачу
@@ -286,13 +262,11 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
     topic: topic.topic,
     focus: topic.focus,
     status: 'draft',
-    correlationId
+    correlationId,
+    topicId: topic.id
   });
 
   console.log(`[FB] Created job ${jobId} for topic: ${topic.topic}`);
-
-  // Обновляем тему как использованную
-  await repository.markTopicUsed(chatId, topic.id);
 
   // Генерация текста
   try {
@@ -351,12 +325,16 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
       await sendFbToModerator(chatId, bot, { ...topic, jobId, postText: fullPostText, imagePath });
     }
 
+    return { success: true };
+
   } catch (e) {
     console.error(`[FB] Error in job ${jobId}:`, e);
+    try { await repository.releaseTopic(chatId, topic.id); } catch {}
     await fbRepo.updateJob(chatId, jobId, {
       status: 'failed',
       errorText: e.message
     });
+    return { success: false, error: e.message, retry: false };
   }
 }
 
@@ -420,6 +398,11 @@ async function publishFbPost(chatId, bot, jobId, correlationId) {
     // Обновляем задачу
     await fbRepo.markPublished(chatId, jobId, result.postId, settings.bufferChannelId);
 
+    // Помечаем топик как завершённый
+    if (job.topic_id) {
+      await repository.updateTopicStatus(chatId, job.topic_id, 'completed').catch(() => {});
+    }
+
     // Обновляем статистику
     const stats = { ...settings.stats };
     stats.total_posts++;
@@ -465,38 +448,46 @@ async function sendFbToModerator(chatId, bot, draft) {
   const settings = getFacebookSettings(chatId);
   const moderatorId = settings.moderatorUserId || chatId;
 
-  const caption = (draft.postText || '').slice(0, 1000);
-
-  // Клавиатура для модерации
+  const callbackBase = `fb_mod:${draft.jobId}`;
   const keyboard = {
     inline_keyboard: [
       [
-        { text: '✅ Одобрить', callback_data: `fb_approve_${draft.jobId}` },
-        { text: '🔄 Текст', callback_data: `fb_regen_text_${draft.jobId}` }
+        { text: '✅ Одобрить', callback_data: `${callbackBase}:approve` },
+        { text: '🔄 Текст', callback_data: `${callbackBase}:regen_text` }
       ],
       [
-        { text: '🖼️ Картинка', callback_data: `fb_regen_image_${draft.jobId}` },
-        { text: '❌ Отклонить', callback_data: `fb_reject_${draft.jobId}` }
+        { text: '🖼️ Картинка', callback_data: `${callbackBase}:regen_image` },
+        { text: '❌ Отклонить', callback_data: `${callbackBase}:reject` }
       ]
     ]
   };
 
-  const message = `📘 Facebook пост на модерацию
+  const header = `📘 Facebook пост на модерацию\n\n📝 Тема: ${draft.topic}${draft.focus ? `\n🎯 Фокус: ${draft.focus}` : ''}\n\n📄 Текст:\n`;
+  const caption = (header + (draft.postText || '')).slice(0, 1024);
 
-📝 Тема: ${draft.topic}
-${draft.focus ? `🎯 Фокус: ${draft.focus}` : ''}
+  const moderatorBot = cwBot && cwBot.telegram ? cwBot : bot;
+  const hostImagePath = path.join(storageService.getDataDir(chatId), 'cache', 'images', 'facebook', `fb_${draft.jobId}.png`);
 
-📄 Текст:
-${caption}
-
-Выберите действие:`;
+  let hasImage = false;
+  try {
+    const stat = await fs.stat(hostImagePath);
+    hasImage = stat.size > 0;
+  } catch (_) {}
 
   try {
-    if (cwBot && cwBot.telegram) {
-      await cwBot.telegram.sendMessage(moderatorId, message, { reply_markup: keyboard });
-    } else if (bot && bot.telegram) {
-      await bot.telegram.sendMessage(moderatorId, message, { reply_markup: keyboard });
-    }
+    await safeSendToModerator({
+      sendFn: () => {
+        if (!moderatorBot?.telegram) return;
+        if (hasImage) {
+          return moderatorBot.telegram.sendPhoto(moderatorId, { source: hostImagePath }, { caption, reply_markup: keyboard });
+        }
+        return moderatorBot.telegram.sendMessage(moderatorId, caption, { reply_markup: keyboard });
+      },
+      chatId,
+      moderatorId,
+      notifyBot: cwBot || bot
+    });
+    await saveDraft(chatId, String(draft.jobId), { chatId, jobId: draft.jobId });
   } catch (e) {
     console.error('[FB] Failed to send to moderator:', e);
   }
@@ -510,9 +501,8 @@ async function handleFacebookModerationAction(chatId, bot, jobId, action) {
     return { ok: false, message: 'Задача не найдена' };
   }
 
-  const settings = getFacebookSettings(chatId);
-
   if (action === 'approve') {
+    await removeDraft(chatId, String(jobId));
     await publishFbPost(chatId, bot, jobId, job.correlation_id);
     return { ok: true, message: 'Facebook пост опубликован' };
   }
@@ -578,6 +568,11 @@ async function handleFacebookModerationAction(chatId, bot, jobId, action) {
   if (action === 'reject') {
     const rejectedCount = (job.rejected_count || 0) + 1;
 
+    // Освобождаем тему в любом случае
+    if (job.topic_id) {
+      await repository.releaseTopic(chatId, job.topic_id).catch(() => {});
+    }
+
     if (rejectedCount >= MAX_REJECT_ATTEMPTS) {
       await fbRepo.updateJob(chatId, jobId, {
         status: 'failed',
@@ -623,6 +618,8 @@ async function tickFacebookSchedule(chatId, bot) {
     return;
   }
 
+  await fbRepo.ensureSchema(chatId);
+
   const now = getNowInTz(settings.scheduleTz);
   const currentWeekday = new Date().getDay(); // 0 = Sunday
   const currentMinutes = parseInt(now.time.split(':')[0], 10) * 60 + parseInt(now.time.split(':')[1], 10);
@@ -643,6 +640,11 @@ async function tickFacebookSchedule(chatId, bot) {
   // Расчёт времени публикации
   const [startH, startM] = settings.scheduleTime.split(':').map(Number);
   const startMinutes = startH * 60 + startM;
+
+  if (settings.scheduleEndTime) {
+    const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
+    if (currentMinutes >= endH * 60 + endM) return;
+  }
   const intervalMinutes = settings.publishIntervalHours * 60;
 
   // Найдём последний слот для публикации
@@ -696,6 +698,8 @@ async function runNow(chatId, bot, reason = 'api') {
     throw new Error('Facebook channel is not active');
   }
 
+  await fbRepo.ensureSchema(chatId);
+
   // Проверка дневного лимита
   const publishedToday = await fbRepo.countPublishedToday(chatId, settings.scheduleTz);
   if (publishedToday >= settings.dailyLimit) {
@@ -720,6 +724,7 @@ function startScheduler(getBots) {
   console.log('[FB] Starting Facebook scheduler');
 
   botsGetter = getBots;
+  registerWorkerHandlers();
 
   if (!schedulerHandle) {
     schedulerHandle = setInterval(async () => {

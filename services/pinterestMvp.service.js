@@ -12,11 +12,13 @@ const manageStore = require('../manage/store');
 const sessionService = require('./session.service');
 const dockerService = require('./docker.service');
 const storageService = require('./storage.service');
-const imageService = require('./image.service');
 const pinterestRepo = require('./content/pinterest.repository');
 const bufferService = require('./buffer.service');
+const inputImageContext = require('./inputImageContext.service');
+const { safeSendToModerator } = require('./telegram.utils');
 
 const contentModules = require('./content/index');
+const channelSkills = require('./channelSkills');
 const {
   generateCorrelationId,
   repository,
@@ -55,6 +57,8 @@ function getNowInTz(tz) {
 
 function getPinterestSettings(chatId) {
   const cfg = manageStore.getPinterestConfig(chatId);
+  manageStore.migrateIntegrationSettings(chatId);
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
   return {
     isActive: !!cfg?.is_active,
     autoPublish: !!cfg?.auto_publish,
@@ -65,9 +69,11 @@ function getPinterestSettings(chatId) {
     websiteUrl: cfg?.website_url || '',
     lastBoardIndex: cfg?.last_board_index || 0,
     scheduleTime: cfg?.schedule_time || '10:00',
+    scheduleEndTime: cfg?.schedule_end_time || null,
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 4,
     randomPublish: !!cfg?.random_publish,
-    moderatorUserId: cfg?.moderator_user_id || null,
+    bufferApiKey: globalInt.buffer_api_key || cfg?.buffer_api_key || null,
+    moderatorUserId: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
     scheduleTz: cfg?.schedule_tz || SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.daily_limit) ? cfg.daily_limit : DAILY_PIN_LIMIT,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
@@ -193,8 +199,13 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 - Язык: русский
 - Не используй эмодзи в заголовке`;
 
+  const sysPrompt = await channelSkills.buildSystemPrompt(
+    'pinterest-copywriter',
+    'Ты Pinterest-маркетолог.',
+    'Отвечай только JSON.'
+  );
   const messages = [
-    { role: 'system', content: 'Ты Pinterest-маркетолог. Отвечай только JSON.' },
+    { role: 'system', content: sysPrompt },
     { role: 'user', content: prompt }
   ];
 
@@ -223,63 +234,11 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
   };
 }
 
-async function generatePinImage(topic, pinTitle) {
-  const apiKey = process.env.KIE_API_KEY;
-  if (!apiKey) throw new Error('KIE_API_KEY is not set');
-
-  const prompt = `Pinterest pin image. Topic: ${topic.topic}. Title: ${pinTitle}. Style: vertical, aesthetic, clean, visually appealing, no text overlay, no logos, professional photography style.`.slice(0, 800);
-
-  const createResp = await fetch('https://api.kie.ai/api/v1/jobs/createTask', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'grok-imagine/text-to-image',
-      input: {
-        prompt,
-        aspect_ratio: '2:3',
-        nsfw_checker: true
-      }
-    }),
-    timeout: 30000
-  });
-
-  if (!createResp.ok) {
-    const err = await createResp.text();
-    throw new Error(`Image API createTask failed: ${createResp.status} ${err.slice(0, 300)}`);
-  }
-  const createData = await createResp.json();
-  if (createData.code !== 200) {
-    throw new Error(`Image API createTask error: ${createData.msg}`);
-  }
-  const taskId = createData?.data?.taskId;
-  if (!taskId) throw new Error('Image API: no taskId');
-
-  // Polling (max 90 sec)
-  const pollUrl = `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${taskId}`;
-  const pollHeaders = { Authorization: `Bearer ${apiKey}` };
-
-  for (let attempt = 0; attempt < 18; attempt++) {
-    await new Promise(r => setTimeout(r, 5000));
-    const pollResp = await fetch(pollUrl, { headers: pollHeaders, timeout: 15000 });
-    if (!pollResp.ok) continue;
-    const pollData = await pollResp.json();
-    const state = pollData?.data?.state;
-    if (state === 'success') {
-      const resultJson = JSON.parse(pollData.data.resultJson || '{}');
-      const imageUrl = resultJson?.resultUrls?.[0];
-      if (!imageUrl) throw new Error('Image API: no result URL');
-      const imgResp = await fetch(imageUrl, { timeout: 30000 });
-      if (!imgResp.ok) throw new Error(`Image download failed: ${imgResp.status}`);
-      return await imgResp.buffer();
-    }
-    if (state === 'fail') {
-      throw new Error(`Image generation failed: ${pollData.data.failMsg || 'unknown'}`);
-    }
-  }
-  throw new Error('Image generation timeout');
+async function generatePinImage(chatId, topic, pinTitle) {
+  const titlePart = pinTitle ? `. Title: ${pinTitle}` : '';
+  const basePrompt = `Topic: ${topic.topic}${titlePart}`.slice(0, 300);
+  const imageModel = manageStore.getImageGenSettings(chatId).model;
+  return inputImageContext.generateImage(chatId, basePrompt, '2:3', imageModel, 'pinterest');
 }
 
 async function saveImageToContainer(chatId, buffer, jobId) {
@@ -344,7 +303,7 @@ async function handlePinterestGenerateJob(chatId, queueJob, bot, correlationId) 
   }
 
   // Выбор темы
-  const topicRow = await repository.reserveNextTopic(chatId);
+  const topicRow = await repository.reserveNextTopic(chatId, 'pinterest');
   if (!topicRow) {
     return { success: false, error: 'Нет доступных тем', retry: false };
   }
@@ -378,7 +337,7 @@ async function handlePinterestGenerateJob(chatId, queueJob, bot, correlationId) 
   for (let i = 1; i <= MAX_IMAGE_ATTEMPTS; i++) {
     try {
       imageAttempts = i;
-      const imageBuffer = await generatePinImage(topic, pinText.pinTitle);
+      const imageBuffer = await generatePinImage(chatId, topic, pinText.pinTitle);
       // Создаём временный job id для сохранения
       const tempId = `${topic.sheetRow}_${Date.now()}`;
       imagePath = await saveImageToContainer(chatId, imageBuffer, tempId);
@@ -452,17 +411,6 @@ async function publishPin(chatId, bot, jobId, correlationId) {
 
   let imageBuffer = await fs.readFile(tempPath);
   await fs.unlink(tempPath).catch(() => {});
-
-  // Водяной знак
-  const logoPath = '/workspace/brand/logo.png';
-  const logoLocalPath = path.join(os.tmpdir(), `pin-logo-${chatId}.png`);
-  try {
-    await dockerService.copyFromContainer(session.containerId, logoPath, logoLocalPath);
-    imageBuffer = await imageService.overlayWatermark(imageBuffer, logoLocalPath);
-    await fs.unlink(logoLocalPath).catch(() => {});
-  } catch (e) {
-    console.log(`[PINTEREST-MVP] Watermark skipped: ${e.message}`);
-  }
 
   // Сохраняем финальное изображение на хост для публичного доступа
   const hostDir = path.join(storageService.getDataDir(chatId), 'output', 'content');
@@ -572,7 +520,10 @@ async function sendPinToModerator(chatId, bot, draft) {
   
   // Используем cwBot если он есть и у пользователя нет своего бота
   const moderatorBot = cwBot && cwBot.token !== bot?.token ? cwBot : bot;
-  const sent = await moderatorBot.telegram.sendPhoto(moderatorId, { source: tempPath }, { caption, reply_markup: kb });
+  const sent = await safeSendToModerator({
+    sendFn: () => moderatorBot.telegram.sendPhoto(moderatorId, { source: tempPath }, { caption, reply_markup: kb }),
+    chatId, moderatorId, notifyBot: bot || cwBot
+  });
   await fs.unlink(tempPath).catch(() => {});
 
   await setDraft(chatId, String(draft.jobId), {
@@ -625,7 +576,7 @@ async function handlePinModerationAction(chatId, bot, jobId, action) {
 
   if (action === 'regen_image') {
     try {
-      const imageBuffer = await generatePinImage(draft.topic, draft.pinTitle);
+      const imageBuffer = await generatePinImage(chatId, draft.topic, draft.pinTitle);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
       await pinterestRepo.updateJob(chatId, jobId, { imagePath });
@@ -653,7 +604,7 @@ async function handlePinModerationAction(chatId, bot, jobId, action) {
         loadUserPersona(chatId)
       ]);
       const pinText = await generatePinText(chatId, draft.topic, draft.board, materialsText, personaText);
-      const imageBuffer = await generatePinImage(draft.topic, pinText.pinTitle);
+      const imageBuffer = await generatePinImage(chatId, draft.topic, pinText.pinTitle);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
 
       draft.pinTitle = pinText.pinTitle;
@@ -702,6 +653,12 @@ async function tickPinterestSchedule(chatId, bot) {
   const [nowH, nowM] = now.time.split(':').map(Number);
   const startMinutes = startH * 60 + startM;
   const nowMinutes = nowH * 60 + nowM;
+
+  if (settings.scheduleEndTime) {
+    const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
+    if (nowMinutes >= endH * 60 + endM) return;
+  }
+
   const intervalMinutes = Math.round((settings.publishIntervalHours || 4) * 60);
 
   const data = manageStore.getState(chatId) || {};
@@ -726,18 +683,19 @@ async function tickPinterestSchedule(chatId, bot) {
 
     // Генерируем случайную минуту для этого слота, если ещё не сгенерирована
     // Также пересчитываем если интервал изменился (targetMinute выходит за пределы допустимого диапазона)
+    // Смещение 0-15% от интервала: пост выходит близко к началу слота с небольшим разбросом
+    const maxJitter = Math.round(intervalMinutes * 0.15);
     let needRegenerate = !data[slotKey] || data[slotKey].split('|')[0] !== now.date;
     if (!needRegenerate && data[slotKey]) {
       const existingTarget = parseInt(data[slotKey].split('|')[1], 10);
-      const minAllowed = currentSlot + Math.round(intervalMinutes * 0.85);
-      const maxAllowed = currentSlot + intervalMinutes;
+      const minAllowed = currentSlot;
+      const maxAllowed = currentSlot + maxJitter;
       if (existingTarget < minAllowed || existingTarget > maxAllowed) {
         needRegenerate = true;
       }
     }
     if (needRegenerate) {
-      const minOffset = Math.round(intervalMinutes * 0.85);
-      const randomOffset = minOffset + Math.floor(Math.random() * (intervalMinutes - minOffset + 1));
+      const randomOffset = Math.floor(Math.random() * (maxJitter + 1));
       const targetMinute = currentSlot + randomOffset;
       data[slotKey] = `${now.date}|${targetMinute}`;
       const states = manageStore.getAllStates();

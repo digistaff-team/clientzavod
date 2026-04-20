@@ -5,13 +5,16 @@
  */
 const path = require('path');
 const fs = require('fs').promises;
-const fetch = require('node-fetch');
 const config = require('../config');
 const aiRouterService = require('./ai_router_service');
 const manageStore = require('../manage/store');
 const sessionService = require('./session.service');
 const storageService = require('./storage.service');
+const bufferService = require('./buffer.service');
 const videoPipeline = require('./videoPipeline.service');
+const repository = require('./content/repository');
+const { safeSendToModerator } = require('./telegram.utils');
+const channelSkills = require('./channelSkills');
 
 let cwBot = null; // Центральный бот премодерации
 
@@ -51,16 +54,19 @@ function isValidTz(tz) {
 
 function getTiktokSettings(chatId) {
   const cfg = manageStore.getTiktokConfig?.(chatId) || {};
+  manageStore.migrateIntegrationSettings(chatId);
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
   return {
     isActive: !!cfg?.is_active,
     autoPublish: !!cfg?.auto_publish,
     scheduleTime: cfg?.schedule_time || '12:00',
+    scheduleEndTime: cfg?.schedule_end_time || null,
     scheduleTz: isValidTz(cfg?.schedule_tz) ? cfg.schedule_tz : SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.daily_limit) ? cfg.daily_limit : DAILY_TIKTOK_LIMIT,
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 6,
     randomPublish: !!cfg?.random_publish,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
-    moderatorUserId: cfg?.moderator_user_id || null,
+    moderatorUserId: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
     stats: cfg?.stats || { total_posts: 0, posts_today: 0, last_post_date: null }
   };
 }
@@ -98,69 +104,69 @@ async function loadUserPersona(chatId) {
   return persona.trim().slice(0, 5000);
 }
 
+async function loadBrandDna(chatId) {
+  const storageDir = storageService.getDataDir(String(chatId));
+  try {
+    return await fs.readFile(path.join(storageDir, 'input', 'brand', 'dna.md'), 'utf-8');
+  } catch {}
+  try {
+    return await fs.readFile(path.join(storageDir, 'IDENTITY.md'), 'utf-8');
+  } catch {}
+  return '';
+}
+
+async function loadBrandTov(chatId) {
+  const storageDir = storageService.getDataDir(String(chatId));
+  try {
+    return await fs.readFile(path.join(storageDir, 'input', 'brand', 'tov.md'), 'utf-8');
+  } catch {}
+  try {
+    return await fs.readFile(path.join(storageDir, 'SOUL.md'), 'utf-8');
+  } catch {}
+  return '';
+}
+
 // ============================================
 // Генерация TikTok контента (текст + хештеги)
 // ============================================
 
-async function generateTiktokContent(chatId, topic, materialsText, personaText) {
-  const systemPrompt = `Ты — профессиональный TikTok копирайтер. Твоя задача — создать привлекательное описание для TikTok видео.
+async function generateTiktokContent(chatId, topic, dna, tov) {
+  const { TIKTOK_CAPTION_SYSTEM } = require('../manage/prompts');
 
-Формат ответа (JSON):
-{
-  "caption": "Текст описания для TikTok (до 150 символов)",
-  "hashtags": ["#хештег1", "#хештег2", ...],
-  "music_suggestion": "Рекомендация по музыке (опционально)"
-}
+  const contextParts = [];
+  if (dna) contextParts.push(`Бренд-ДНК:\n${dna.slice(0, 2000)}`);
+  if (tov) contextParts.push(`Tone of Voice:\n${tov.slice(0, 1000)}`);
 
-Правила:
-- Описание должно быть кратким и привлекательным
-- 3-5 релевантных хештегов
-- Без текста на видео
-- На языке целевой аудитории`;
+  const userMessage = [
+    ...contextParts,
+    `Тема: ${topic.topic || topic}`,
+    topic.focus ? `Фокус: ${topic.focus}` : null
+  ].filter(Boolean).join('\n\n');
 
-  const userPrompt = `Тема: ${topic.topic}
-Фокус: ${topic.focus || ''}
-Вторичные ключи: ${topic.secondary || ''}
-
-Материалы:
-${materialsText.slice(0, 3000)}
-
-Персона:
-${personaText.slice(0, 2000)}
-
-Создай описание для TikTok видео.`;
+  const sysPrompt = await channelSkills.buildSystemPrompt(
+    'tiktok-copywriter',
+    TIKTOK_CAPTION_SYSTEM,
+    'Отвечай только JSON.'
+  );
 
   const response = await aiRouterService.chatCompletion(chatId, [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt }
-  ], { temperature: 0.8, max_tokens: 300 });
+    { role: 'system', content: sysPrompt },
+    { role: 'user', content: userMessage }
+  ], { temperature: 1, max_tokens: 512 });
 
-  if (!response?.content) {
-    throw new Error('AI response is empty');
-  }
+  if (!response?.content) throw new Error('AI response is empty');
 
-  // Парсим JSON
   let parsed;
   try {
     const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      parsed = JSON.parse(jsonMatch[0]);
-    } else {
-      throw new Error('No JSON found');
-    }
-  } catch (e) {
-    // Fallback: используем текст как есть
-    parsed = {
-      caption: response.content.slice(0, 150),
-      hashtags: ['#clientzavod', '#tiktok'],
-      music_suggestion: 'trending'
-    };
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    parsed = { caption: response.content.slice(0, 150), hashtags: [] };
   }
 
   return {
     caption: String(parsed.caption || '').slice(0, 150),
-    hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags.slice(0, 10) : [],
-    musicSuggestion: parsed.music_suggestion || 'trending'
+    hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags.slice(0, 5) : []
   };
 }
 
@@ -201,8 +207,7 @@ async function handleTiktokGenerateJob(chatId, queueJob, bot, correlationId) {
   const settings = getTiktokSettings(chatId);
 
   // Дневной лимит
-  // TODO: реализовать подсчёт опубликованных сегодня
-  const publishedToday = 0;
+  const publishedToday = settings.stats?.posts_today || 0;
   if (publishedToday >= DAILY_TIKTOK_LIMIT) {
     return { success: false, error: `Дневной лимит TikTok исчерпан (${publishedToday}/${DAILY_TIKTOK_LIMIT})`, retry: false };
   }
@@ -217,6 +222,9 @@ async function handleTiktokGenerateJob(chatId, queueJob, bot, correlationId) {
 
     if (claimResult.success) {
       videoPath = claimResult.videoPath;
+      if (videoPath && !path.isAbsolute(videoPath)) {
+        videoPath = path.join(videoPipeline.VIDEO_TEMP_ROOT, String(chatId), videoPath);
+      }
       videoId = claimResult.videoId;
       console.log(`[TIKTOK-MVP] Using shared video: videoId=${videoId}, path=${videoPath}`);
     } else {
@@ -229,6 +237,9 @@ async function handleTiktokGenerateJob(chatId, queueJob, bot, correlationId) {
       }
 
       videoPath = genResult.videoPath;
+      if (videoPath && !path.isAbsolute(videoPath)) {
+        videoPath = path.join(videoPipeline.VIDEO_TEMP_ROOT, String(chatId), videoPath);
+      }
       videoId = genResult.videoId;
       console.log(`[TIKTOK-MVP] New video generated: videoId=${videoId}, path=${videoPath}`);
     }
@@ -237,24 +248,18 @@ async function handleTiktokGenerateJob(chatId, queueJob, bot, correlationId) {
     return { success: false, error: `Video pipeline failed: ${e.message}`, retry: true };
   }
 
-  // Генерация контента (caption + hashtags)
+  // Генерация контента (caption + hashtags) с ДНК/TOV
+  const topic = queueJob?.topic || { topic: 'Product showcase', focus: '' };
   let tiktokContent;
   try {
-    const [materialsText, personaText] = await Promise.all([
-      loadMaterialsText(chatId, 10),
-      loadUserPersona(chatId)
+    const [dna, tov] = await Promise.all([
+      loadBrandDna(chatId),
+      loadBrandTov(chatId)
     ]);
-
-    // Используем тему из queueJob или дефолтную
-    const topic = queueJob?.topic || { topic: 'Product showcase', focus: '', secondary: '' };
-    tiktokContent = await generateTiktokContent(chatId, topic, materialsText, personaText);
+    tiktokContent = await generateTiktokContent(chatId, topic, dna, tov);
   } catch (e) {
     console.error(`[TIKTOK-MVP] Content generation failed: ${e.message}`);
-    tiktokContent = {
-      caption: 'Check this out!',
-      hashtags: ['#clientzavod', '#viral'],
-      musicSuggestion: 'trending'
-    };
+    tiktokContent = { caption: topic.topic || 'Check this out!', hashtags: [] };
   }
 
   // Создаём черновик
@@ -265,7 +270,9 @@ async function handleTiktokGenerateJob(chatId, queueJob, bot, correlationId) {
     videoPath,
     caption: tiktokContent.caption,
     hashtags: tiktokContent.hashtags,
-    musicSuggestion: tiktokContent.musicSuggestion,
+    title: topic.topic || tiktokContent.caption,  // для upload-post.com
+    topic: topic,                                  // для regen_text в модерации
+    topicId: topic.id || null,                     // для updateTopicStatus после публикации
     correlationId: queueJob?.correlationId || `tiktok_${jobId}`,
     rejectedCount: 0,
     status: 'ready'
@@ -276,6 +283,7 @@ async function handleTiktokGenerateJob(chatId, queueJob, bot, correlationId) {
     await setTiktokDraft(chatId, String(jobId), draft);
     await publishTiktokPost(chatId, bot, jobId);
   } else {
+    await setTiktokDraft(chatId, String(jobId), draft);
     await sendTiktokToModerator(chatId, bot, draft);
   }
 
@@ -293,17 +301,27 @@ async function publishTiktokPost(chatId, bot, jobId) {
     throw new Error(`TikTok draft ${jobId} not found`);
   }
 
-  // TODO: Реальная публикация через TikTok API
-  // Пока просто логируем
-  console.log(`[TIKTOK-MVP] Publishing post ${jobId}`);
-  console.log(`  Video: ${draft.videoPath}`);
-  console.log(`  Caption: ${draft.caption}`);
-  console.log(`  Hashtags: ${draft.hashtags.join(' ')}`);
+  // Публикация через Buffer API (per-user credentials)
+  const cfg = manageStore.getTiktokConfig(chatId) || {};
+  if (!cfg.buffer_api_key || !cfg.buffer_channel_id) {
+    throw new Error('Buffer API key или channel_id не настроены в настройках TikTok');
+  }
+
+  const videoFilename = path.basename(draft.videoPath);
+  const videoUrl = `${config.APP_URL}/api/video/temp/${chatId}/${videoFilename}`;
+  const postText = [draft.caption, ...draft.hashtags].join(' ');
+  await bufferService.createPost(cfg.buffer_api_key, cfg.buffer_channel_id, { text: postText, videoUrl });
+
+  // Завершаем жизненный цикл топика
+  if (draft.topicId) {
+    await repository.updateTopicStatus(chatId, draft.topicId, 'completed').catch(() => {});
+  }
 
   // Обновляем статус
   draft.status = 'published';
   draft.publishedAt = new Date().toISOString();
   await setTiktokDraft(chatId, String(jobId), draft);
+  await removeTiktokDraft(chatId, String(jobId));
 
   // Уведомляем пользователя
   if (bot?.telegram) {
@@ -311,8 +329,7 @@ async function publishTiktokPost(chatId, bot, jobId) {
       chatId,
       `✅ TikTok видео опубликовано!\n\n` +
       `📝 ${draft.caption}\n` +
-      `${draft.hashtags.join(' ')}\n\n` +
-      `🎬 Видео: ${draft.videoPath}`
+      `${draft.hashtags.join(' ')}`
     ).catch(() => {});
   }
 }
@@ -332,6 +349,7 @@ async function sendTiktokToModerator(chatId, bot, draft) {
 
   if (!moderatorId) {
     console.warn('[TIKTOK-MVP] No moderator configured, auto-publishing');
+    await setTiktokDraft(chatId, String(draft.jobId), draft);
     await publishTiktokPost(chatId, bot, draft.jobId);
     return;
   }
@@ -344,43 +362,48 @@ async function sendTiktokToModerator(chatId, bot, draft) {
     ``,
     `🏷 ${draft.hashtags.join(' ')}`,
     ``,
-    `🎵 Музыка: ${draft.musicSuggestion}`,
-    ``,
     `Job ID: ${draft.jobId}`
-  ].join('\n');
+  ].filter(line => line !== null).join('\n');
 
   try {
     // Отправляем видео (если есть)
     if (draft.videoPath) {
-      const videoFullPath = path.join(videoPipeline.VIDEO_TEMP_ROOT, chatId, draft.videoPath);
-      try {
-        await cwBot.telegram.sendVideo(moderatorId, { source: videoFullPath }, {
-          caption,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '✅ Одобрить', callback_data: `tt_mod:${draft.jobId}:approve` },
-                { text: '❌ Отклонить', callback_data: `tt_mod:${draft.jobId}:reject` }
-              ],
-              [
-                { text: '🔄 Перегенерировать текст', callback_data: `tt_mod:${draft.jobId}:regen_text` }
-              ]
-            ]
+      const videoFullPath = draft.videoPath;
+      await safeSendToModerator({
+        sendFn: async () => {
+          try {
+            return await cwBot.telegram.sendVideo(moderatorId, { source: videoFullPath }, {
+              caption,
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '✅ Одобрить', callback_data: `tt_mod:${draft.jobId}:approve` },
+                    { text: '❌ Отклонить', callback_data: `tt_mod:${draft.jobId}:reject` }
+                  ],
+                  [
+                    { text: '🔄 Перегенерировать текст', callback_data: `tt_mod:${draft.jobId}:regen_text` }
+                  ]
+                ]
+              }
+            });
+          } catch (e) {
+            // Если не можем отправить видео — отправляем только текст
+            return await cwBot.telegram.sendMessage(moderatorId, caption + `\n\n⚠️ Видео не доступно`, {
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '✅ Одобрить', callback_data: `tt_mod:${draft.jobId}:approve` },
+                    { text: '❌ Отклонить', callback_data: `tt_mod:${draft.jobId}:reject` }
+                  ]
+                ]
+              }
+            });
           }
-        });
-      } catch (e) {
-        // Если не можем отправить видео — отправляем только текст
-        await cwBot.telegram.sendMessage(moderatorId, caption + `\n\n⚠️ Видео не доступно`, {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '✅ Одобрить', callback_data: `tt_mod:${draft.jobId}:approve` },
-                { text: '❌ Отклонить', callback_data: `tt_mod:${draft.jobId}:reject` }
-              ]
-            ]
-          }
-        });
-      }
+        },
+        chatId,
+        moderatorId,
+        notifyBot: cwBot
+      });
     }
   } catch (e) {
     console.error(`[TIKTOK-MVP] Failed to send to moderator: ${e.message}`);
@@ -402,31 +425,34 @@ async function handleTiktokModerationAction(chatId, bot, jobId, action) {
       draft.status = 'approved';
       await setTiktokDraft(chatId, String(jobId), draft);
       await publishTiktokPost(chatId, bot, jobId);
-      await removeTiktokDraft(chatId, String(jobId));
       return { ok: true, message: '✅ Одобрено и опубликовано' };
 
     case 'reject':
       draft.status = 'rejected';
       await setTiktokDraft(chatId, String(jobId), draft);
       await removeTiktokDraft(chatId, String(jobId));
+      if (draft.topicId) {
+        await repository.releaseTopic(chatId, draft.topicId).catch(() => {});
+      }
       return { ok: true, message: '❌ Отклонено' };
 
     case 'regen_text':
       try {
-        const [materialsText, personaText] = await Promise.all([
-          loadMaterialsText(chatId, 10),
-          loadUserPersona(chatId)
-        ]);
-        const topic = draft.topic || { topic: 'Product showcase', focus: '' };
-        const newContent = await generateTiktokContent(chatId, topic, materialsText, personaText);
-        draft.caption = newContent.caption;
-        draft.hashtags = newContent.hashtags;
-        draft.rejectedCount = (draft.rejectedCount || 0) + 1;
-
-        if (draft.rejectedCount >= 3) {
+        // Проверяем лимит ДО генерации
+        if ((draft.rejectedCount || 0) >= 2) {
           await removeTiktokDraft(chatId, String(jobId));
           return { ok: false, message: 'Превышен лимит перегенераций' };
         }
+
+        const [dna, tov] = await Promise.all([
+          loadBrandDna(chatId),
+          loadBrandTov(chatId)
+        ]);
+        const topic = draft.topic || { topic: 'Product showcase', focus: '' };
+        const newContent = await generateTiktokContent(chatId, topic, dna, tov);
+        draft.caption = newContent.caption;
+        draft.hashtags = newContent.hashtags;
+        draft.rejectedCount = (draft.rejectedCount || 0) + 1;
 
         await setTiktokDraft(chatId, String(jobId), draft);
         return { ok: true, message: '🔄 Текст перегенерирован' };
@@ -479,7 +505,16 @@ async function publishScheduledPosts() {
       if (!settings.isActive) continue;
 
       const { time: nowTime } = getNowInTz(settings.scheduleTz);
-      if (nowTime !== settings.scheduleTime) continue;
+      const [nowH, nowM] = nowTime.split(':').map(Number);
+      const nowMinutes = nowH * 60 + nowM;
+
+      const [startH, startM] = (settings.scheduleTime || '12:00').split(':').map(Number);
+      if (nowMinutes < startH * 60 + startM) continue;
+
+      if (settings.scheduleEndTime) {
+        const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
+        if (nowMinutes >= endH * 60 + endM) continue;
+      }
 
       const dayOfWeek = now.getDay();
       if (!settings.allowedWeekdays.includes(dayOfWeek)) continue;
@@ -492,11 +527,27 @@ async function publishScheduledPosts() {
         // TODO: реализовать случайную публикацию
       }
 
+      // Резервируем тему из content_topics
+      const topic = await repository.reserveNextTopic(chatId, 'tiktok');
+      if (!topic) continue;
+
       // Запускаем генерацию
       const bot = botsGetter?.()?.get(chatId);
-      if (!bot?.bot) continue;
+      if (!bot?.bot) {
+        await repository.releaseTopic(chatId, topic.id);
+        continue;
+      }
 
-      await handleTiktokGenerateJob(chatId, {}, bot.bot, `tiktok_schedule_${Date.now()}`);
+      let jobResult;
+      try {
+        jobResult = await handleTiktokGenerateJob(chatId, { topic }, bot.bot, `tiktok_schedule_${Date.now()}`);
+      } catch (jobErr) {
+        await repository.releaseTopic(chatId, topic.id);
+        continue;
+      }
+      if (!jobResult?.success) {
+        await repository.releaseTopic(chatId, topic.id);
+      }
     } catch (e) {
       console.error(`[TIKTOK-MVP] Failed to publish for ${chatId}: ${e.message}`);
     }
@@ -512,6 +563,40 @@ function setTiktokCwBot(bot) {
 }
 
 // ============================================
+// Ручной запуск (UI «Тест сейчас»)
+// ============================================
+
+async function runNow(chatId, bot, reason = 'manual') {
+  const settings = getTiktokSettings(chatId);
+  if (!settings.isActive) {
+    return { ok: false, message: 'TikTok не подключён.' };
+  }
+
+  await repository.ensureSchema(chatId);
+  const topic = await repository.reserveNextTopic(chatId, 'tiktok');
+  if (!topic) {
+    return { ok: false, message: 'Нет доступных тем для генерации.' };
+  }
+
+  try {
+    const jobResult = await handleTiktokGenerateJob(
+      chatId,
+      { topic },
+      bot,
+      `tiktok_manual_${Date.now()}`
+    );
+    if (!jobResult?.success) {
+      await repository.releaseTopic(chatId, topic.id);
+      return { ok: false, message: jobResult?.error || 'Генерация не удалась.' };
+    }
+    return { ok: true, message: 'TikTok-задача запущена. Черновик придёт в Telegram.' };
+  } catch (e) {
+    await repository.releaseTopic(chatId, topic.id);
+    return { ok: false, message: `Ошибка: ${e.message}` };
+  }
+}
+
+// ============================================
 // Exports
 // ============================================
 
@@ -522,5 +607,6 @@ module.exports = {
   stopScheduler,
   setTiktokCwBot,
   getTiktokSettings,
-  publishTiktokPost
+  publishTiktokPost,
+  runNow
 };

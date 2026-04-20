@@ -1,0 +1,639 @@
+# 📋 Задание на интеграцию: Публикация контента в Одноклассники (KODA + ОК API)
+
+## 🎯 Цель
+
+Интегрировать в платформу **Клиент Завод (KODA/Docker-Claw v3.0.0)** полный цикл подготовки и публикации контента в Одноклассники с учётом требований платформы и существующей архитектуры.
+
+---
+
+## 📊 Критические требования (из документа «Подключение ОК и ВК_.docx»)
+
+| Параметр | Требование | Приоритет |
+|----------|------------|-----------|
+| **Длина текста** | 400–600 символов (оптимально), макс. 700 для API | 🔴 Высокий |
+| **Тон общения** | Дружелюбный, человеческий, профессиональный | 🔴 Высокий |
+| **Эмодзи** | 1–3 штуки, не в начале текста | 🟡 Средний |
+| **Хештеги** | 2–4 релевантных хештега | 🟡 Средний |
+| **CTA** | Мягкий призыв к действию в конце | 🟡 Средний |
+| **Формат изображения** | PNG, 1:1, 1K разрешение | 🟡 Средний |
+| **Публикация** | От имени группы (onBehalfOfGroup: true) | 🔴 Высокий |
+
+> ⚠️ **Важно:** В blueprint Make.com указано 300 символов, но документ требует 400–600. Используем **600 символов** как безопасный компромисс.
+
+---
+
+## 🏗️ Архитектура интеграции
+
+### 1. Новые сервисы (`services/`)
+
+| Файл | Назначение | Зависимости |
+|------|------------|-------------|
+| `okPublisher.service.js` | Публикация в ОК API (upload, post) | `https://api.ok.ru/fb.do` |
+| `okContent.service.js` | Валидация контента для ОК | `textGenerator.service.js` |
+| `okAuth.service.js` | Управление OAuth токенами ОК | `config.js` |
+
+### 2. Новые маршруты (`routes/`)
+
+| Маршрут | Метод | Описание |
+|---------|-------|----------|
+| `/api/content/ok/prepare` | POST | Подготовка контента (текст + изображение) |
+| `/api/content/ok/publish` | POST | Публикация готового контента в ОК |
+| `/api/content/ok/status/:id` | GET | Статус публикации |
+| `/api/content/ok/settings` | GET/PUT | Настройки ОК-группы (gid, token) |
+| `/api/content/ok/webhook` | POST | Webhook для callback от ОК API |
+
+### 3. Обновление существующих сервисов
+
+| Файл | Изменения |
+|------|-----------|
+| `services/contentMvp.service.js` | Добавить статус `ok_published` в workflow |
+| `manage/prompts.js` | Добавить системный промпт для ОК (из документа) |
+| `services/postgres.service.js` | Добавить таблицу `ok_publish_logs` |
+
+---
+
+## 🔐 Аутентификация ОК API
+
+### Переменные окружения (`.env`)
+
+```bash
+# OK API Credentials (из документа «Подключение ОК и ВК_.docx»)
+OK_APP_ID=512003249088
+OK_PUBLIC_KEY=CBMEJGMGDILIFBABA
+OK_SECRET_KEY=14A51187183D92A46CC5CFF4
+OK_ACCESS_TOKEN=-n-3idMIX7Wjyu61FAglRpCXnbpkfnuEwCup259CLMPxnegCalO4X1gxNS3FEQW738BviKJzVp13A6ebF4uNpc1
+OK_SESSION_SECRET=2014b3576dc99cbc17b47d53737638dc5d
+OK_GROUP_ID=70000045843362
+
+# OAuth Redirect (для обновления токенов)
+OK_REDIRECT_URI=https://koda.client-zavod.ru/oauth/ok/callback
+```
+
+### Обязательные права доступа (при генерации ключа)
+
+```javascript
+const OK_REQUIRED_PERMISSIONS = [
+  'VALUABLE_ACCESS',    // Доступ к личной информации
+  'GET_EMAIL',          // Получение e-mail
+  'LONG_ACCESS_TOKEN',  // Долгоживущий токен
+  'SET_STATUS',         // Установка статуса
+  'GROUP_CONTENT',      // Управление группами ⭐
+  'PHOTO_CONTENT'       // Фото/альбомы ⭐
+];
+```
+
+---
+
+## 📝 Системный промпт для генерации текста (ОК)
+
+```javascript
+// manage/prompts.js
+const OK_SYSTEM_PROMPT = `
+Ты — копирайтер компании [КОМПАНИЯ], который пишет посты для социальной сети «Одноклассники».
+
+**Контекст компании:**
+[ОПИСАНИЕ КОМПАНИИ — услуга, целевая аудитория, стиль общения, преимущества]
+
+**Требования к посту:**
+1. Длина текста: 400–600 символов (не длиннее 700, чтобы корректно передавался через API)
+2. Тон общения — дружелюбный, человеческий, но профессиональный
+3. Текст должен быть логичным, без клише вроде "купите прямо сейчас" и "лучшее на рынке"
+4. Допускается лёгкий юмор, живой язык, но без жаргона
+5. В начале — человеческая подача, вопрос, факт или мини-история, вызывающая отклик у читателя
+6. В основной части — естественно подведи к теме компании, сервису или продукту
+7. Заверши мягким призывом к действию, например:
+   - «Загляните к нам 🔗»
+   - «Попробуйте сами!»
+   - «Сохраняйте идею, пригодится!»
+8. Эмодзи можно использовать, но умеренно (1–3 штуки, не в начале текста)
+9. Обязательно добавь 2-4 релевантных хештега
+
+**Формат ответа:**
+Верни результат в виде готового поста для публикации без лишнего текста и символов до и после.
+`;
+```
+
+---
+
+## 🗄️ Структура БД (PostgreSQL)
+
+### Таблица `ok_publish_logs`
+
+```sql
+CREATE TABLE ok_publish_logs (
+  id SERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  topic TEXT NOT NULL,
+  text TEXT NOT NULL,
+  text_length INTEGER NOT NULL,
+  image_url TEXT,
+  image_format VARCHAR(10) DEFAULT 'png',
+  status VARCHAR(50) DEFAULT 'draft',
+  ok_post_id BIGINT,
+  ok_group_id BIGINT DEFAULT 70000045843362,
+  ok_app_id BIGINT DEFAULT 512003249088,
+  created_at TIMESTAMP DEFAULT NOW(),
+  published_at TIMESTAMP,
+  error_message TEXT,
+  retry_count INTEGER DEFAULT 0,
+  metadata JSONB
+);
+
+-- Индексы
+CREATE INDEX idx_ok_logs_user ON ok_publish_logs(user_id);
+CREATE INDEX idx_ok_logs_status ON ok_publish_logs(status);
+CREATE INDEX idx_ok_logs_created ON ok_publish_logs(created_at);
+```
+
+### Обновление `content_posts`
+
+```sql
+ALTER TABLE content_posts 
+ADD COLUMN ok_published BOOLEAN DEFAULT FALSE,
+ADD COLUMN ok_post_id BIGINT,
+ADD COLUMN ok_publish_date TIMESTAMP,
+ADD COLUMN ok_text_length INTEGER,
+ADD COLUMN ok_image_url TEXT;
+```
+
+---
+
+## 🔄 Поток данных
+
+```
+┌─────────────────┐
+│   Google Sheets │
+│   (тема поста)  │
+└────────┬────────┘
+         │ HTTP Webhook
+         ▼
+┌─────────────────┐
+│  /api/content   │
+│  /ok/prepare    │
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌───────┐ ┌───────┐
+│ Text  │ │ Image │
+│ Gen   │ │ Gen   │
+│ 600   │ │ 1:1   │
+│ симв. │ │ PNG   │
+└───┬───┘ └───┬───┘
+    │         │
+    └────┬────┘
+         ▼
+┌─────────────────┐
+│  Валидация      │
+│  (OK правила)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Content DB     │
+│  (status:ready) │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  /api/content   │
+│  /ok/publish    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  OK API         │
+│  (photosV2 +   │
+│   media.post)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  ok_publish_logs│
+│  (status:done)  │
+└─────────────────┘
+```
+
+---
+
+## 📦 Реализация сервисов
+
+### 1. `services/okAuth.service.js`
+
+```javascript
+const crypto = require('crypto');
+const axios = require('axios');
+
+class OKAuthService {
+  constructor() {
+    this.appId = process.env.OK_APP_ID;
+    this.publicKey = process.env.OK_PUBLIC_KEY;
+    this.secretKey = process.env.OK_SECRET_KEY;
+    this.accessToken = process.env.OK_ACCESS_TOKEN;
+    this.sessionSecret = process.env.OK_SESSION_SECRET;
+    this.groupId = process.env.OK_GROUP_ID;
+  }
+
+  // Подпись запроса по спецификации ОК API
+  signRequest(params) {
+    const sortedParams = Object.keys(params)
+      .sort()
+      .map(key => `${key}=${params[key]}`)
+      .join('');
+    
+    const sig = crypto
+      .createHash('md5')
+      .update(sortedParams + this.sessionSecret)
+      .digest('hex')
+      .toLowerCase();
+    
+    return sig;
+  }
+
+  // Проверка валидности токена
+  async validateToken() {
+    try {
+      const response = await axios.post('https://api.ok.ru/fb.do', {
+        method: 'users.getCurrentUser',
+        app_id: this.appId,
+        access_token: this.accessToken,
+        sig: this.signRequest({
+          method: 'users.getCurrentUser',
+          app_id: this.appId,
+          access_token: this.accessToken
+        })
+      });
+      return { valid: true, user: response.data };
+    } catch (error) {
+      return { valid: false, error: error.message };
+    }
+  }
+
+  // Обновление токена (если есть refresh_token)
+  async refreshToken() {
+    // Реализация по документации ОК API
+  }
+}
+
+module.exports = new OKAuthService();
+```
+
+### 2. `services/okContent.service.js`
+
+```javascript
+const aiRouterService = require('./ai_router_service');
+const okAuth = require('./okAuth');
+
+const OK_RULES = {
+  textMin: 400,
+  textMax: 600,
+  textHardMax: 700,
+  emojiMax: 3,
+  hashtagMin: 2,
+  hashtagMax: 4
+};
+
+class OKContentService {
+  async generateText(topic, tov, dna) {
+    const prompt = `
+      ${process.env.OK_SYSTEM_PROMPT}
+      
+      Тема поста: ${topic}
+      TOV: ${tov}
+      ДНК бренда: ${dna}
+    `;
+
+    const result = await aiRouterService.call(prompt);
+    
+    // Валидация длины
+    if (result.length > OK_RULES.textHardMax) {
+      throw new Error(`Текст превышает лимит ОК: ${result.length} > ${OK_RULES.textHardMax}`);
+    }
+
+    return result;
+  }
+
+  async validateContent(text, imageUrl) {
+    const errors = [];
+
+    // Проверка длины текста
+    if (text.length < OK_RULES.textMin) {
+      errors.push(`Текст слишком короткий: ${text.length} < ${OK_RULES.textMin}`);
+    }
+    if (text.length > OK_RULES.textHardMax) {
+      errors.push(`Текст слишком длинный: ${text.length} > ${OK_RULES.textHardMax}`);
+    }
+
+    // Проверка эмодзи
+    const emojiCount = (text.match(/\p{Emoji}/gu) || []).length;
+    if (emojiCount > OK_RULES.emojiMax) {
+      errors.push(`Слишком много эмодзи: ${emojiCount} > ${OK_RULES.emojiMax}`);
+    }
+
+    // Проверка хештегов
+    const hashtagCount = (text.match(/#\w+/g) || []).length;
+    if (hashtagCount < OK_RULES.hashtagMin) {
+      errors.push(`Слишком мало хештегов: ${hashtagCount} < ${OK_RULES.hashtagMin}`);
+    }
+    if (hashtagCount > OK_RULES.hashtagMax) {
+      errors.push(`Слишком много хештегов: ${hashtagCount} > ${OK_RULES.hashtagMax}`);
+    }
+
+    // Проверка изображения
+    if (!imageUrl) {
+      errors.push('Отсутствует изображение');
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      metrics: {
+        textLength: text.length,
+        emojiCount,
+        hashtagCount
+      }
+    };
+  }
+}
+
+module.exports = new OKContentService();
+```
+
+### 3. `services/okPublisher.service.js`
+
+```javascript
+const axios = require('axios');
+const FormData = require('form-data');
+const okAuth = require('./okAuth');
+const postgres = require('./postgres.service');
+
+class OKPublisherService {
+  // Шаг 1: Получить URL для загрузки фото
+  async getUploadUrl(groupId) {
+    const params = {
+      method: 'photosV2.getUploadUrl',
+      gid: groupId,
+      app_id: okAuth.appId,
+      access_token: okAuth.accessToken
+    };
+    params.sig = okAuth.signRequest(params);
+
+    const response = await axios.post('https://api.ok.ru/fb.do', params);
+    return response.data.upload_url;
+  }
+
+  // Шаг 2: Загрузить изображение
+  async uploadImage(uploadUrl, imageData, fileName) {
+    const form = new FormData();
+    form.append('file', imageData, {
+      filename: fileName,
+      contentType: 'image/png'
+    });
+
+    const response = await axios.post(uploadUrl, form, {
+      headers: form.getHeaders()
+    });
+
+    return response.data;
+  }
+
+  // Шаг 3: Опубликовать пост
+  async publishPost(groupId, text, photoId) {
+    const params = {
+      method: 'media.post',
+      gid: groupId,
+      type: 'PHOTO',
+      text: text,
+      photos: JSON.stringify([{ id: photoId }]),
+      app_id: okAuth.appId,
+      access_token: okAuth.accessToken
+    };
+    params.sig = okAuth.signRequest(params);
+
+    const response = await axios.post('https://api.ok.ru/fb.do', params);
+    return response.data;
+  }
+
+  // Полный цикл публикации
+  async publish(userId, topic, text, imageData) {
+    const logId = await this.createLog(userId, topic, text, 'pending');
+
+    try {
+      // Валидация токена
+      const tokenValid = await okAuth.validateToken();
+      if (!tokenValid.valid) {
+        throw new Error('Невалидный токен ОК API');
+      }
+
+      // Загрузка изображения
+      const uploadUrl = await this.getUploadUrl(okAuth.groupId);
+      const uploadResult = await this.uploadImage(uploadUrl, imageData, 'post.png');
+      
+      // Публикация поста
+      const publishResult = await this.publishPost(
+        okAuth.groupId,
+        text,
+        uploadResult.photo_id
+      );
+
+      // Обновление лога
+      await this.updateLog(logId, {
+        status: 'published',
+        ok_post_id: publishResult.post_id,
+        published_at: new Date()
+      });
+
+      // Обновление content_posts
+      await postgres.query(`
+        UPDATE content_posts 
+        SET ok_published = TRUE, 
+            ok_post_id = $1, 
+            ok_publish_date = NOW()
+        WHERE user_id = $2 AND topic = $3
+      `, [publishResult.post_id, userId, topic]);
+
+      return {
+        success: true,
+        postId: publishResult.post_id,
+        logId
+      };
+    } catch (error) {
+      await this.updateLog(logId, {
+        status: 'error',
+        error_message: error.message
+      });
+
+      throw error;
+    }
+  }
+
+  async createLog(userId, topic, text, status) {
+    const result = await postgres.query(`
+      INSERT INTO ok_publish_logs (user_id, topic, text, text_length, status)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id
+    `, [userId, topic, text, text.length, status]);
+    
+    return result.rows[0].id;
+  }
+
+  async updateLog(logId, data) {
+    const fields = Object.keys(data).map((key, idx) => `${key} = $${idx + 2}`).join(', ');
+    const values = Object.values(data);
+
+    await postgres.query(`
+      UPDATE ok_publish_logs 
+      SET ${fields}
+      WHERE id = $1
+    `, [logId, ...values]);
+  }
+}
+
+module.exports = new OKPublisherService();
+```
+
+---
+
+## 🧪 Тестирование
+
+### Unit-тесты (`tests/ok.integration.test.js`)
+
+```javascript
+const assert = require('assert');
+const okContent = require('../services/okContent.service');
+const okPublisher = require('../services/okPublisher.service');
+
+describe('OK Integration Tests', () => {
+  it('должен генерировать текст 400-600 символов', async () => {
+    const text = await okContent.generateText('Тест тема', 'TOV', 'DNA');
+    assert.strictEqual(text.length >= 400, true);
+    assert.strictEqual(text.length <= 700, true);
+  });
+
+  it('должен валидировать контент по правилам ОК', async () => {
+    const text = 'Тест пост с хештегом #тест и эмодзи 👍';
+    const result = await okContent.validateContent(text, 'https://example.com/img.png');
+    assert.strictEqual(result.valid, true);
+  });
+
+  it('должен отклонять текст > 700 символов', async () => {
+    const longText = 'A'.repeat(701);
+    const result = await okContent.validateContent(longText, 'https://example.com/img.png');
+    assert.strictEqual(result.valid, false);
+    assert.strictEqual(result.errors.length > 0, true);
+  });
+});
+```
+
+### Запуск тестов
+```bash
+npm test tests/ok.integration.test.js
+```
+
+---
+
+## 📊 Мониторинг и логирование
+
+### Логирование публикаций
+
+```javascript
+// services/okPublisher.service.js
+async function logPublish(userId, data, status, error = null) {
+  await postgres.query(`
+    INSERT INTO ok_publish_logs 
+    (user_id, topic, text, text_length, image_url, status, error_message, metadata)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+  `, [
+    userId, 
+    data.topic, 
+    data.text, 
+    data.text.length, 
+    data.imageUrl, 
+    status, 
+    error,
+    JSON.stringify({ timestamp: new Date(), retry_count: 0 })
+  ]);
+}
+```
+
+### Webhook для уведомлений об ошибках
+
+```javascript
+// routes/webhook.routes.js
+app.post('/webhook/ok-publish', async (req, res) => {
+  const { status, postId, error, userId } = req.body;
+  
+  if (status === 'error') {
+    // Уведомление в Telegram админу
+    await telegramService.sendMessage(
+      process.env.ADMIN_CHAT_ID, 
+      `❌ Ошибка публикации в ОК: ${error}\nUser: ${userId}`
+    );
+    
+    // Логирование в ok_publish_logs
+    await okPublisher.logError(userId, error);
+  }
+  
+  res.json({ received: true });
+});
+```
+
+---
+
+## 🚀 План реализации
+
+| Этап | Задача | Срок | Статус |
+|------|--------|------|--------|
+| 1 | Создать сервис `okAuth.service.js` | 0.5 дня | ⏳ |
+| 2 | Создать сервис `okContent.service.js` | 1 день | ⏳ |
+| 3 | Создать сервис `okPublisher.service.js` | 1.5 дня | ⏳ |
+| 4 | Добавить API маршруты (`/api/content/ok/*`) | 1 день | ⏳ |
+| 5 | Обновить БД (таблицы, индексы) | 0.5 дня | ⏳ |
+| 6 | Интеграция с AI-агентом (промпты из документа) | 1 день | ⏳ |
+| 7 | Настройка OAuth ОК API (тестовая группа) | 1 день | ⏳ |
+| 8 | Тестирование (unit + integration) | 1 день | ⏳ |
+| 9 | Документация и деплой | 0.5 дня | ⏳ |
+
+**Итого: 7 дней**
+
+---
+
+## ⚠️ Риски и митигация
+
+| Риск | Вероятность | Митигация |
+|------|-------------|-----------|
+| Токен ОК API истекает | Средняя | Auto-refresh + мониторинг в `okAuth.service.js` |
+| Лимиты OK API (rate limiting) | Средняя | Queue + retry logic с экспоненциальной задержкой |
+| Генерация изображений > 30 сек | Высокая | Callback URL + webhook для асинхронной обработки |
+| Ошибки публикации | Средняя | Ignore-модуль + логирование в `ok_publish_logs` |
+| Расхождение лимитов текста | Низкая | Валидация в `okContent.service.js` перед публикацией |
+| Теневой бан из-за контента | Средняя | Пре-модерация на стоп-слова + AI-фильтр токсичности |
+
+---
+
+## 📞 Контакты для API
+
+| Сервис | Документация | Поддержка |
+|--------|--------------|-----------|
+| OK API | https://api.ok.ru/ | dev@ok.ru |
+| OpenAI | https://platform.openai.com/ | api@openai.com |
+| KIE AI (изображения) | https://kieai.com/ | support@kieai.com |
+
+---
+
+## ✅ Чек-лист перед запуском
+
+- [ ] Все OAuth токены ОК активны и имеют нужные права
+- [ ] API ключи имеют достаточный лимит запросов
+- [ ] Лимиты символов соблюдены (400–600 оптимально, макс. 700)
+- [ ] Форматы изображений корректны (PNG, 1:1, 1K)
+- [ ] Таблица `ok_publish_logs` создана в PostgreSQL
+- [ ] Промпты обновлены согласно документу «Подключение ОК и ВК_.docx»
+- [ ] Тестирование на тестовой группе пройдено
+- [ ] Webhook для уведомлений об ошибках настроен
+- [ ] Документация обновлена в `/workspace/OK_CONFIG.md`
+
+---
+
+> 💡 **Рекомендация:** Создать конфигурационный файл `/workspace/OK_CONFIG.md` с параметрами платформ (лимиты, правила, стоп-слова), чтобы при изменении политик соцсетей не требовалось переписывать код.
+

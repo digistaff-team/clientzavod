@@ -1,8 +1,6 @@
 // Facebook Channels UI
 
 const API = `${window.location.origin}/api`;
-const API_MANAGE = `${window.location.origin}/api/manage`;
-const API_CONTENT = `${window.location.origin}/api/content`;
 
 /**
  * Загрузка каналов из Buffer API
@@ -14,11 +12,7 @@ window.fetchFacebookBufferChannels = async function() {
         return;
     }
 
-    const apiKey = $('fbBufferApiKey').value.trim();
-    if (!apiKey) {
-        setFbStatus('Введите Buffer API Token', '#c00');
-        return;
-    }
+    const apiKey = (document.getElementById('facebookBufferApiKey')?.value || document.getElementById('globalBufferApiKey')?.value || '').trim();
 
     try {
         setFbStatus('Загрузка каналов...', '#666');
@@ -26,7 +20,7 @@ window.fetchFacebookBufferChannels = async function() {
         const result = await jfetch(`${API_MANAGE}/channels/buffer/channels`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ buffer_api_key: apiKey })
+            body: JSON.stringify({ buffer_api_key: apiKey, chat_id: chatId })
         });
 
         if (!result.success || !result.channels) {
@@ -71,13 +65,8 @@ window.testFacebookBufferConnection = async function() {
         return;
     }
 
-    const apiKey = $('fbBufferApiKey').value.trim();
+    const apiKey = (document.getElementById('facebookBufferApiKey')?.value || document.getElementById('globalBufferApiKey')?.value || '').trim();
     const channelId = $('fbBufferChannelId').value;
-
-    if (!apiKey) {
-        setFbStatus('Введите Buffer API Token', '#c00');
-        return;
-    }
 
     if (!channelId) {
         setFbStatus('Выберите Facebook канал', '#c00');
@@ -126,15 +115,9 @@ window.loadFacebookConfig = async function() {
         const cfg = result.config;
         window.facebookConfig = cfg;
 
-        // Buffer credentials (замаскированы, не перезаписываем)
-        if (!cfg.buffer_api_key || cfg.buffer_api_key.endsWith('***')) {
-            $('fbBufferApiKey').value = '';
-        } else {
-            $('fbBufferApiKey').value = cfg.buffer_api_key;
-        }
-
+        // Если есть сохранённый канал — загружаем список из Buffer, чтобы select был заполнен
         if (cfg.buffer_channel_id) {
-            $('fbBufferChannelId').value = cfg.buffer_channel_id;
+            await window.fetchFacebookBufferChannels();
         }
 
         // Load scheduler settings
@@ -146,6 +129,9 @@ window.loadFacebookConfig = async function() {
             if (hourEl) hourEl.value = '10';
             if (minuteEl) minuteEl.value = '00';
             updateFacebookScheduleTime();
+        }
+        if (cfg.schedule_end_time) {
+            setFacebookScheduleEndTimeInputs(cfg.schedule_end_time);
         }
         
         if (cfg.schedule_tz) {
@@ -162,11 +148,6 @@ window.loadFacebookConfig = async function() {
             setWeekdays('facebook-weekday', cfg.allowed_weekdays);
         }
         
-        if (cfg.moderator_user_id) {
-            const modEl = document.getElementById('facebookModeratorUserId');
-            if (modEl) modEl.value = cfg.moderator_user_id;
-        }
-
         // Load toggles
         const randomPublishEl = document.getElementById('facebookRandomPublish');
         if (randomPublishEl) randomPublishEl.checked = !!cfg.random_publish;
@@ -174,15 +155,14 @@ window.loadFacebookConfig = async function() {
         const premoderationEl = document.getElementById('facebookPremoderation');
         if (premoderationEl) {
             premoderationEl.checked = !!cfg.premoderation;
-            toggleFacebookModeratorField();
         }
+        const facebookModeratorEl = document.getElementById('facebookModeratorUserId');
+        if (facebookModeratorEl) facebookModeratorEl.value = cfg.moderator_user_id || '';
+        toggleFacebookModeratorField();
 
         // Статус
         const pageName = cfg.page_name ? `Страница: ${cfg.page_name}` : '';
         setFbStatus(`✅ Facebook ${pageName}`, '#0a0');
-
-        // Показываем блок настроек
-        $('facebookSettingsBlock').style.display = 'block';
 
     } catch (e) {
         console.warn('loadFacebookConfig:', e.message);
@@ -218,6 +198,35 @@ function validateFacebookMinutes() {
     minuteInput.value = val;
 }
 
+function setFacebookScheduleEndTimeInputs(timeValue) {
+    const [hour, minute] = timeValue.split(':');
+    const hourEl = document.getElementById('facebookScheduleEndHour');
+    const minuteEl = document.getElementById('facebookScheduleEndMinute');
+    if (hourEl) hourEl.value = hour || '00';
+    if (minuteEl) minuteEl.value = (minute || '00').padStart(2, '0');
+    updateFacebookScheduleEndTime();
+}
+
+function updateFacebookScheduleEndTime() {
+    const hour = document.getElementById('facebookScheduleEndHour')?.value || '00';
+    const minute = document.getElementById('facebookScheduleEndMinute')?.value || '00';
+    const timeField = document.getElementById('facebookScheduleEndTime');
+    if (timeField) {
+        timeField.value = `${hour}:${minute.padStart(2, '0')}`;
+    }
+}
+window.updateFacebookScheduleEndTime = updateFacebookScheduleEndTime;
+
+function validateFacebookEndMinutes() {
+    const minuteInput = document.getElementById('facebookScheduleEndMinute');
+    if (!minuteInput) return;
+    let val = minuteInput.value.replace(/\D/g, '');
+    if (val.length > 2) val = val.slice(0, 2);
+    if (val !== '' && parseInt(val, 10) > 59) val = '59';
+    minuteInput.value = val;
+}
+window.validateFacebookEndMinutes = validateFacebookEndMinutes;
+
 function setFacebookScheduleTzInput(tzValue) {
     const tzSelect = document.getElementById('facebookScheduleTz');
     if (!tzSelect || !tzValue) return;
@@ -252,28 +261,29 @@ window.saveFacebookConfig = async function() {
     try {
         setFbStatus('Сохранение...', '#666');
 
+        updateFacebookScheduleEndTime();
         const scheduleTime = document.getElementById('facebookScheduleTime')?.value || '10:00';
+        const scheduleEndTime = (document.getElementById('facebookScheduleEndTime')?.value || '').trim();
         const scheduleTz = document.getElementById('facebookScheduleTz')?.value || 'Europe/Moscow';
         const dailyLimit = parseInt(document.getElementById('facebookDailyLimit')?.value || '10', 10);
         const publishInterval = parseFloat(document.getElementById('facebookPublishInterval')?.value || '4');
         const allowedWeekdays = getWeekdays('facebook-weekday');
         const randomPublish = !!document.getElementById('facebookRandomPublish')?.checked;
         const premoderation = !!document.getElementById('facebookPremoderation')?.checked;
-        const moderatorUserId = (document.getElementById('facebookModeratorUserId')?.value || '').trim() || null;
-
         const payload = {
             chat_id: chatId,
-            buffer_api_key: $('fbBufferApiKey').value.trim() || null,
+            is_active: true,
             buffer_channel_id: $('fbBufferChannelId').value || null,
             page_name: window.facebookConfig?.page_name || null,
             schedule_time: scheduleTime,
+            schedule_end_time: scheduleEndTime,
             schedule_tz: scheduleTz,
             daily_limit: dailyLimit,
             publish_interval_hours: publishInterval,
             allowed_weekdays: allowedWeekdays,
             random_publish: randomPublish,
             premoderation: premoderation,
-            moderator_user_id: moderatorUserId
+            moderator_user_id: (document.getElementById('facebookModeratorUserId')?.value || '').trim()
         };
 
         await jfetch(`${API_MANAGE}/channels/facebook`, {
@@ -311,7 +321,7 @@ window.runFacebookNow = async function() {
             btn.textContent = '⏳ Генерация...';
         }
 
-        setFbStatus('Запуск генерации...', '#666');
+        setFbSettingsStatus('Запуск генерации...', '#666');
 
         await jfetch(`${API_CONTENT}/facebook/run-now`, {
             method: 'POST',
@@ -322,17 +332,17 @@ window.runFacebookNow = async function() {
             })
         });
 
-        setFbStatus('✅ Генерация запущена. Проверьте статус в разделе "Контент"', '#0a0');
+        setFbSettingsStatus('✅ Генерация запущена. Проверьте статус в разделе "Контент"', '#0a0');
         showToast('Facebook генерация запущена', 'success');
 
     } catch (e) {
-        setFbStatus(`❌ ${e.message}`, '#c00');
+        setFbSettingsStatus(`❌ ${e.message}`, '#c00');
         console.error('runFacebookNow:', e);
     } finally {
         const btn = $('fbRunNowBtn');
         if (btn) {
             btn.disabled = false;
-            btn.textContent = '▶️ Сгенерировать сейчас';
+            btn.textContent = '▶️ Тест сейчас';
         }
     }
 };
@@ -345,6 +355,14 @@ function $(id) {
 
 function setFbStatus(msg, color) {
     const el = $('facebookStatus');
+    if (el) {
+        el.textContent = msg;
+        el.style.color = color || '#666';
+    }
+}
+
+function setFbSettingsStatus(msg, color) {
+    const el = $('facebookSettingsStatus');
     if (el) {
         el.textContent = msg;
         el.style.color = color || '#666';
@@ -367,15 +385,3 @@ async function jfetch(url, opts) {
     return data || {};
 }
 
-// Автозагрузка каналов при изменении API ключа
-document.addEventListener('DOMContentLoaded', () => {
-    const apiKeyInput = $('fbBufferApiKey');
-    if (apiKeyInput) {
-        apiKeyInput.addEventListener('change', () => {
-            const apiKey = apiKeyInput.value.trim();
-            if (apiKey && !apiKey.endsWith('***')) {
-                fetchFacebookBufferChannels();
-            }
-        });
-    }
-});
