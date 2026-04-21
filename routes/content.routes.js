@@ -1197,7 +1197,7 @@ router.delete('/topics/:id', async (req, res) => {
 
 // POST /api/content/knowledge — добавить технический документ
 router.post('/knowledge', async (req, res) => {
-  const chatId = normalizeChatId(req.body.chat_id);
+  const chatId = normalizeChatId(req.body.chat_id || req.body.chatId);
   if (!chatId) {
     return res.status(400).json({ error: 'chat_id is required' });
   }
@@ -1227,7 +1227,7 @@ router.post('/knowledge', async (req, res) => {
 
 // GET /api/content/knowledge — список технических документов
 router.get('/knowledge', async (req, res) => {
-  const chatId = normalizeChatId(req.query.chat_id);
+  const chatId = normalizeChatId(req.query.chat_id || req.query.chatId);
   if (!chatId) {
     return res.status(400).json({ error: 'chat_id is required' });
   }
@@ -1249,7 +1249,7 @@ router.get('/knowledge', async (req, res) => {
 
 // DELETE /api/content/knowledge/:id — удалить технический документ
 router.delete('/knowledge/:id', async (req, res) => {
-  const chatId = normalizeChatId(req.body.chat_id || req.query.chat_id);
+  const chatId = normalizeChatId(req.body.chat_id || req.body.chatId || req.query.chat_id || req.query.chatId);
   const docId = parseInt(req.params.id, 10);
   if (!chatId) {
     return res.status(400).json({ error: 'chat_id is required' });

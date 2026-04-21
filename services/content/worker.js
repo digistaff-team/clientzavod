@@ -463,7 +463,7 @@ async function scheduleBlogPostsForChat(chatId) {
   } catch (statsErr) {
     console.warn(`[CONTENT-WORKER-BLOG] getQueueStats failed, skipping queue guard: ${statsErr.message}`);
   }
-  const inFlight = (queueStats.queued || 0) + (queueStats.processing || 0) + (queueStats.failed || 0);
+  const inFlight = (queueStats.queued || 0) + (queueStats.processing || 0);
   if (inFlight >= perDayLimit) {
     return;
   }

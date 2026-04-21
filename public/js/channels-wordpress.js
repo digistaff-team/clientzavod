@@ -246,7 +246,7 @@
     if (!chatId) return;
     try {
       const r = await jfetch(`${API}/knowledge?chatId=${encodeURIComponent(chatId)}`);
-      const list = r.documents || r.items || [];
+      const list = r.knowledge || r.documents || r.items || [];
       const el = $('wordpressKnowledgeList');
       if (!list.length) { el.innerHTML = '<em style="color:#999">Документы пока не добавлены</em>'; return; }
       el.innerHTML = list.map(d => `

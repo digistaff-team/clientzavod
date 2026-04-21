@@ -918,9 +918,10 @@ async function tickIgReelsSchedule(chatId) {
 
   if (nowMinutes < startMinutes) return;
 
-  if (settings.scheduleEndTime) {
+  if (settings.scheduleEndTime && settings.scheduleEndTime !== '00:00') {
     const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
-    if (nowMinutes >= endH * 60 + endM) return;
+    const endMinutes = endH * 60 + endM;
+    if (endMinutes > 0 && nowMinutes >= endMinutes) return;
   }
 
   const intervalMinutes = Math.round((settings.publishIntervalHours || 6) * 60);
@@ -1054,9 +1055,10 @@ async function tickIgSchedule(chatId, bot) {
   const startMinutes = startH * 60 + startM;
   const nowMinutes = nowH * 60 + nowM;
 
-  if (settings.scheduleEndTime) {
+  if (settings.scheduleEndTime && settings.scheduleEndTime !== '00:00') {
     const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
-    if (nowMinutes >= endH * 60 + endM) return;
+    const endMinutes = endH * 60 + endM;
+    if (endMinutes > 0 && nowMinutes >= endMinutes) return;
   }
 
   const intervalMinutes = Math.round((settings.publishIntervalHours || 4) * 60);

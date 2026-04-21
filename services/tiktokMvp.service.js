@@ -514,9 +514,10 @@ async function publishScheduledPosts() {
       const [startH, startM] = (settings.scheduleTime || '12:00').split(':').map(Number);
       if (nowMinutes < startH * 60 + startM) continue;
 
-      if (settings.scheduleEndTime) {
+      if (settings.scheduleEndTime && settings.scheduleEndTime !== '00:00') {
         const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
-        if (nowMinutes >= endH * 60 + endM) continue;
+        const endMinutes = endH * 60 + endM;
+        if (endMinutes > 0 && nowMinutes >= endMinutes) continue;
       }
 
       const dayOfWeek = now.getDay();
