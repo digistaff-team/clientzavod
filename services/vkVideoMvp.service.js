@@ -64,7 +64,7 @@ function getVkVideoSettings(chatId) {
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 6,
     randomPublish: !!cfg?.random_publish,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
-    moderatorUserId: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
+    moderatorUserId: cfg?.moderator_user_id || globalInt.moderator_user_id || null,
     stats: cfg?.stats || { total_posts: 0, posts_today: 0, last_post_date: null }
   };
 }

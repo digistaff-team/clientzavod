@@ -72,7 +72,7 @@ function getYoutubeSettings(chatId) {
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 24,
     randomPublish: !!cfg?.random_publish,
     bufferApiKey: globalInt.buffer_api_key || cfg?.buffer_api_key || null,
-    moderatorUserId: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
+    moderatorUserId: cfg?.moderator_user_id || globalInt.moderator_user_id || null,
     scheduleTz: cfg?.schedule_tz || SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.daily_limit) ? cfg.daily_limit : DAILY_YT_LIMIT,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
