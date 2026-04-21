@@ -920,7 +920,7 @@ async function loadPinterestConfig() {
             premoderEl.checked = !!cfg.premoderation_enabled;
         }
         const pinterestModeratorEl = document.getElementById('pinterestModeratorUserId');
-        if (pinterestModeratorEl) pinterestModeratorEl.value = cfg.moderator_user_id || '';
+        if (pinterestModeratorEl) pinterestModeratorEl.value = cfg.moderator_user_id || chatId;
         togglePinterestModeratorField();
         // Устанавливаем выбранную доску в select
         const boardSelect = document.getElementById('pinterestBoardSelect');
@@ -1102,6 +1102,10 @@ function togglePinterestModeratorField() {
     const moderatorField = document.getElementById('pinterestModeratorField');
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+        const input = document.getElementById('pinterestModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
     }
 }
 
@@ -1359,7 +1363,7 @@ async function loadInstagramConfig() {
                 premoderationEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
             }
             const instagramModeratorEl = document.getElementById('instagramModeratorUserId');
-            if (instagramModeratorEl) instagramModeratorEl.value = cfg.moderator_user_id || '';
+            if (instagramModeratorEl) instagramModeratorEl.value = cfg.moderator_user_id || chatId;
             toggleInstagramModeratorField();
         } else {
             statusEl.textContent = '';
@@ -1443,6 +1447,10 @@ function toggleInstagramModeratorField() {
     const moderatorField = document.getElementById('instagramModeratorField');
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+        const input = document.getElementById('instagramModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
     }
 }
 
@@ -2113,7 +2121,7 @@ async function loadYoutubeConfig() {
             premoderEl.checked = !!cfg.premoderation_enabled;
         }
         const youtubeModeratorEl = document.getElementById('youtubeModeratorUserId');
-        if (youtubeModeratorEl) youtubeModeratorEl.value = cfg.moderator_user_id || '';
+        if (youtubeModeratorEl) youtubeModeratorEl.value = cfg.moderator_user_id || chatId;
         toggleYoutubeModeratorField();
 
         // Автозагрузка каналов Buffer для восстановления select
@@ -2313,6 +2321,10 @@ function toggleTelegramModeratorField() {
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
     }
+    if (premoderation) {
+        const input = document.getElementById('contentModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 function toggleVkModeratorField() {
@@ -2320,6 +2332,10 @@ function toggleVkModeratorField() {
     const moderatorField = document.getElementById('vkModeratorField');
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+        const input = document.getElementById('vkModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
     }
 }
 
@@ -2329,6 +2345,10 @@ function toggleOkModeratorField() {
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
     }
+    if (premoderation) {
+        const input = document.getElementById('okModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 function toggleYoutubeModeratorField() {
@@ -2336,6 +2356,10 @@ function toggleYoutubeModeratorField() {
     const moderatorField = document.getElementById('youtubeModeratorField');
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+        const input = document.getElementById('youtubeModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
     }
 }
 
@@ -2533,9 +2557,13 @@ function setVkVideoScheduleEndTimeInputs(timeValue) {
 }
 
 function toggleVkVideoModeratorField() {
-    const checkbox = document.getElementById('vkVideoPremoderation');
+    const premoderation = document.getElementById('vkVideoPremoderation')?.checked || false;
     const field = document.getElementById('vkVideoModeratorField');
-    if (field) field.style.display = (checkbox && checkbox.checked) ? 'flex' : 'none';
+    if (field) field.classList.toggle('visible', premoderation);
+    if (premoderation) {
+        const input = document.getElementById('vkVideoModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function loadVkVideoConfig() {
@@ -2580,7 +2608,7 @@ async function loadVkVideoConfig() {
             premoderEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
         }
         const vkVideoModeratorEl = document.getElementById('vkVideoModeratorUserId');
-        if (vkVideoModeratorEl) vkVideoModeratorEl.value = cfg.moderator_user_id || '';
+        if (vkVideoModeratorEl) vkVideoModeratorEl.value = cfg.moderator_user_id || chatId;
         toggleVkVideoModeratorField();
 
     } catch (e) {
@@ -2771,9 +2799,13 @@ async function disconnectTiktok() {
 }
 
 function toggleTiktokModeratorField() {
-    const premod = document.getElementById('tiktokPremoderation');
+    const premoderation = document.getElementById('tiktokPremoderation')?.checked || false;
     const field = document.getElementById('tiktokModeratorField');
-    if (field) field.style.display = premod?.checked ? 'block' : 'none';
+    if (field) field.classList.toggle('visible', premoderation);
+    if (premoderation) {
+        const input = document.getElementById('tiktokModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function saveTiktokSettings() {
@@ -2927,7 +2959,7 @@ async function loadTiktokConfig() {
             premodEl.checked = !cfg.auto_publish;
         }
         const tiktokModeratorEl = document.getElementById('tiktokModeratorUserId');
-        if (tiktokModeratorEl) tiktokModeratorEl.value = cfg.moderator_user_id || '';
+        if (tiktokModeratorEl) tiktokModeratorEl.value = cfg.moderator_user_id || chatId;
         toggleTiktokModeratorField();
 
     } catch (e) {
@@ -3049,9 +3081,13 @@ async function disconnectInstagramReels() {
 }
 
 function toggleInstagramReelsModeratorField() {
-    const premod = document.getElementById('instagramReelsPremoderation');
+    const premoderation = document.getElementById('instagramReelsPremoderation')?.checked || false;
     const field = document.getElementById('instagramReelsModeratorField');
-    if (field) field.style.display = premod?.checked ? 'block' : 'none';
+    if (field) field.classList.toggle('visible', premoderation);
+    if (premoderation) {
+        const input = document.getElementById('instagramReelsModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function loadInstagramReelsConfig() {
@@ -3121,7 +3157,7 @@ async function loadInstagramReelsConfig() {
         const premodEl = document.getElementById('instagramReelsPremoderation');
         if (premodEl && cfg.auto_publish !== undefined) premodEl.checked = !cfg.auto_publish;
         const modEl = document.getElementById('instagramReelsModeratorUserId');
-        if (modEl) modEl.value = cfg.moderator_user_id || '';
+        if (modEl) modEl.value = cfg.moderator_user_id || chatId;
         toggleInstagramReelsModeratorField();
 
     } catch (e) {
