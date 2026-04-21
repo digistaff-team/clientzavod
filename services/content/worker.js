@@ -457,13 +457,13 @@ async function scheduleBlogPostsForChat(chatId) {
   }
 
   // [П1] Queue overflow guard: не добавляем в очередь если уже достаточно задач
-  let queueStats = { queued: 0, processing: 0 };
+  let queueStats = { queued: 0, processing: 0, failed: 0 };
   try {
     queueStats = await queueRepo.getQueueStats(chatId);
   } catch (statsErr) {
     console.warn(`[CONTENT-WORKER-BLOG] getQueueStats failed, skipping queue guard: ${statsErr.message}`);
   }
-  const inFlight = (queueStats.queued || 0) + (queueStats.processing || 0);
+  const inFlight = (queueStats.queued || 0) + (queueStats.processing || 0) + (queueStats.failed || 0);
   if (inFlight >= perDayLimit) {
     return;
   }
