@@ -267,12 +267,6 @@ function _buildPrompt(productContext, interior, lighting, angle) {
 
   parts.push(productContext);
 
-  const light = lighting || LIGHTING_VARIANTS[Math.floor(Math.random() * LIGHTING_VARIANTS.length)];
-  parts.push(light);
-
-  const shot = angle || ANGLE_VARIANTS[Math.floor(Math.random() * ANGLE_VARIANTS.length)];
-  parts.push(shot);
-
   parts.push('no text, no logos, no watermarks');
   parts.push('photorealistic, commercial photography, 4K');
 
