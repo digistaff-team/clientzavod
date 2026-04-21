@@ -236,17 +236,7 @@
   window.runWordpressNow = async function () {
     const chatId = chat();
     if (!chatId) return;
-    setStatus('Постановка задачи...', '#666');
-    try {
-      const r = await jfetch(`${API}/wordpress/run-now`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId })
-      });
-      setStatus(`✅ ${r.message || 'Задача поставлена'}`, '#0a0');
-    } catch (e) {
-      setStatus(`❌ ${e.message}`, '#c00');
-    }
+    await runChannelNow(`${API}/wordpress/run-now`, { chatId }, 'wordpressRunNowBtn', 'wordpressSettingsStatus', 'Задача поставлена');
   };
 
 

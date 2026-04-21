@@ -320,42 +320,8 @@ window.saveFacebookConfig = async function() {
  */
 window.runFacebookNow = async function() {
     const chatId = getChatId();
-    if (!chatId) {
-        setFbStatus('Сначала войдите в систему', '#c00');
-        return;
-    }
-
-    try {
-        const btn = $('fbRunNowBtn');
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = '⏳ Генерация...';
-        }
-
-        setFbSettingsStatus('Запуск генерации...', '#666');
-
-        await jfetch(`${API_CONTENT}/facebook/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: chatId,
-                reason: 'manual_ui'
-            })
-        });
-
-        setFbSettingsStatus('✅ Генерация запущена. Проверьте статус в разделе "Контент"', '#0a0');
-        showToast('Facebook генерация запущена', 'success');
-
-    } catch (e) {
-        setFbSettingsStatus(`❌ ${e.message}`, '#c00');
-        console.error('runFacebookNow:', e);
-    } finally {
-        const btn = $('fbRunNowBtn');
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = '▶️ Тест сейчас';
-        }
-    }
+    if (!chatId) return;
+    await runChannelNow(`${API_CONTENT}/facebook/run-now`, { chat_id: chatId, reason: 'manual_ui' }, 'fbRunNowBtn', 'facebookSettingsStatus', 'Задача запущена');
 };
 
 // Утилиты

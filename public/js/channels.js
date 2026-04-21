@@ -1,6 +1,38 @@
 const API_MANAGE = `${window.location.origin}/api/manage`;
 const API_CONTENT = `${window.location.origin}/api/content`;
 
+async function runChannelNow(url, body, btnId, statusElId, defaultMsg) {
+    const btn = btnId ? document.getElementById(btnId) : null;
+    const statusEl = statusElId ? document.getElementById(statusElId) : null;
+    const origText = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
+    if (statusEl) statusEl.innerHTML = '<span style="color:#888;">Запуск генерации...</span>';
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        let data;
+        try { data = await res.json(); } catch { data = {}; }
+        if (res.ok && data.ok !== false) {
+            const msg = data.message || defaultMsg || 'Готово';
+            showToast(msg, 'success');
+            if (statusEl) statusEl.innerHTML = `<span style="color:#0a0;">✅ ${msg}</span>`;
+        } else {
+            const errMsg = data.error || data.message || `HTTP ${res.status}`;
+            showToast(errMsg, 'error');
+            if (statusEl) statusEl.innerHTML = `<span style="color:#c00;">❌ ${errMsg}</span>`;
+        }
+    } catch (e) {
+        const errMsg = 'Ошибка сети: ' + e.message;
+        showToast(errMsg, 'error');
+        if (statusEl) statusEl.innerHTML = `<span style="color:#c00;">❌ ${errMsg}</span>`;
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = origText; }
+    }
+}
+
 // === Модератор: автозаполнение и проверка подписки на @czcw_bot ===
 
 const ALL_MODERATOR_FIELDS = [
@@ -1112,25 +1144,7 @@ function togglePinterestModeratorField() {
 async function runPinterestNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = event?.target;
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
-    try {
-        const res = await fetch(`${API_CONTENT}/pinterest/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-            showToast(data.message || 'Пин сгенерирован', 'success');
-        } else {
-            showToast(data.error || data.message || 'Ошибка генерации', 'error');
-        }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_CONTENT}/pinterest/run-now`, { chat_id: chatId, reason: 'ui_manual' }, 'pinterestRunNowBtn', 'pinterestSettingsStatus', 'Пин сгенерирован');
 }
 
 async function savePinterestConfig() {
@@ -1731,38 +1745,7 @@ async function saveVkSettings() {
 async function runVkNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = document.getElementById('vkRunNowBtn');
-    const statusEl = document.getElementById('vkSettingsStatus');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
-    if (statusEl) { statusEl.innerHTML = '<span style="color:#888;">Генерация VK-поста... Это может занять 2-3 минуты.</span>'; }
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 минуты
-        const res = await fetch(`${API_CONTENT}/vk/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' }),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        const text = await res.text();
-        let data;
-        try { data = JSON.parse(text); } catch { data = { error: text || `HTTP ${res.status}` }; }
-        if (res.ok && data.ok) {
-            showToast(data.message || 'Задача в очереди', 'success');
-            if (statusEl) { statusEl.innerHTML = '<span style="color:#0a0;">✅ ' + (data.message || 'Задача в очереди') + '. Черновик придёт в Telegram.</span>'; }
-        } else {
-            const errMsg = data.error || data.message || `HTTP ${res.status}`;
-            showToast(errMsg, 'error');
-            if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
-        }
-    } catch (e) {
-        const errMsg = e.name === 'AbortError' ? 'Таймаут (3 мин). Проверьте логи сервера.' : ('Ошибка сети: ' + e.message);
-        showToast(errMsg, 'error');
-        if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_CONTENT}/vk/run-now`, { chat_id: chatId, reason: 'ui_manual' }, 'vkRunNowBtn', 'vkSettingsStatus', 'Задача в очереди');
 }
 
 // === Одноклассники ===
@@ -1987,62 +1970,13 @@ async function saveOkSettings() {
 async function runOkNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = document.getElementById('okRunNowBtn');
-    const statusEl = document.getElementById('okSettingsStatus');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
-    if (statusEl) { statusEl.innerHTML = '<span style="color:#888;">Генерация ОК-поста... Это может занять 2-3 минуты.</span>'; }
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 180000);
-        const res = await fetch(`${API_CONTENT}/ok/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' }),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        const text = await res.text();
-        let data;
-        try { data = JSON.parse(text); } catch { data = { error: text || `HTTP ${res.status}` }; }
-        if (res.ok && data.ok) {
-            showToast(data.message || 'Задача в очереди', 'success');
-            if (statusEl) { statusEl.innerHTML = '<span style="color:#0a0;">✅ ' + (data.message || 'Задача в очереди') + '. Черновик придёт в Telegram.</span>'; }
-        } else {
-            const errMsg = data.error || data.message || `HTTP ${res.status}`;
-            showToast(errMsg, 'error');
-            if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
-        }
-    } catch (e) {
-        const errMsg = e.name === 'AbortError' ? 'Таймаут (3 мин). Проверьте логи сервера.' : ('Ошибка сети: ' + e.message);
-        showToast(errMsg, 'error');
-        if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_CONTENT}/ok/run-now`, { chat_id: chatId, reason: 'ui_manual' }, 'okRunNowBtn', 'okSettingsStatus', 'Задача в очереди');
 }
 
 async function runTelegramNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = document.getElementById('telegramRunNowBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
-    try {
-        const res = await fetch(`${API_CONTENT}/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-            showToast(data.message || 'Контент сгенерирован', 'success');
-        } else {
-            showToast(data.error || data.message || 'Ошибка генерации', 'error');
-        }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_CONTENT}/run-now`, { chat_id: chatId, reason: 'ui_manual' }, 'telegramRunNowBtn', 'contentSettingsStatus', 'Контент сгенерирован');
 }
 
 // ============================================
@@ -2336,30 +2270,7 @@ function toggleYoutubeModeratorField() {
 async function runYoutubeNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = document.getElementById('youtubeRunNowBtn');
-    const statusEl = document.getElementById('youtubeSettingsStatus');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
-
-    try {
-        const res = await fetch(`${API_MANAGE}/channels/youtube/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId })
-        });
-        const data = await res.json();
-        if (res.ok && data.ok) {
-            showToast(data.message || 'YouTube задача в очереди', 'success');
-            if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ ' + (data.message || 'Задача в очереди') + '</span>';
-        } else {
-            showToast(data.error || data.message || 'Ошибка', 'error');
-            if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ ' + (data.error || data.message || 'Ошибка') + '</span>';
-        }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-        if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ Ошибка сети</span>';
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_MANAGE}/channels/youtube/run-now`, { chat_id: chatId }, 'youtubeRunNowBtn', 'youtubeSettingsStatus', 'Задача в очереди');
 }
 
 // ============================================
@@ -2637,25 +2548,7 @@ async function saveVkVideoSettings() {
 async function runVkVideoNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = document.getElementById('vkVideoRunNowBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Запуск...'; }
-    try {
-        const res = await fetch(`${API_MANAGE}/channels/vk-video/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId })
-        });
-        const data = await res.json();
-        if (res.ok) {
-            showToast('VK Видео: генерация запущена', 'success');
-        } else {
-            showToast(data.error || 'Ошибка запуска', 'error');
-        }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_MANAGE}/channels/vk-video/run-now`, { chat_id: chatId }, 'vkVideoRunNowBtn', 'vkVideoSettingsStatus', 'Задача в очереди');
 }
 
 // ============================================
@@ -2821,38 +2714,7 @@ async function saveTiktokSettings() {
 async function runTiktokNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = document.getElementById('tiktokRunNowBtn');
-    const statusEl = document.getElementById('tiktokSettingsStatus');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
-    if (statusEl) { statusEl.innerHTML = '<span style="color:#888;">Генерация TikTok-видео... Это может занять 2-3 минуты.</span>'; }
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 180000);
-        const res = await fetch(`${API_CONTENT}/tiktok/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, reason: 'ui_manual' }),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        const text = await res.text();
-        let data;
-        try { data = JSON.parse(text); } catch { data = { error: text || `HTTP ${res.status}` }; }
-        if (res.ok && data.ok) {
-            showToast(data.message || 'Задача запущена', 'success');
-            if (statusEl) { statusEl.innerHTML = '<span style="color:#0a0;">✅ ' + (data.message || 'Задача запущена') + '</span>'; }
-        } else {
-            const errMsg = data.error || data.message || `HTTP ${res.status}`;
-            showToast(errMsg, 'error');
-            if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
-        }
-    } catch (e) {
-        const errMsg = e.name === 'AbortError' ? 'Таймаут (3 мин). Проверьте логи сервера.' : ('Ошибка сети: ' + e.message);
-        showToast(errMsg, 'error');
-        if (statusEl) { statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>'; }
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_CONTENT}/tiktok/run-now`, { chat_id: chatId, reason: 'ui_manual' }, 'tiktokRunNowBtn', 'tiktokSettingsStatus', 'Задача запущена');
 }
 
 async function loadTiktokConfig() {
@@ -3164,56 +3026,11 @@ async function saveInstagramReelsSettings() {
 async function runInstagramNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    try {
-        const res = await fetch(`${API_MANAGE}/channels/instagram/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.ok) {
-            showToast(data.message || 'Задача запущена', 'success');
-        } else {
-            showToast(data.message || data.error || 'Ошибка', 'error');
-        }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    }
+    await runChannelNow(`${API_MANAGE}/channels/instagram/run-now`, { chat_id: chatId }, 'instagramRunNowBtn', 'instagramSettingsStatus', 'Задача запущена');
 }
 
 async function runInstagramReelsNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    const btn = document.getElementById('instagramReelsRunNowBtn');
-    const statusEl = document.getElementById('instagramReelsSettingsStatus');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерация...'; }
-    if (statusEl) statusEl.innerHTML = '<span style="color:#888;">Генерация Instagram Reels... Это может занять 2-3 минуты.</span>';
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 180000);
-        const res = await fetch(`${API_MANAGE}/channels/instagram-reels/run-now`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId }),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        const text = await res.text();
-        let data;
-        try { data = JSON.parse(text); } catch { data = { error: text || `HTTP ${res.status}` }; }
-        if (res.ok && data.ok) {
-            showToast(data.message || 'Задача запущена', 'success');
-            if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ ' + (data.message || 'Задача запущена') + '</span>';
-        } else {
-            const errMsg = data.error || data.message || `HTTP ${res.status}`;
-            showToast(errMsg, 'error');
-            if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>';
-        }
-    } catch (e) {
-        const errMsg = e.name === 'AbortError' ? 'Таймаут (3 мин). Проверьте логи сервера.' : ('Ошибка сети: ' + e.message);
-        showToast(errMsg, 'error');
-        if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>';
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶️ Тест сейчас'; }
-    }
+    await runChannelNow(`${API_MANAGE}/channels/instagram-reels/run-now`, { chat_id: chatId }, 'instagramReelsRunNowBtn', 'instagramReelsSettingsStatus', 'Задача запущена');
 }
