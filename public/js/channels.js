@@ -1323,8 +1323,6 @@ async function loadInstagramConfig() {
             if (cfg.buffer_channel_id) {
                 document.getElementById('instagramBufferChannelId').value = cfg.buffer_channel_id;
             }
-            if (cfg.location_id) document.getElementById('instagramLocationId').value = cfg.location_id;
-
             const isReelEl = document.getElementById('instagramIsReel');
             if (isReelEl) isReelEl.checked = !!cfg.is_reel;
             const dailyLimitEl = document.getElementById('instagramDailyLimit');
@@ -1451,7 +1449,6 @@ async function saveInstagramConfig() {
     if (!chatId) return;
 
     const bufferChannelId = (document.getElementById('instagramBufferChannelId')?.value || '').trim();
-    const locationId = (document.getElementById('instagramLocationId')?.value || '').trim();
     const isReel = !!document.getElementById('instagramIsReel')?.checked;
     const dailyLimit = parseInt(document.getElementById('instagramDailyLimit')?.value || '5', 10);
 
@@ -1467,7 +1464,6 @@ async function saveInstagramConfig() {
 
     const body = {
         chat_id: chatId,
-        location_id: locationId,
         is_reel: isReel,
         daily_limit: dailyLimit,
         schedule_time: scheduleTime,
@@ -1509,7 +1505,6 @@ async function disconnectInstagram() {
             document.getElementById('instagramBufferChannelId').value = '';
             const selectEl = document.getElementById('instagramBufferChannelSelect');
             if (selectEl) selectEl.innerHTML = '<option value="">— выберите канал —</option>';
-            document.getElementById('instagramLocationId').value = '';
             await loadInstagramConfig();
         } else {
             showToast('Ошибка отключения', 'error');
