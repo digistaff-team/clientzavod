@@ -336,6 +336,22 @@
     }[c]));
   }
 
+  window.resetWordpressDailyCounter = async function () {
+    const chatId = chat();
+    if (!chatId) return;
+    try {
+      const r = await jfetch(`${API}/wordpress/reset-daily-counter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId })
+      });
+      if (r.ok) showToast('Счётчик публикаций сброшен', 'success');
+      else showToast('Ошибка сброса', 'error');
+    } catch (e) {
+      showToast('Ошибка сети', 'error');
+    }
+  };
+
   // Авто-загрузка при открытии вкладки
   document.addEventListener('click', (ev) => {
     const t = ev.target;

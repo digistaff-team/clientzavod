@@ -1081,7 +1081,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="wordpressDailyLimit">Лимит статей в день</label>
-                                        <input type="number" id="wordpressDailyLimit" min="1" max="10" value="1" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="wordpressDailyLimit" min="1" max="10" value="1" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetWordpressDailyCounter()" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">

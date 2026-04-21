@@ -1337,4 +1337,27 @@ router.post('/wordpress/posts/:id/reject', async (req, res) => {
   }
 });
 
+// POST /api/content/wordpress/reset-daily-counter — сбросить счётчик статей за сегодня
+router.post('/wordpress/reset-daily-counter', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id || req.body.chatId);
+  if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+  try {
+    const wpConfig = manageStore.getWpConfig(chatId);
+    if (!wpConfig) return res.status(400).json({ error: 'WordPress не настроен' });
+    const tz = wpConfig.scheduleTz || 'Europe/Moscow';
+    await contentRepo.withClient(chatId, async (client) => {
+      await client.query(
+        `UPDATE content_posts
+            SET created_at = created_at - INTERVAL '1 day'
+          WHERE content_type = 'blog'
+            AND to_char(created_at AT TIME ZONE $1, 'YYYY-MM-DD') = to_char(NOW() AT TIME ZONE $1, 'YYYY-MM-DD')`,
+        [tz]
+      );
+    });
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
