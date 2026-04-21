@@ -576,7 +576,6 @@ function setIntegrationSettings(chatId, patch = {}) {
     const current = statesCache[chatId].integrationSettings || {};
     const next = { ...current };
     if (patch.buffer_api_key !== undefined) next.buffer_api_key = patch.buffer_api_key || null;
-    if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
     statesCache[chatId].integrationSettings = next;
     return persist(chatId);
 }
@@ -590,11 +589,6 @@ function migrateIntegrationSettings(chatId) {
     if (!current.buffer_api_key) {
         for (const key of ['pinterestConfig', 'instagramConfig', 'youtubeConfig', 'facebookConfig', 'tiktokConfig']) {
             if (data[key]?.buffer_api_key) { patch.buffer_api_key = data[key].buffer_api_key; break; }
-        }
-    }
-    if (!current.moderator_user_id) {
-        for (const key of ['pinterestConfig', 'instagramConfig', 'youtubeConfig', 'facebookConfig', 'tiktokConfig', 'vkVideoConfig']) {
-            if (data[key]?.moderator_user_id) { patch.moderator_user_id = data[key].moderator_user_id; break; }
         }
     }
     if (Object.keys(patch).length > 0) setIntegrationSettings(chatId, patch);

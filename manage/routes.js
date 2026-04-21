@@ -1623,6 +1623,18 @@ router.post('/channels/instagram-reels', async (req, res) => {
     }
 });
 
+router.post('/channels/instagram/run-now', async (req, res) => {
+    try {
+        const { chat_id: chatId } = req.body;
+        if (!chatId) return res.status(400).json({ error: 'chat_id required' });
+        const igMvp = require('../services/instagramMvp.service');
+        const result = await igMvp.runNow(chatId, null, 'manual');
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
 router.post('/channels/instagram-reels/run-now', async (req, res) => {
     try {
         const { chat_id: chatId } = req.body;
@@ -1659,8 +1671,7 @@ router.get('/integrations', (req, res) => {
     manageStore.migrateIntegrationSettings(chatId);
     const s = manageStore.getIntegrationSettings(chatId) || {};
     res.json({ settings: {
-        buffer_api_key: s.buffer_api_key ? s.buffer_api_key.slice(0, 6) + '***' : null,
-        moderator_user_id: s.moderator_user_id || null
+        buffer_api_key: s.buffer_api_key ? s.buffer_api_key.slice(0, 6) + '***' : null
     }});
 });
 
@@ -1669,9 +1680,8 @@ router.post('/integrations', async (req, res) => {
     const chatId = req.body.chat_id;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
     const patch = {};
-    const { buffer_api_key, moderator_user_id } = req.body;
+    const { buffer_api_key } = req.body;
     if (buffer_api_key !== undefined && !String(buffer_api_key).endsWith('***')) patch.buffer_api_key = buffer_api_key;
-    if (moderator_user_id !== undefined) patch.moderator_user_id = moderator_user_id;
     try {
         await manageStore.setIntegrationSettings(chatId, patch);
         res.json({ success: true });

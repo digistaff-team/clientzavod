@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs').promises;
 const fetch = require('node-fetch');
+const sharp = require('sharp');
 const config = require('../config');
 const aiRouterService = require('./ai_router_service');
 const manageStore = require('../manage/store');
@@ -82,7 +83,7 @@ function getIgSettings(chatId) {
     randomPublish: !!cfg?.random_publish,
     premoderationEnabled: cfg?.auto_publish === true ? false : true,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
-    moderator_user_id: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
+    moderator_user_id: cfg?.moderator_user_id || globalInt.moderator_user_id || null,
     stats: cfg?.stats || { total_posts: 0, posts_today: 0, last_post_date: null }
   };
 }
@@ -103,7 +104,7 @@ function getIgReelsSettings(chatId) {
     randomPublish: !!cfg?.random_publish,
     premoderationEnabled: cfg?.auto_publish === true ? false : true,
     allowedWeekdays: Array.isArray(cfg?.allowed_weekdays) ? cfg.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
-    moderator_user_id: globalInt.moderator_user_id || cfg?.moderator_user_id || null,
+    moderator_user_id: cfg?.moderator_user_id || globalInt.moderator_user_id || null,
     stats: cfg?.stats || { total_posts: 0, posts_today: 0, last_post_date: null }
   };
 }
@@ -381,7 +382,11 @@ async function publishIgPost(chatId, bot, jobId, correlationId) {
   const cfg = manageStore.getInstagramConfig(chatId);
   if (!cfg) throw new Error('Instagram не настроен');
 
-  if (!cfg.buffer_api_key || !cfg.buffer_channel_id) {
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
+  const bufferApiKey = globalInt.buffer_api_key || cfg.buffer_api_key;
+  const bufferChannelId = cfg.buffer_channel_id;
+
+  if (!bufferApiKey || !bufferChannelId) {
     throw new Error('Buffer API key или channel_id не настроены для Instagram');
   }
 
@@ -390,19 +395,25 @@ async function publishIgPost(chatId, bot, jobId, correlationId) {
   const tempPath = path.join(os.tmpdir(), `ig-publish-${chatId}-${jobId}.png`);
   await dockerService.copyFromContainer(session.containerId, job.image_path, tempPath);
 
-  let imageBuffer = await fs.readFile(tempPath);
+  const rawBuffer = await fs.readFile(tempPath);
   await fs.unlink(tempPath).catch(() => {});
 
-  // Сохраняем на хост для публичного доступа
+  // Конвертируем в 1080×1080 JPEG — требование Instagram
+  const jpegBuffer = await sharp(rawBuffer)
+    .resize(1080, 1080, { fit: 'cover', position: 'centre' })
+    .jpeg({ quality: 92 })
+    .toBuffer();
+
   const hostDir = path.join(storageService.getDataDir(chatId), 'output', 'content');
   await fs.mkdir(hostDir, { recursive: true });
-  await fs.writeFile(path.join(hostDir, `ig_${jobId}.png`), imageBuffer);
+  const hostFilename = `ig_${jobId}.jpg`;
+  await fs.writeFile(path.join(hostDir, hostFilename), jpegBuffer);
 
-  // Публикация через Buffer
-  const imageUrl = `${config.APP_URL}/api/files/public/${chatId}/ig_${jobId}.png`;
+  const imageUrl = `${config.APP_URL}/api/files/public/${chatId}/${hostFilename}`;
+  console.log(`[IG-MVP] Publishing 1080x1080 JPEG via Buffer, size=${jpegBuffer.length} bytes`);
   let text = String(job.caption || '').slice(0, 2200);
 
-  const bufferResult = await bufferService.createPost(cfg.buffer_api_key, cfg.buffer_channel_id, { text, imageUrl });
+  const bufferResult = await bufferService.createPost(bufferApiKey, bufferChannelId, { text, imageUrl, instagramType: 'post' });
   console.log(`[IG-MVP] Published via Buffer, postId=${bufferResult.postId}`);
 
   // Запись в лог
@@ -451,11 +462,12 @@ async function publishIgPost(chatId, bot, jobId, correlationId) {
 async function sendIgToModerator(chatId, bot, draft) {
   const igSettings = getIgSettings(chatId);
   const globalSettings = manageStore.getContentSettings?.(chatId);
-  
+
   // Иерархия: модератор канала → глобальный модератор → chatId
-  const moderatorId = igSettings?.moderator_user_id || 
-                      globalSettings?.moderatorUserId || 
+  const moderatorId = igSettings?.moderator_user_id ||
+                      globalSettings?.moderatorUserId ||
                       chatId;
+  console.log(`[IG-MODERATION] Sending draft #${draft.jobId} to moderator ${moderatorId}, chatId=${chatId}`);
 
   const caption = [
     `📷 Черновик для Instagram #${draft.jobId}`,
@@ -486,11 +498,29 @@ async function sendIgToModerator(chatId, bot, draft) {
     
     // Используем cwBot если он есть и у пользователя нет своего бота
     const moderatorBot = cwBot && cwBot.token !== bot?.token ? cwBot : bot;
+    console.log(`[IG-MODERATION] Using bot: ${moderatorBot === cwBot ? 'cwBot' : 'user bot'}, imagePath=${draft.imagePath}`);
     const sent = await safeSendToModerator({
       sendFn: () => moderatorBot.telegram.sendPhoto(moderatorId, { source: tempPath }, { caption, reply_markup: kb }),
       chatId, moderatorId, notifyBot: bot || cwBot
     });
+    console.log(`[IG-MODERATION] Draft #${draft.jobId} sent, messageId=${sent?.message_id}`);
     await fs.unlink(tempPath).catch(() => {});
+
+    // Сохраняем Telegram CDN URL — Instagram может скачать его, в отличие от нашего сервера
+    if (sent?.photo?.length && moderatorBot?.telegram) {
+      try {
+        const fileId = sent.photo[sent.photo.length - 1].file_id;
+        const fileInfo = await moderatorBot.telegram.getFile(fileId);
+        const cwBotToken = process.env.CW_BOT_TOKEN;
+        if (fileInfo?.file_path && cwBotToken) {
+          const telegramImageUrl = `https://api.telegram.org/file/bot${cwBotToken}/${fileInfo.file_path}`;
+          await igRepo.updateJob(chatId, draft.jobId, { telegramImageUrl });
+          console.log(`[IG-MODERATION] Telegram image URL saved for job ${draft.jobId}`);
+        }
+      } catch (e) {
+        console.warn(`[IG-MODERATION] Could not get Telegram file URL: ${e.message}`);
+      }
+    }
 
     await setDraft(chatId, String(draft.jobId), {
       ...draft,

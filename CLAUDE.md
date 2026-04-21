@@ -38,6 +38,9 @@ node tests/youtube.mvp.test.js
 # E2E (Playwright)
 npm run test:e2e
 npm run test:e2e:smoke                      # Только critical path
+npm run test:e2e:ui                         # Headed + UI mode
+npm run test:e2e:debug                      # Debugger
+npm run test:e2e:ci                         # HTML reporter
 
 # Docker
 docker-compose restart app     # Применить изменения кода
@@ -71,7 +74,7 @@ AI агент (agentLoop) обрабатывает сообщения через
 ### Два Telegram-бота
 
 - **Auth Bot** (`AUTH_BOT_TOKEN`, `manage/telegram/authBot.js`) — `/start`, выдаёт login-токен
-- **CW Bot** (`CW_BOT_TOKEN`) — модерация контента для всех пользователей. Callback-префиксы: `content:` (TG), `vk_mod:`, `ok_mod:`, `ig_mod:`, `yt_mod:`, `pin_mod:`, `wp_mod:`, `tt_mod:`, `vk_vid_mod:`. Webhook или long polling fallback
+- **CW Bot** (`CW_BOT_TOKEN`) — модерация контента для всех пользователей. Callback-префиксы: `content:` (TG), `vk_mod:`, `ok_mod:`, `ig_mod:`, `yt_mod:`, `pin_mod:`, `wp_mod:`, `tt_mod:`, `vk_vid_mod:`, `fb_mod:`. Webhook или long polling fallback. **ВАЖНО:** `moderator_user_id` хранится в JSON как число, `fromId` из Telegram всегда строка — сравнивать только через `String()`, иначе `Set.has()` молча не срабатывает.
 - Режимы user-бота: CHAT, WORKSPACE, TERMINAL
 
 ### Базы данных
@@ -79,6 +82,13 @@ AI агент (agentLoop) обрабатывает сообщения через
 1. **PostgreSQL центральная** (`clientzavod`) — `content_queue`, `content_channels`, `content_analytics`, `content_templates`, `content_assets`, `content_workflow`, `content_import_sources`
 2. **PostgreSQL per-user** (`db_{chatId}`) — `content_jobs`, `content_posts`, `content_job_queue`, `publish_logs`, `content_topics`, `content_config`, `content_knowledge_base`, `vk_jobs`, `ok_jobs`, `pinterest_jobs`, `facebook_jobs`, `video_assets`, `interiors`, `video_channel_usage`
 3. **MySQL** (`ai_skills_db`) — `ai_skills`, `user_selected_skills`. Init: `services/mysql/init.sql`
+
+**Три хоста PostgreSQL в `config.js`:**
+- `PG_HOST` — основное подключение из Node.js
+- `PG_ADMIN_HOST` — операции CREATE/DROP DB (admin ops)
+- `PG_SANDBOX_HOST` — передаётся в sandbox-контейнеры через `DATABASE_URL`
+
+В Docker они часто различаются (bridge IP vs container localhost). Несовпадение вызывает молчаливые сбои при провизионинге `db_{chatId}`.
 
 ### Маршрутизация
 
@@ -109,11 +119,15 @@ AI агент (agentLoop) обрабатывает сообщения через
 
 Facebook хранит `topic_id` в `facebook_jobs` для вызова `updateTopicStatus` после публикации.
 
+**Конфиги каналов в `manage-state-{chatId}.json`** хранятся как отдельные ключи: `instagramConfig`, `facebookConfig`, `vkConfig`, `okConfig`, `pinterestConfig`, `wordpressConfig`, `tiktokConfig`. Глобальный `buffer_api_key` — в `integrationSettings`. Instagram требует привязки аккаунта к Facebook Странице для прямой публикации через Buffer (иначе ошибка "media issue"). После переподключения канала в Buffer его ID меняется — нужно перевыбрать в настройках канала.
+
 ### Контент-пайплайн
 
 FSM: `draft → ready → approved → published` (+ `error/failed`).
 
 AI генерирует черновик → если `premoderationEnabled` → CW Bot (✅/🔁/❌) → очередь → worker → публикация. `services/content/`: `index.js`, `repository.js`, `queue.repository.js`, `worker.js`, `status.js`, `validators.js`, `limits.js`, `video.service.js`, `alerts.js`.
+
+`services/content/index.js` — фасад, экспортирует: `STATUS`, `validateJobStatusTransition`, `repository`, `worker`, `queueRepo`. Канальные репозитории (`vk`, `ok`, `pinterest`, `youtube`, `instagram`, `wordpress`, `facebook`) — **отдельные модули**, не реэкспортируются из index.
 
 ### Frontend (КРИТИЧНЫЕ ПРАВИЛА)
 

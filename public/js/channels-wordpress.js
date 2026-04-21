@@ -107,7 +107,7 @@
         toggleWordpressModeratorField();
       }
       const moderatorEl = $('wordpressModeratorUserId');
-      if (moderatorEl) moderatorEl.value = c.moderatorUserId || '';
+      if (moderatorEl) moderatorEl.value = c.moderatorUserId || getChatId() || '';
       if (c.defaultCategoryId) $('wordpressDefaultCategoryId').value = c.defaultCategoryId;
     } catch (e) {
       console.warn('loadWordpressConfig:', e.message);
@@ -209,6 +209,10 @@
     const moderatorField = $('wordpressModeratorField');
     if (moderatorField) {
       moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+      const input = $('wordpressModeratorUserId');
+      if (input && !input.value.trim()) input.value = getChatId() || '';
     }
   };
 

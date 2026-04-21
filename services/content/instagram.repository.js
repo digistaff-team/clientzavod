@@ -50,6 +50,7 @@ async function ensureSchema(chatId) {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+    await client.query(`ALTER TABLE instagram_jobs ADD COLUMN IF NOT EXISTS telegram_image_url TEXT`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_instagram_jobs_status ON instagram_jobs(status, created_at)`);
 
     await client.query(`
@@ -100,7 +101,8 @@ async function updateJob(chatId, jobId, data) {
       imagePrompt: 'image_prompt', imagePath: 'image_path',
       status: 'status', errorText: 'error_text',
       imageAttempts: 'image_attempts', rejectedCount: 'rejected_count',
-      bufferPostId: 'buffer_post_id', correlationId: 'correlation_id'
+      bufferPostId: 'buffer_post_id', correlationId: 'correlation_id',
+      telegramImageUrl: 'telegram_image_url'
     };
 
     for (const [jsKey, dbCol] of Object.entries(map)) {

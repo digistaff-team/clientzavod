@@ -742,7 +742,6 @@ async function loadIntegrationSettings() {
         const data = await res.json();
         const s = data.settings || {};
         const keyEl = document.getElementById('globalBufferApiKey');
-        const modEl = document.getElementById('globalModeratorUserId');
         if (s.buffer_api_key) {
             if (keyEl) keyEl.value = s.buffer_api_key;
             // Populate all per-channel Buffer API Token fields
@@ -750,7 +749,6 @@ async function loadIntegrationSettings() {
                 el.value = s.buffer_api_key;
             });
         }
-        if (modEl && s.moderator_user_id) modEl.value = s.moderator_user_id;
     } catch (e) { console.error('loadIntegrationSettings error:', e); }
 }
 
@@ -758,11 +756,9 @@ async function saveIntegrationSettings() {
     const chatId = getChatId();
     if (!chatId) return;
     const apiKey = (document.getElementById('globalBufferApiKey')?.value || '').trim();
-    const modId = (document.getElementById('globalModeratorUserId')?.value || '').trim();
     const statusEl = document.getElementById('integrationsStatus');
     const body = { chat_id: chatId };
     if (apiKey && !apiKey.endsWith('***')) body.buffer_api_key = apiKey;
-    if (modId) body.moderator_user_id = modId;
     try {
         const res = await fetch(`${API_MANAGE}/integrations`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -924,7 +920,7 @@ async function loadPinterestConfig() {
             premoderEl.checked = !!cfg.premoderation_enabled;
         }
         const pinterestModeratorEl = document.getElementById('pinterestModeratorUserId');
-        if (pinterestModeratorEl) pinterestModeratorEl.value = cfg.moderator_user_id || '';
+        if (pinterestModeratorEl) pinterestModeratorEl.value = cfg.moderator_user_id || chatId;
         togglePinterestModeratorField();
         // Устанавливаем выбранную доску в select
         const boardSelect = document.getElementById('pinterestBoardSelect');
@@ -1107,6 +1103,10 @@ function togglePinterestModeratorField() {
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
     }
+    if (premoderation) {
+        const input = document.getElementById('pinterestModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function runPinterestNow() {
@@ -1228,7 +1228,22 @@ async function disconnectPinterest() {
 
 function fetchInstagramBufferChannels() {
     const apiKey = getBufferApiKey('instagramBufferApiKey');
-    loadBufferChannels(apiKey, 'instagram', 'instagramBufferChannelSelect', getChatId());
+    loadBufferChannels(apiKey, 'instagram', 'instagramBufferChannelSelect', getChatId()).then(() => {
+        const selectEl = document.getElementById('instagramBufferChannelSelect');
+        const hiddenEl = document.getElementById('instagramBufferChannelId');
+        if (!selectEl || !hiddenEl) return;
+        const currentVal = hiddenEl.value;
+        const optionExists = Array.from(selectEl.options).some(opt => opt.value === currentVal);
+        if (!optionExists) {
+            const firstReal = Array.from(selectEl.options).find(opt => opt.value);
+            if (firstReal) {
+                selectEl.value = firstReal.value;
+                hiddenEl.value = firstReal.value;
+            } else {
+                hiddenEl.value = '';
+            }
+        }
+    });
 }
 
 function onInstagramChannelSelectChange() {
@@ -1345,10 +1360,10 @@ async function loadInstagramConfig() {
 
             const premoderationEl = document.getElementById('instagramPremoderation');
             if (premoderationEl) {
-                premoderationEl.checked = !!cfg.premoderation;
+                premoderationEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
             }
             const instagramModeratorEl = document.getElementById('instagramModeratorUserId');
-            if (instagramModeratorEl) instagramModeratorEl.value = cfg.moderator_user_id || '';
+            if (instagramModeratorEl) instagramModeratorEl.value = cfg.moderator_user_id || chatId;
             toggleInstagramModeratorField();
         } else {
             statusEl.textContent = '';
@@ -1433,6 +1448,10 @@ function toggleInstagramModeratorField() {
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
     }
+    if (premoderation) {
+        const input = document.getElementById('instagramModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function saveInstagramConfig() {
@@ -1467,7 +1486,7 @@ async function saveInstagramConfig() {
         publish_interval_hours: publishInterval,
         allowed_weekdays: allowedWeekdays,
         random_publish: randomPublish,
-        premoderation: premoderation,
+        auto_publish: !premoderation,
         moderator_user_id: instagramModeratorUserId
     };
     if (bufferChannelId) body.buffer_channel_id = bufferChannelId;
@@ -2102,7 +2121,7 @@ async function loadYoutubeConfig() {
             premoderEl.checked = !!cfg.premoderation_enabled;
         }
         const youtubeModeratorEl = document.getElementById('youtubeModeratorUserId');
-        if (youtubeModeratorEl) youtubeModeratorEl.value = cfg.moderator_user_id || '';
+        if (youtubeModeratorEl) youtubeModeratorEl.value = cfg.moderator_user_id || chatId;
         toggleYoutubeModeratorField();
 
         // Автозагрузка каналов Buffer для восстановления select
@@ -2302,6 +2321,10 @@ function toggleTelegramModeratorField() {
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
     }
+    if (premoderation) {
+        const input = document.getElementById('contentModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 function toggleVkModeratorField() {
@@ -2309,6 +2332,10 @@ function toggleVkModeratorField() {
     const moderatorField = document.getElementById('vkModeratorField');
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+        const input = document.getElementById('vkModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
     }
 }
 
@@ -2318,6 +2345,10 @@ function toggleOkModeratorField() {
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
     }
+    if (premoderation) {
+        const input = document.getElementById('okModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 function toggleYoutubeModeratorField() {
@@ -2325,6 +2356,10 @@ function toggleYoutubeModeratorField() {
     const moderatorField = document.getElementById('youtubeModeratorField');
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+        const input = document.getElementById('youtubeModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
     }
 }
 
@@ -2522,9 +2557,13 @@ function setVkVideoScheduleEndTimeInputs(timeValue) {
 }
 
 function toggleVkVideoModeratorField() {
-    const checkbox = document.getElementById('vkVideoPremoderation');
+    const premoderation = document.getElementById('vkVideoPremoderation')?.checked || false;
     const field = document.getElementById('vkVideoModeratorField');
-    if (field) field.style.display = (checkbox && checkbox.checked) ? 'flex' : 'none';
+    if (field) field.classList.toggle('visible', premoderation);
+    if (premoderation) {
+        const input = document.getElementById('vkVideoModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function loadVkVideoConfig() {
@@ -2569,7 +2608,7 @@ async function loadVkVideoConfig() {
             premoderEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
         }
         const vkVideoModeratorEl = document.getElementById('vkVideoModeratorUserId');
-        if (vkVideoModeratorEl) vkVideoModeratorEl.value = cfg.moderator_user_id || '';
+        if (vkVideoModeratorEl) vkVideoModeratorEl.value = cfg.moderator_user_id || chatId;
         toggleVkVideoModeratorField();
 
     } catch (e) {
@@ -2760,9 +2799,13 @@ async function disconnectTiktok() {
 }
 
 function toggleTiktokModeratorField() {
-    const premod = document.getElementById('tiktokPremoderation');
+    const premoderation = document.getElementById('tiktokPremoderation')?.checked || false;
     const field = document.getElementById('tiktokModeratorField');
-    if (field) field.style.display = premod?.checked ? 'block' : 'none';
+    if (field) field.classList.toggle('visible', premoderation);
+    if (premoderation) {
+        const input = document.getElementById('tiktokModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function saveTiktokSettings() {
@@ -2916,7 +2959,7 @@ async function loadTiktokConfig() {
             premodEl.checked = !cfg.auto_publish;
         }
         const tiktokModeratorEl = document.getElementById('tiktokModeratorUserId');
-        if (tiktokModeratorEl) tiktokModeratorEl.value = cfg.moderator_user_id || '';
+        if (tiktokModeratorEl) tiktokModeratorEl.value = cfg.moderator_user_id || chatId;
         toggleTiktokModeratorField();
 
     } catch (e) {
@@ -3038,9 +3081,13 @@ async function disconnectInstagramReels() {
 }
 
 function toggleInstagramReelsModeratorField() {
-    const premod = document.getElementById('instagramReelsPremoderation');
+    const premoderation = document.getElementById('instagramReelsPremoderation')?.checked || false;
     const field = document.getElementById('instagramReelsModeratorField');
-    if (field) field.style.display = premod?.checked ? 'block' : 'none';
+    if (field) field.classList.toggle('visible', premoderation);
+    if (premoderation) {
+        const input = document.getElementById('instagramReelsModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
+    }
 }
 
 async function loadInstagramReelsConfig() {
@@ -3110,7 +3157,7 @@ async function loadInstagramReelsConfig() {
         const premodEl = document.getElementById('instagramReelsPremoderation');
         if (premodEl && cfg.auto_publish !== undefined) premodEl.checked = !cfg.auto_publish;
         const modEl = document.getElementById('instagramReelsModeratorUserId');
-        if (modEl) modEl.value = cfg.moderator_user_id || '';
+        if (modEl) modEl.value = cfg.moderator_user_id || chatId;
         toggleInstagramReelsModeratorField();
 
     } catch (e) {
@@ -3152,6 +3199,26 @@ async function saveInstagramReelsSettings() {
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
             if (statusEl) statusEl.innerHTML = `<span style="color:#c00;">❌ ${data.error || 'Ошибка сохранения'}</span>`;
+        }
+    } catch (e) {
+        showToast('Ошибка сети', 'error');
+    }
+}
+
+async function runInstagramNow() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        const res = await fetch(`${API_MANAGE}/channels/instagram/run-now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+            showToast(data.message || 'Задача запущена', 'success');
+        } else {
+            showToast(data.message || data.error || 'Ошибка', 'error');
         }
     } catch (e) {
         showToast('Ошибка сети', 'error');
