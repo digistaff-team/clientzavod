@@ -86,7 +86,7 @@ function getOkSettings(chatId) {
     groupId: cfg?.group_id || config.OK_GROUP_ID || null,
     accessToken: cfg?.access_token || config.OK_ACCESS_TOKEN || null,
     scheduleTime: settings.schedule_time || '10:00',
-    scheduleEndTime: settings.schedule_end_time || null,
+    scheduleEndTime: (settings.schedule_end_time && settings.schedule_end_time !== '00:00') ? settings.schedule_end_time : null,
     scheduleTz: isValidTz(settings.schedule_tz) ? settings.schedule_tz : SCHEDULE_TZ,
     dailyLimit: settings.daily_limit || DAILY_OK_LIMIT,
     publishIntervalHours: Number.isFinite(settings.publish_interval_hours) ? settings.publish_interval_hours : 4,

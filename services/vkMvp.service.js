@@ -90,7 +90,7 @@ function getVkSettings(chatId) {
     groupId: cfg?.group_id || null,
     serviceKey: cfg?.service_key || null,
     scheduleTime: settings.schedule_time || '10:00',
-    scheduleEndTime: settings.schedule_end_time || null,
+    scheduleEndTime: (settings.schedule_end_time && settings.schedule_end_time !== '00:00') ? settings.schedule_end_time : null,
     scheduleTz: isValidTz(settings.schedule_tz) ? settings.schedule_tz : SCHEDULE_TZ,
     dailyLimit: settings.daily_limit || DAILY_VK_LIMIT,
     publishIntervalHours: Number.isFinite(settings.publish_interval_hours) ? settings.publish_interval_hours : 4,

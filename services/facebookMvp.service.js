@@ -106,7 +106,7 @@ function getFacebookSettings(chatId) {
     bufferChannelId: cfg?.buffer_channel_id || null,
     pageName: cfg?.page_name || null,
     scheduleTime: cfg?.schedule_time || '10:00',
-    scheduleEndTime: cfg?.schedule_end_time || null,
+    scheduleEndTime: (cfg?.schedule_end_time && cfg.schedule_end_time !== '00:00') ? cfg.schedule_end_time : null,
     scheduleTz: isValidTz(cfg?.schedule_tz) ? cfg.schedule_tz : SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.daily_limit) ? cfg.daily_limit : DAILY_FB_LIMIT,
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 4,

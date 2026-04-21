@@ -69,7 +69,7 @@ function getPinterestSettings(chatId) {
     websiteUrl: cfg?.website_url || '',
     lastBoardIndex: cfg?.last_board_index || 0,
     scheduleTime: cfg?.schedule_time || '10:00',
-    scheduleEndTime: cfg?.schedule_end_time || null,
+    scheduleEndTime: (cfg?.schedule_end_time && cfg.schedule_end_time !== '00:00') ? cfg.schedule_end_time : null,
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 4,
     randomPublish: !!cfg?.random_publish,
     bufferApiKey: globalInt.buffer_api_key || cfg?.buffer_api_key || null,

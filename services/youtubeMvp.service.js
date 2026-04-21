@@ -68,7 +68,7 @@ function getYoutubeSettings(chatId) {
     isActive: !!cfg?.is_active,
     autoPublish: !!cfg?.auto_publish,
     scheduleTime: cfg?.schedule_time || '10:00',
-    scheduleEndTime: cfg?.schedule_end_time || null,
+    scheduleEndTime: (cfg?.schedule_end_time && cfg.schedule_end_time !== '00:00') ? cfg.schedule_end_time : null,
     publishIntervalHours: Number.isFinite(cfg?.publish_interval_hours) ? cfg.publish_interval_hours : 24,
     randomPublish: !!cfg?.random_publish,
     bufferApiKey: globalInt.buffer_api_key || cfg?.buffer_api_key || null,
