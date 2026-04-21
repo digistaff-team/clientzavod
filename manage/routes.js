@@ -1386,6 +1386,10 @@ router.post('/channels/youtube/run-now', async (req, res) => {
     }
 });
 
+// Кэш Buffer getChannels: ключ = токен, значение = { channels, expiresAt }
+const _bufferChannelsCache = new Map();
+const BUFFER_CHANNELS_TTL = 5 * 60 * 1000; // 5 минут
+
 /**
  * POST /api/manage/channels/buffer/channels — получить список каналов из Buffer API
  */
@@ -1409,7 +1413,15 @@ router.post('/channels/buffer/channels', async (req, res) => {
 
         console.log('[BUFFER-CHANNELS] using token:', buffer_api_key ? buffer_api_key.slice(0, 8) + '...' : 'EMPTY', 'len:', buffer_api_key?.length);
         const bufferService = require('../services/buffer.service');
-        const channels = await bufferService.getChannels(buffer_api_key);
+        const cached = _bufferChannelsCache.get(buffer_api_key);
+        let channels;
+        if (cached && cached.expiresAt > Date.now()) {
+            console.log('[BUFFER-CHANNELS] cache hit, skipping API call');
+            channels = cached.channels;
+        } else {
+            channels = await bufferService.getChannels(buffer_api_key);
+            _bufferChannelsCache.set(buffer_api_key, { channels, expiresAt: Date.now() + BUFFER_CHANNELS_TTL });
+        }
 
         // Опциональная фильтрация по сервису
         const serviceFilter = req.query.service;
