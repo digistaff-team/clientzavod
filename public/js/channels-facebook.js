@@ -157,7 +157,7 @@ window.loadFacebookConfig = async function() {
             premoderationEl.checked = !!cfg.premoderation;
         }
         const facebookModeratorEl = document.getElementById('facebookModeratorUserId');
-        if (facebookModeratorEl) facebookModeratorEl.value = cfg.moderator_user_id || '';
+        if (facebookModeratorEl) facebookModeratorEl.value = cfg.moderator_user_id || getChatId() || '';
         toggleFacebookModeratorField();
 
         // Статус
@@ -245,6 +245,10 @@ function toggleFacebookModeratorField() {
     const moderatorField = document.getElementById('facebookModeratorField');
     if (moderatorField) {
         moderatorField.classList.toggle('visible', premoderation);
+    }
+    if (premoderation) {
+        const input = document.getElementById('facebookModeratorUserId');
+        if (input && !input.value.trim()) input.value = getChatId() || '';
     }
 }
 
