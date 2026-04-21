@@ -1322,13 +1322,6 @@ async function loadInstagramConfig() {
             const cfg = data.config || {};
             if (cfg.buffer_channel_id) {
                 document.getElementById('instagramBufferChannelId').value = cfg.buffer_channel_id;
-                const apiKey = getBufferApiKey('instagramBufferApiKey');
-                if (apiKey) {
-                    loadBufferChannels(apiKey, 'instagram', 'instagramBufferChannelSelect', getChatId()).then(() => {
-                        const selectEl = document.getElementById('instagramBufferChannelSelect');
-                        if (selectEl) selectEl.value = cfg.buffer_channel_id;
-                    });
-                }
             }
             if (cfg.default_alt_text) document.getElementById('instagramDefaultAltText').value = cfg.default_alt_text;
             if (cfg.location_id) document.getElementById('instagramLocationId').value = cfg.location_id;
@@ -2124,18 +2117,8 @@ async function loadYoutubeConfig() {
         if (youtubeModeratorEl) youtubeModeratorEl.value = cfg.moderator_user_id || chatId;
         toggleYoutubeModeratorField();
 
-        // Автозагрузка каналов Buffer для восстановления select
         if (cfg.buffer_channel_id) {
-            const apiKey = getBufferApiKey('youtubeBufferApiKey');
-            if (apiKey) {
-                loadBufferChannels(apiKey, 'youtube', 'youtubeBufferChannelSelect', getChatId()).then(() => {
-                    const selectEl = document.getElementById('youtubeBufferChannelSelect');
-                    if (selectEl) {
-                        selectEl.value = cfg.buffer_channel_id;
-                    }
-                    document.getElementById('youtubeBufferChannelId').value = cfg.buffer_channel_id;
-                }).catch(() => {});
-            }
+            document.getElementById('youtubeBufferChannelId').value = cfg.buffer_channel_id;
         }
     } catch (e) {
         console.error('Failed to load YouTube config:', e);
@@ -2904,13 +2887,6 @@ async function loadTiktokConfig() {
             if (cfg.buffer_channel_id) {
                 const hiddenEl = document.getElementById('tiktokBufferChannelId');
                 if (hiddenEl) hiddenEl.value = cfg.buffer_channel_id;
-                const apiKey = getBufferApiKey('tiktokBufferApiKey');
-                if (apiKey) {
-                    loadBufferChannels(apiKey, 'tiktok', 'tiktokBufferChannelSelect', getChatId()).then(() => {
-                        const selectEl = document.getElementById('tiktokBufferChannelSelect');
-                        if (selectEl) selectEl.value = cfg.buffer_channel_id;
-                    });
-                }
             }
         } else {
             statusEl.innerHTML = '<span style="color: #888;">⬜ TikTok не подключён</span>';
@@ -3112,13 +3088,6 @@ async function loadInstagramReelsConfig() {
         if (connected && cfg.buffer_channel_id) {
             const hiddenEl = document.getElementById('instagramReelsBufferChannelId');
             if (hiddenEl) hiddenEl.value = cfg.buffer_channel_id;
-            const apiKey = getBufferApiKey('instagramReelsBufferApiKey');
-            if (apiKey) {
-                loadBufferChannels(apiKey, 'instagram', 'instagramReelsBufferChannelSelect', getChatId()).then(() => {
-                    const selectEl = document.getElementById('instagramReelsBufferChannelSelect');
-                    if (selectEl) selectEl.value = cfg.buffer_channel_id;
-                });
-            }
         }
 
         if (cfg.schedule_time) {
