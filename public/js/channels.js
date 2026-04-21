@@ -869,70 +869,74 @@ async function loadPinterestConfig() {
         const settingsBlock = document.getElementById('pinterestSettingsBlock');
         if (!statusEl) return;
 
+        // Загружаем настройки независимо от статуса подключения
+        const cfg = data.config || {};
+
+        // Обновляем статус подключения
         if (data.connected) {
             statusEl.innerHTML = '<span style="color: #0a0;">✅ Pinterest подключён</span>';
             if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
-            // Заполняем поля
-            const cfg = data.config || {};
-            if (cfg.buffer_channel_id) {
-                document.getElementById('bufferChannelId').value = cfg.buffer_channel_id;
-                // Также пробуем выбрать нужный option в select (если он уже загружен)
-                const selectEl = document.getElementById('pinterestBufferChannelSelect');
-                if (selectEl) {
-                    const optionExists = Array.from(selectEl.options).some(opt => opt.value === cfg.buffer_channel_id);
-                    if (optionExists) {
-                        selectEl.value = cfg.buffer_channel_id;
-                    }
-                }
-            }
-            if (cfg.board_id) document.getElementById('pinterestBoardId').value = cfg.board_id;
-            if (cfg.website_url) document.getElementById('pinterestWebsiteUrl').value = cfg.website_url;
-            // Планировщик
-            if (cfg.schedule_time) {
-                setPinterestScheduleTimeInputs(cfg.schedule_time);
-            }
-            if (cfg.schedule_end_time) {
-                setPinterestScheduleEndTimeInputs(cfg.schedule_end_time);
-            }
-            if (cfg.schedule_tz) {
-                setPinterestScheduleTzInput(cfg.schedule_tz);
-            }
-            if (cfg.daily_limit != null) {
-                const dlEl = document.getElementById('pinterestDailyLimit');
-                if (dlEl) dlEl.value = cfg.daily_limit;
-            }
-            if (cfg.publish_interval_hours != null) {
-                const piEl = document.getElementById('pinterestPublishInterval');
-                if (piEl) piEl.value = String(cfg.publish_interval_hours);
-            }
-            if (cfg.allowed_weekdays) {
-                setWeekdays('pinterest-weekday', cfg.allowed_weekdays);
-            }
-            // Load toggles
-            const randomEl = document.getElementById('pinterestRandomPublish');
-            if (randomEl) randomEl.checked = !!cfg.random_publish;
-            const premoderEl = document.getElementById('pinterestPremoderation');
-            if (premoderEl) {
-                premoderEl.checked = !!cfg.premoderation_enabled;
-            }
-            const pinterestModeratorEl = document.getElementById('pinterestModeratorUserId');
-            if (pinterestModeratorEl) pinterestModeratorEl.value = cfg.moderator_user_id || '';
-            togglePinterestModeratorField();
-            // Устанавливаем выбранную доску в select
-            const boardSelect = document.getElementById('pinterestBoardSelect');
-            if (boardSelect && cfg.board_id) {
-                const exists = Array.from(boardSelect.options).some(o => o.value === cfg.board_id);
-                if (!exists && cfg.board_name) {
-                    const opt = document.createElement('option');
-                    opt.value = cfg.board_id;
-                    opt.textContent = cfg.board_name;
-                    boardSelect.appendChild(opt);
-                }
-                boardSelect.value = cfg.board_id;
-            }
         } else {
             statusEl.textContent = '';
             if (disconnectBtn) disconnectBtn.style.display = 'none';
+        }
+
+        // Заполняем поля (всегда, даже если не подключён к Buffer)
+        if (cfg.buffer_channel_id) {
+            document.getElementById('bufferChannelId').value = cfg.buffer_channel_id;
+            // Также пробуем выбрать нужный option в select (если он уже загружен)
+            const selectEl = document.getElementById('pinterestBufferChannelSelect');
+            if (selectEl) {
+                const optionExists = Array.from(selectEl.options).some(opt => opt.value === cfg.buffer_channel_id);
+                if (optionExists) {
+                    selectEl.value = cfg.buffer_channel_id;
+                }
+            }
+        }
+        if (cfg.board_id) document.getElementById('pinterestBoardId').value = cfg.board_id;
+        if (cfg.website_url) document.getElementById('pinterestWebsiteUrl').value = cfg.website_url;
+        // Планировщик
+        if (cfg.schedule_time) {
+            setPinterestScheduleTimeInputs(cfg.schedule_time);
+        }
+        if (cfg.schedule_end_time) {
+            setPinterestScheduleEndTimeInputs(cfg.schedule_end_time);
+        }
+        if (cfg.schedule_tz) {
+            setPinterestScheduleTzInput(cfg.schedule_tz);
+        }
+        if (cfg.daily_limit != null) {
+            const dlEl = document.getElementById('pinterestDailyLimit');
+            if (dlEl) dlEl.value = cfg.daily_limit;
+        }
+        if (cfg.publish_interval_hours != null) {
+            const piEl = document.getElementById('pinterestPublishInterval');
+            if (piEl) piEl.value = String(cfg.publish_interval_hours);
+        }
+        if (cfg.allowed_weekdays) {
+            setWeekdays('pinterest-weekday', cfg.allowed_weekdays);
+        }
+        // Load toggles
+        const randomEl = document.getElementById('pinterestRandomPublish');
+        if (randomEl) randomEl.checked = !!cfg.random_publish;
+        const premoderEl = document.getElementById('pinterestPremoderation');
+        if (premoderEl) {
+            premoderEl.checked = !!cfg.premoderation_enabled;
+        }
+        const pinterestModeratorEl = document.getElementById('pinterestModeratorUserId');
+        if (pinterestModeratorEl) pinterestModeratorEl.value = cfg.moderator_user_id || '';
+        togglePinterestModeratorField();
+        // Устанавливаем выбранную доску в select
+        const boardSelect = document.getElementById('pinterestBoardSelect');
+        if (boardSelect && cfg.board_id) {
+            const exists = Array.from(boardSelect.options).some(o => o.value === cfg.board_id);
+            if (!exists && cfg.board_name) {
+                const opt = document.createElement('option');
+                opt.value = cfg.board_id;
+                opt.textContent = cfg.board_name;
+                boardSelect.appendChild(opt);
+            }
+            boardSelect.value = cfg.board_id;
         }
     } catch (e) {
         console.error('loadPinterestConfig', e);
