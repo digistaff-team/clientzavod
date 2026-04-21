@@ -258,9 +258,9 @@ async function startServer() {
             }
             
             console.log(`[CW-BOT] ${action} job ${jobId} for chatId=${resolvedChatId} (fromId=${fromId})`);
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const result = await telegramMvpService.handleModerationAction(resolvedChatId, { telegram: ctx.telegram }, action, jobId);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
                 if (result?.ok) {
                     await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
                 } else {
@@ -268,8 +268,7 @@ async function startServer() {
                 }
             } catch (e) {
                 console.error(`[CW-BOT] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -312,14 +311,17 @@ async function startServer() {
                 return;
             }
             
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const result = await vkMvpService.handleVkModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-VK] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации VK: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -357,14 +359,17 @@ async function startServer() {
                 return;
             }
 
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const result = await okMvpService.handleOkModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-OK] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации ОК: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -402,14 +407,17 @@ async function startServer() {
                 return;
             }
 
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const result = await instagramMvpService.handleInstagramModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-IG] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации Instagram: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -447,15 +455,18 @@ async function startServer() {
                 return;
             }
 
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const youtubeMvpService = require('./services/youtubeMvp.service');
                 const result = await youtubeMvpService.handleYtModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-YT] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации YouTube: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -493,14 +504,17 @@ async function startServer() {
                 return;
             }
 
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const result = await pinterestMvpService.handlePinModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-PIN] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации Pinterest: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -538,14 +552,17 @@ async function startServer() {
                 return;
             }
 
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const result = await tiktokMvpService.handleTiktokModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-TT] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации TikTok: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -582,15 +599,18 @@ async function startServer() {
                 return;
             }
 
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const fbSvc = require('./services/facebookMvp.service');
                 const result = await fbSvc.handleFacebookModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-FB] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации Facebook: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 
@@ -628,14 +648,17 @@ async function startServer() {
                 return;
             }
 
+            await ctx.answerCbQuery('').catch(() => {});
             try {
                 const result = await vkVideoMvpService.handleVkVideoModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-                await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
-                await ctx.reply(result?.message || 'Операция выполнена.').catch(() => {});
+                if (result?.ok) {
+                    await ctx.reply(result.message || 'Операция выполнена.').catch(() => {});
+                } else {
+                    await ctx.reply(`❌ ${result?.message || 'Ошибка'}`).catch(() => {});
+                }
             } catch (e) {
                 console.error(`[CW-BOT-VK-VID] Error:`, e);
-                await ctx.answerCbQuery('Ошибка').catch(() => {});
-                await ctx.reply(`Ошибка модерации VK Video: ${e.message}`).catch(() => {});
+                await ctx.reply(`❌ Ошибка: ${e.message}`).catch(() => {});
             }
         });
 

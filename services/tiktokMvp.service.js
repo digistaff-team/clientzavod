@@ -422,10 +422,13 @@ async function handleTiktokModerationAction(chatId, bot, jobId, action) {
 
   switch (action) {
     case 'approve':
-      draft.status = 'approved';
-      await setTiktokDraft(chatId, String(jobId), draft);
-      await publishTiktokPost(chatId, bot, jobId);
-      return { ok: true, message: '✅ Одобрено и опубликовано' };
+      try {
+        await publishTiktokPost(chatId, bot, jobId);
+        return { ok: true, message: '✅ Одобрено и опубликовано' };
+      } catch (e) {
+        console.error(`[TIKTOK-MVP] Approval failed for job ${jobId}:`, e);
+        return { ok: false, message: `Ошибка публикации TikTok: ${e.message}` };
+      }
 
     case 'reject':
       draft.status = 'rejected';

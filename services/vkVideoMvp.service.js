@@ -520,14 +520,16 @@ async function handleVkVideoModerationAction(chatId, bot, jobId, action) {
   switch (action) {
     case 'approve':
       if (draft.status === 'approved' || draft.status === 'published') {
-        await bot.telegram.sendMessage(chatId, `[VK Video] Пост уже ${draft.status}, пропускаем.`).catch(() => {});
         return { ok: true, message: `Пост уже ${draft.status}` };
       }
-      draft.status = 'approved';
-      await setVkVideoDraft(chatId, String(jobId), draft);
-      await publishVkVideoPost(chatId, bot, jobId);
-      await removeVkVideoDraft(chatId, String(jobId));
-      return { ok: true, message: '✅ Одобрено и опубликовано' };
+      try {
+        await publishVkVideoPost(chatId, bot, jobId);
+        await removeVkVideoDraft(chatId, String(jobId));
+        return { ok: true, message: '✅ Одобрено и опубликовано' };
+      } catch (e) {
+        console.error(`[VK-VIDEO-MVP] Approval failed for job ${jobId}:`, e);
+        return { ok: false, message: `Ошибка публикации VK Видео: ${e.message}` };
+      }
 
     case 'reject':
       await removeVkVideoDraft(chatId, String(jobId));

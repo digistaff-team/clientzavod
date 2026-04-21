@@ -510,9 +510,13 @@ async function handleFacebookModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'approve') {
-    await removeDraft(chatId, String(jobId));
-    await publishFbPost(chatId, bot, jobId, job.correlation_id);
-    return { ok: true, message: 'Facebook пост опубликован' };
+    try {
+      await publishFbPost(chatId, bot, jobId, job.correlation_id);
+      await removeDraft(chatId, String(jobId));
+      return { ok: true, message: 'Facebook пост опубликован' };
+    } catch (e) {
+      return { ok: false, message: `Ошибка публикации Facebook: ${e.message}` };
+    }
   }
 
   if (action === 'regen_text') {
