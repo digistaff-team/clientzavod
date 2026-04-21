@@ -1681,9 +1681,8 @@ router.post('/integrations', async (req, res) => {
     const chatId = req.body.chat_id;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
     const patch = {};
-    const { buffer_api_key, moderator_user_id } = req.body;
+    const { buffer_api_key } = req.body;
     if (buffer_api_key !== undefined && !String(buffer_api_key).endsWith('***')) patch.buffer_api_key = buffer_api_key;
-    if (moderator_user_id !== undefined) patch.moderator_user_id = moderator_user_id;
     try {
         await manageStore.setIntegrationSettings(chatId, patch);
         res.json({ success: true });
