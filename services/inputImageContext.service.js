@@ -142,8 +142,8 @@ async function _generateI2I(prompt, imagePublicUrl, aspectRatio, model) {
   const pollUrl = `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${taskId}`;
   const pollHeaders = { Authorization: `Bearer ${apiKey}` };
 
-  for (let attempt = 0; attempt < 18; attempt++) {
-    await new Promise(r => setTimeout(r, 5000));
+  for (let attempt = 0; attempt < 24; attempt++) {
+    await new Promise(r => setTimeout(r, 8000));
     const pollResp = await fetch(pollUrl, { headers: pollHeaders, timeout: 15000 });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -203,8 +203,8 @@ async function _generateT2I(prompt, aspectRatio, model) {
   const pollUrl = `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${taskId}`;
   const pollHeaders = { Authorization: `Bearer ${apiKey}` };
 
-  for (let attempt = 0; attempt < 18; attempt++) {
-    await new Promise(r => setTimeout(r, 5000));
+  for (let attempt = 0; attempt < 24; attempt++) {
+    await new Promise(r => setTimeout(r, 8000));
     const pollResp = await fetch(pollUrl, { headers: pollHeaders, timeout: 15000 });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();

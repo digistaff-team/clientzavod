@@ -99,7 +99,7 @@ function getContentSettings(chatId) {
     allowedWeekdays: Array.isArray(cfg?.allowedWeekdays) ? cfg.allowedWeekdays : [1, 2, 3, 4, 5],
     randomPublish: !!cfg?.randomPublish,
     premoderationEnabled: cfg?.premoderationEnabled !== false,
-    scheduleEndTime: cfg?.scheduleEndTime || null
+    scheduleEndTime: (cfg?.scheduleEndTime && cfg.scheduleEndTime !== '00:00') ? cfg.scheduleEndTime : null
   };
 }
 
