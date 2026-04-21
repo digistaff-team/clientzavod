@@ -1277,6 +1277,8 @@ async function routeDraft(chatId, bot, draft) {
 
 async function sendDraftToModerator(chatId, bot, draft) {
   const settings = getContentSettings(chatId);
+  const moderatorId = settings.moderatorUserId;
+  console.log(`[TG-MVP] sendDraftToModerator chatId=${chatId}, jobId=${draft.jobId}, moderatorId=${moderatorId}`);
   const caption = [
     `📝 Черновик #${draft.jobId} для Telegram`,
     `Тема: ${draft.topic.topic}`,
@@ -1305,7 +1307,6 @@ async function sendDraftToModerator(chatId, bot, draft) {
   
   // Используем cwBot если он есть и у пользователя нет своего бота
   const moderatorBot = cwBot && cwBot.token !== bot?.token ? cwBot : bot;
-  const moderatorId = settings.moderatorUserId;
   const sent = await safeSendToModerator({
     sendFn: () => moderatorBot.telegram.sendPhoto(moderatorId, { source: tempPath }, { caption, reply_markup: kb }),
     chatId,
@@ -1313,6 +1314,7 @@ async function sendDraftToModerator(chatId, bot, draft) {
     notifyBot: cwBot || bot
   });
   await fs.unlink(tempPath).catch(() => {});
+  console.log(`[TG-MVP] Draft sent to moderator, messageId=${sent?.message_id}`);
 
   await setDraft(chatId, String(draft.jobId), {
     ...draft,
@@ -1651,6 +1653,7 @@ async function regenerateDraftPart(chatId, draft, part, correlationId = null) {
 }
 
 async function handleModerationAction(chatId, bot, action, jobId) {
+  console.log(`[TG-MVP] handleModerationAction chatId=${chatId}, jobId=${jobId}, action=${action}`);
   const draft = getDrafts(chatId)[String(jobId)];
   if (!draft) return { ok: false, message: 'Черновик не найден.' };
 
@@ -1773,7 +1776,10 @@ async function tickScheduleForChat(chatId, bot) {
   // Проверяем день недели (0=Вс, 1=Пн, ..., 6=Сб)
   const dateObj = new Date(now.date + 'T' + now.time + ':00');
   const weekday = dateObj.getDay();
-  if (!settings.allowedWeekdays.includes(weekday)) return;
+  if (!settings.allowedWeekdays.includes(weekday)) {
+    console.log(`[TG-SCHEDULE] ${chatId} skipping: weekday ${weekday} not in allowed [${settings.allowedWeekdays}]`);
+    return;
+  }
 
   const [startH, startM] = (settings.scheduleTime || '12:00').split(':').map(Number);
   const [nowH, nowM] = now.time.split(':').map(Number);

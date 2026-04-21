@@ -5,6 +5,7 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs').promises;
+const sharp = require('sharp');
 const fetch = require('node-fetch');
 const config = require('../config');
 const aiRouterService = require('./ai_router_service');
@@ -220,18 +221,14 @@ async function generateFbImage(chatId, topic, imagePrompt, jobId) {
 }
 
 async function saveImageToContainer(chatId, imageBuffer, jobId) {
-  const session = await sessionService.getOrCreateSession(chatId);
-  const containerPath = `/workspace/cache/images/facebook/fb_${jobId}.png`;
-  const hostDir = path.join(storageService.getDataDir(chatId), 'cache', 'images', 'facebook');
-
+  // Save as JPEG to output/content/ — Facebook prefers JPEG over PNG for photo posts
+  const hostDir = path.join(storageService.getDataDir(chatId), 'output', 'content');
   await fs.mkdir(hostDir, { recursive: true });
-  const hostPath = path.join(hostDir, `fb_${jobId}.png`);
-  await fs.writeFile(hostPath, imageBuffer);
-
-  // Копирование в контейнер
-  await dockerService.copyToContainer(session.containerId, hostPath, containerPath);
-
-  return containerPath;
+  const hostPath = path.join(hostDir, `fb_${jobId}.jpg`);
+  const jpegBuffer = await sharp(imageBuffer).jpeg({ quality: 90 }).toBuffer();
+  await fs.writeFile(hostPath, jpegBuffer);
+  console.log(`[FB] Image saved as JPEG to ${hostPath} (${jpegBuffer.length} bytes)`);
+  return hostPath;
 }
 
 // ============================================
@@ -291,7 +288,7 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
     let imageBuffer = null;
     let imagePath = null;
 
-    while (imageAttempts < MAX_IMAGE_ATTEMPTS && !imageBuffer) {
+    while (imageAttempts < MAX_IMAGE_ATTEMPTS && !imagePath) {
       imageAttempts++;
       try {
         console.log(`[FB] Image generation attempt ${imageAttempts}/${MAX_IMAGE_ATTEMPTS}`);
@@ -299,7 +296,8 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
         imagePath = await saveImageToContainer(chatId, imageBuffer, jobId);
         console.log(`[FB] Image saved to ${imagePath}`);
       } catch (e) {
-        console.error(`[FB] Image attempt ${imageAttempts} failed:`, e.message);
+        imageBuffer = null;
+        console.error(`[FB] Image attempt ${imageAttempts} failed:`, e?.message || e);
         if (imageAttempts >= MAX_IMAGE_ATTEMPTS) {
           throw e;
         }
@@ -352,44 +350,35 @@ async function publishFbPost(chatId, bot, jobId, correlationId) {
   }
 
   try {
-    // Получаем изображение из контейнера
-    const session = await sessionService.getOrCreateSession(chatId);
-    const hostPath = path.join(storageService.getDataDir(chatId), 'cache', 'images', 'facebook', `fb_${jobId}.png`);
-
-    // Копируем из контейнера, если изображение там
-    try {
-      await dockerService.copyFromContainer(session.containerId, job.image_path, hostPath);
-    } catch (e) {
-      console.warn(`[FB] Could not copy image from container:`, e.message);
-    }
+    // Изображение хранится в output/content/ — используем proven маршрут /api/files/public/
+    const hostPath = job.image_path || path.join(storageService.getDataDir(chatId), 'output', 'content', `fb_${jobId}.jpg`);
 
     // Проверяем, есть ли файл
-    let imageBuffer = null;
-    let publicImageUrl = null;
-
+    let imageExists = false;
     try {
       const stat = await fs.stat(hostPath);
-      if (stat.size > 0) {
-        imageBuffer = await fs.readFile(hostPath);
-      }
+      imageExists = stat.size > 0;
     } catch (e) {
-      console.warn(`[FB] Image file not found:`, e.message);
+      console.warn(`[FB] Image file not found at ${hostPath}:`, e.message);
     }
 
     // Если нет изображения, пропускаем публикацию
-    if (!imageBuffer) {
+    if (!imageExists) {
       throw new Error('Image not available for publication');
     }
 
-    // Публикация через Buffer (вместе с изображением)
-    // Для Buffer нам нужен публичный URL изображения
-    // Если нет хостинга изображений, используем текстовый пост
+    // Telegram CDN URL имеет приоритет — Facebook гарантированно может его загрузить
+    const publicImageUrl = job.telegram_image_url ||
+      `${config.APP_URL}/api/files/public/${chatId}/${path.basename(hostPath)}`;
+    console.log(`[FB] Publishing with imageUrl=${publicImageUrl} (source: ${job.telegram_image_url ? 'telegram_cdn' : 'local_server'})`);
+
     const result = await bufferService.createPost(
       settings.bufferApiKey,
       settings.bufferChannelId,
       {
         text: job.post_text,
-        imageUrl: publicImageUrl // Если null, Buffer может работать только с текстом
+        imageUrl: publicImageUrl,
+        postType: 'post'
       }
     );
 
@@ -466,7 +455,7 @@ async function sendFbToModerator(chatId, bot, draft) {
   const caption = (header + (draft.postText || '')).slice(0, 1024);
 
   const moderatorBot = cwBot && cwBot.telegram ? cwBot : bot;
-  const hostImagePath = path.join(storageService.getDataDir(chatId), 'cache', 'images', 'facebook', `fb_${draft.jobId}.png`);
+  const hostImagePath = draft.imagePath || path.join(storageService.getDataDir(chatId), 'output', 'content', `fb_${draft.jobId}.jpg`);
 
   let hasImage = false;
   try {
@@ -475,11 +464,13 @@ async function sendFbToModerator(chatId, bot, draft) {
   } catch (_) {}
 
   try {
+    let sentMessage = null;
     await safeSendToModerator({
-      sendFn: () => {
+      sendFn: async () => {
         if (!moderatorBot?.telegram) return;
         if (hasImage) {
-          return moderatorBot.telegram.sendPhoto(moderatorId, { source: hostImagePath }, { caption, reply_markup: keyboard });
+          sentMessage = await moderatorBot.telegram.sendPhoto(moderatorId, { source: hostImagePath }, { caption, reply_markup: keyboard });
+          return sentMessage;
         }
         return moderatorBot.telegram.sendMessage(moderatorId, caption, { reply_markup: keyboard });
       },
@@ -487,6 +478,23 @@ async function sendFbToModerator(chatId, bot, draft) {
       moderatorId,
       notifyBot: cwBot || bot
     });
+
+    // Сохраняем Telegram CDN URL — Facebook/Buffer точно могут его загрузить
+    if (sentMessage?.photo?.length && moderatorBot?.telegram) {
+      try {
+        const fileId = sentMessage.photo[sentMessage.photo.length - 1].file_id;
+        const fileInfo = await moderatorBot.telegram.getFile(fileId);
+        const cwBotToken = process.env.CW_BOT_TOKEN;
+        if (fileInfo?.file_path && cwBotToken) {
+          const telegramImageUrl = `https://api.telegram.org/file/bot${cwBotToken}/${fileInfo.file_path}`;
+          await fbRepo.updateJob(chatId, draft.jobId, { telegramImageUrl });
+          console.log(`[FB] Telegram image URL saved for job ${draft.jobId}`);
+        }
+      } catch (e) {
+        console.warn('[FB] Could not get Telegram file URL:', e.message);
+      }
+    }
+
     await saveDraft(chatId, String(draft.jobId), { chatId, jobId: draft.jobId });
   } catch (e) {
     console.error('[FB] Failed to send to moderator:', e);

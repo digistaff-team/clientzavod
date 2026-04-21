@@ -376,6 +376,28 @@ router.get('/temp/:chatId/:filename', (req, res) => {
 });
 
 /**
+ * GET /api/video/fb-cache/:chatId/:filename
+ * Отдает кешированное изображение Facebook-поста для публикации через Buffer.
+ */
+router.get('/fb-cache/:chatId/:filename', (req, res) => {
+  const { chatId, filename } = req.params;
+  const safeChatId = String(chatId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeFilename = path.basename(filename);
+
+  const storageService = require('../services/storage.service');
+  const filePath = path.join(storageService.getDataDir(safeChatId), 'cache', 'images', 'facebook', safeFilename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.sendFile(filePath);
+});
+
+/**
  * GET /api/video/input/:chatId/:filename
  * Отдает изображение товара из /workspace/input пользователя.
  * Используется KIE.ai API при генерации сцены (image-to-image).
