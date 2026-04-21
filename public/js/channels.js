@@ -742,7 +742,6 @@ async function loadIntegrationSettings() {
         const data = await res.json();
         const s = data.settings || {};
         const keyEl = document.getElementById('globalBufferApiKey');
-        const modEl = document.getElementById('globalModeratorUserId');
         if (s.buffer_api_key) {
             if (keyEl) keyEl.value = s.buffer_api_key;
             // Populate all per-channel Buffer API Token fields
@@ -750,7 +749,6 @@ async function loadIntegrationSettings() {
                 el.value = s.buffer_api_key;
             });
         }
-        if (modEl && s.moderator_user_id) modEl.value = s.moderator_user_id;
     } catch (e) { console.error('loadIntegrationSettings error:', e); }
 }
 
@@ -758,11 +756,9 @@ async function saveIntegrationSettings() {
     const chatId = getChatId();
     if (!chatId) return;
     const apiKey = (document.getElementById('globalBufferApiKey')?.value || '').trim();
-    const modId = (document.getElementById('globalModeratorUserId')?.value || '').trim();
     const statusEl = document.getElementById('integrationsStatus');
     const body = { chat_id: chatId };
     if (apiKey && !apiKey.endsWith('***')) body.buffer_api_key = apiKey;
-    if (modId) body.moderator_user_id = modId;
     try {
         const res = await fetch(`${API_MANAGE}/integrations`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
