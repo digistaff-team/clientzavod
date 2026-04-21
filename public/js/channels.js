@@ -1323,8 +1323,6 @@ async function loadInstagramConfig() {
             if (cfg.buffer_channel_id) {
                 document.getElementById('instagramBufferChannelId').value = cfg.buffer_channel_id;
             }
-            const isReelEl = document.getElementById('instagramIsReel');
-            if (isReelEl) isReelEl.checked = !!cfg.is_reel;
             const dailyLimitEl = document.getElementById('instagramDailyLimit');
             if (dailyLimitEl) dailyLimitEl.value = cfg.daily_limit || 5;
 
@@ -1449,7 +1447,6 @@ async function saveInstagramConfig() {
     if (!chatId) return;
 
     const bufferChannelId = (document.getElementById('instagramBufferChannelId')?.value || '').trim();
-    const isReel = !!document.getElementById('instagramIsReel')?.checked;
     const dailyLimit = parseInt(document.getElementById('instagramDailyLimit')?.value || '5', 10);
 
     updateInstagramScheduleEndTime();
@@ -1464,7 +1461,6 @@ async function saveInstagramConfig() {
 
     const body = {
         chat_id: chatId,
-        is_reel: isReel,
         daily_limit: dailyLimit,
         schedule_time: scheduleTime,
         schedule_end_time: scheduleEndTime,
