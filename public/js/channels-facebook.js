@@ -115,9 +115,16 @@ window.loadFacebookConfig = async function() {
         const cfg = result.config;
         window.facebookConfig = cfg;
 
-        // Если есть сохранённый канал — загружаем список из Buffer, чтобы select был заполнен
         if (cfg.buffer_channel_id) {
-            await window.fetchFacebookBufferChannels();
+            const hiddenEl = document.getElementById('fbBufferChannelId');
+            if (hiddenEl) {
+                const opt = document.createElement('option');
+                opt.value = cfg.buffer_channel_id;
+                opt.textContent = cfg.page_name || cfg.buffer_channel_id;
+                opt.selected = true;
+                hiddenEl.innerHTML = '';
+                hiddenEl.appendChild(opt);
+            }
         }
 
         // Load scheduler settings
