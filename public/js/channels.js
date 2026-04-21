@@ -1323,7 +1323,6 @@ async function loadInstagramConfig() {
             if (cfg.buffer_channel_id) {
                 document.getElementById('instagramBufferChannelId').value = cfg.buffer_channel_id;
             }
-            if (cfg.default_alt_text) document.getElementById('instagramDefaultAltText').value = cfg.default_alt_text;
             if (cfg.location_id) document.getElementById('instagramLocationId').value = cfg.location_id;
 
             const isReelEl = document.getElementById('instagramIsReel');
@@ -1452,7 +1451,6 @@ async function saveInstagramConfig() {
     if (!chatId) return;
 
     const bufferChannelId = (document.getElementById('instagramBufferChannelId')?.value || '').trim();
-    const defaultAltText = (document.getElementById('instagramDefaultAltText')?.value || '').trim();
     const locationId = (document.getElementById('instagramLocationId')?.value || '').trim();
     const isReel = !!document.getElementById('instagramIsReel')?.checked;
     const dailyLimit = parseInt(document.getElementById('instagramDailyLimit')?.value || '5', 10);
@@ -1469,7 +1467,6 @@ async function saveInstagramConfig() {
 
     const body = {
         chat_id: chatId,
-        default_alt_text: defaultAltText,
         location_id: locationId,
         is_reel: isReel,
         daily_limit: dailyLimit,
@@ -1512,7 +1509,6 @@ async function disconnectInstagram() {
             document.getElementById('instagramBufferChannelId').value = '';
             const selectEl = document.getElementById('instagramBufferChannelSelect');
             if (selectEl) selectEl.innerHTML = '<option value="">— выберите канал —</option>';
-            document.getElementById('instagramDefaultAltText').value = '';
             document.getElementById('instagramLocationId').value = '';
             await loadInstagramConfig();
         } else {
