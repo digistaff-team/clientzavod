@@ -1529,9 +1529,9 @@ router.post('/channels/tiktok/test-buffer', async (req, res) => {
  * GET /api/manage/channels/tiktok — получить конфигурацию TikTok
  */
 router.get('/channels/tiktok', (req, res) => {
-    const { chatId } = req.session || {};
+    const chatId = req.query.chat_id;
     if (!chatId) {
-        return res.status(401).json({ error: 'Не авторизован' });
+        return res.status(400).json({ error: 'chat_id is required' });
     }
     const config = manageStore.getTiktokConfig(chatId);
     res.json({ success: true, config: config || {} });
@@ -1541,9 +1541,9 @@ router.get('/channels/tiktok', (req, res) => {
  * POST /api/manage/channels/tiktok — сохранить конфигурацию TikTok
  */
 router.post('/channels/tiktok', async (req, res) => {
-    const { chatId } = req.session || {};
+    const chatId = req.body.chat_id;
     if (!chatId) {
-        return res.status(401).json({ error: 'Не авторизован' });
+        return res.status(400).json({ error: 'chat_id is required' });
     }
     const patch = req.body;
     try {
@@ -1558,9 +1558,9 @@ router.post('/channels/tiktok', async (req, res) => {
  * DELETE /api/manage/channels/tiktok — отключить TikTok
  */
 router.delete('/channels/tiktok', async (req, res) => {
-    const { chatId } = req.session || {};
+    const chatId = req.query.chat_id;
     if (!chatId) {
-        return res.status(401).json({ error: 'Не авторизован' });
+        return res.status(400).json({ error: 'chat_id is required' });
     }
     try {
         manageStore.clearTiktokConfig(chatId);
