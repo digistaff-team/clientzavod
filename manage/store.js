@@ -576,7 +576,6 @@ function setIntegrationSettings(chatId, patch = {}) {
     const current = statesCache[chatId].integrationSettings || {};
     const next = { ...current };
     if (patch.buffer_api_key !== undefined) next.buffer_api_key = patch.buffer_api_key || null;
-    if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
     statesCache[chatId].integrationSettings = next;
     return persist(chatId);
 }
