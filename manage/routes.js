@@ -1671,8 +1671,7 @@ router.get('/integrations', (req, res) => {
     manageStore.migrateIntegrationSettings(chatId);
     const s = manageStore.getIntegrationSettings(chatId) || {};
     res.json({ settings: {
-        buffer_api_key: s.buffer_api_key ? s.buffer_api_key.slice(0, 6) + '***' : null,
-        moderator_user_id: s.moderator_user_id || null
+        buffer_api_key: s.buffer_api_key ? s.buffer_api_key.slice(0, 6) + '***' : null
     }});
 });
 

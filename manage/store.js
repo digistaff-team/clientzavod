@@ -591,11 +591,6 @@ function migrateIntegrationSettings(chatId) {
             if (data[key]?.buffer_api_key) { patch.buffer_api_key = data[key].buffer_api_key; break; }
         }
     }
-    if (!current.moderator_user_id) {
-        for (const key of ['pinterestConfig', 'instagramConfig', 'youtubeConfig', 'facebookConfig', 'tiktokConfig', 'vkVideoConfig']) {
-            if (data[key]?.moderator_user_id) { patch.moderator_user_id = data[key].moderator_user_id; break; }
-        }
-    }
     if (Object.keys(patch).length > 0) setIntegrationSettings(chatId, patch);
 }
 
