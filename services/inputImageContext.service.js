@@ -224,39 +224,12 @@ async function _generateT2I(prompt, aspectRatio, model) {
   throw new Error('Image t2i timeout');
 }
 
-const LIGHTING_VARIANTS = [
-  'soft diffused natural light from a large window',
-  'warm golden hour sunlight, long shadows',
-  'bright studio strobe, white background rim light',
-  'moody low-key lighting, single side light source',
-  'overcast daylight, even shadowless illumination',
-  'candlelight-warm ambient glow, soft bokeh',
-  'cool north-window light, neutral tones',
-  'backlit silhouette light, glowing edges',
-];
-
-const ANGLE_VARIANTS = [
-  'front view, eye-level, centered composition',
-  'three-quarter angle, slight elevation, dynamic perspective',
-  'top-down flat lay, overhead shot',
-  'low angle, looking up, dramatic perspective',
-  'side profile, clean background, minimalist framing',
-  'close-up macro, sharp detail, extreme shallow depth of field',
-  'diagonal composition, 45-degree angle, lifestyle context',
-  'birds-eye view, symmetrical flat lay arrangement',
-];
-
 /**
- * Собирает структурированный промпт:
- * [Интерьер] + [Товар/Контекст] + [Освещение] + [Ракурс/Композиция] + [Стиль рендера]
- *
  * @param {string} productContext - описание товара или тема поста (из .txt файла или basePrompt канала)
  * @param {object|null} interior  - { style, description } из таблицы interiors, или null
- * @param {string} [lighting]     - конкретный вариант освещения (для тестов); если не передан — случайный
- * @param {string} [angle]        - конкретный ракурс (для тестов); если не передан — случайный
  * @returns {string}
  */
-function _buildPrompt(productContext, interior, lighting, angle) {
+function _buildPrompt(productContext, interior) {
   const parts = ['Professional product photography'];
 
   if (interior) {
@@ -338,4 +311,4 @@ async function generateImage(chatId, basePrompt, aspectRatio, t2iModel, channel 
   return await _generateT2I(prompt, aspectRatio, effectiveT2iModel);
 }
 
-module.exports = { getInputContext, generateImage, _parseFiles, _buildPrompt, LIGHTING_VARIANTS, ANGLE_VARIANTS, I2I_SCHEMAS };
+module.exports = { getInputContext, generateImage, _parseFiles, _buildPrompt, I2I_SCHEMAS };
