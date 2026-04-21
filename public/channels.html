@@ -292,7 +292,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="pinterestDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="pinterestDailyLimit" min="1" max="25" value="5" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="pinterestDailyLimit" min="1" max="25" value="5" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('pinterest')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">
@@ -421,7 +424,10 @@
                                     <!-- Daily Limit -->
                                     <div class="scheduler-field-row">
                                         <label for="instagramDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="instagramDailyLimit" min="1" max="25" value="5" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="instagramDailyLimit" min="1" max="25" value="5" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('instagram')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
                                     
                                     <!-- Publish Interval -->
@@ -564,7 +570,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="vkDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="vkDailyLimit" min="1" max="25" value="5" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="vkDailyLimit" min="1" max="25" value="5" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('vk')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">
@@ -670,7 +679,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="vkVideoDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="vkVideoDailyLimit" min="1" max="25" value="3" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="vkVideoDailyLimit" min="1" max="25" value="3" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('vk_video')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">
@@ -805,7 +817,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="youtubeDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="youtubeDailyLimit" min="1" max="25" value="3" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="youtubeDailyLimit" min="1" max="25" value="3" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('youtube')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">
@@ -929,7 +944,10 @@
                                     <!-- Daily Limit -->
                                     <div class="scheduler-field-row">
                                         <label for="facebookDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="facebookDailyLimit" min="1" max="50" value="10" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="facebookDailyLimit" min="1" max="50" value="10" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('facebook')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
                                     
                                     <!-- Publish Interval -->
@@ -1302,7 +1320,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="okDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="okDailyLimit" min="1" max="25" value="5" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="okDailyLimit" min="1" max="25" value="5" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('ok')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">
@@ -1491,7 +1512,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="tiktokDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="tiktokDailyLimit" min="1" max="10" value="3" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="tiktokDailyLimit" min="1" max="10" value="3" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('tiktok')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">
@@ -1620,7 +1644,10 @@
 
                                     <div class="scheduler-field-row">
                                         <label for="instagramReelsDailyLimit">Дневной лимит</label>
-                                        <input type="number" id="instagramReelsDailyLimit" min="1" max="10" value="3" />
+                                        <div style="display:flex;gap:8px;align-items:center;">
+                                            <input type="number" id="instagramReelsDailyLimit" min="1" max="10" value="3" />
+                                            <button class="btn btn-secondary btn-sm" onclick="resetChannelDailyCounter('instagram_reels')" title="Обнулить счётчик публикаций за сегодня">Сбросить</button>
+                                        </div>
                                     </div>
 
                                     <div class="scheduler-field-row">

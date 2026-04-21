@@ -1360,4 +1360,94 @@ router.post('/wordpress/reset-daily-counter', async (req, res) => {
   }
 });
 
+// POST /api/content/channels/reset-daily-counter — универсальный сброс счётчика для всех каналов
+router.post('/channels/reset-daily-counter', async (req, res) => {
+  const chatId = normalizeChatId(req.body.chat_id || req.body.chatId);
+  const channel = (req.body.channel || '').toLowerCase().trim();
+  if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+  if (!channel) return res.status(400).json({ error: 'channel is required' });
+
+  try {
+    // Маппинг канала на конфиг-функцию
+    const configGetters = {
+      'pinterest': (id) => manageStore.getPinterestConfig(id),
+      'instagram': (id) => manageStore.getInstagramConfig(id),
+      'vk': (id) => manageStore.getVkConfig(id),
+      'vk_video': (id) => manageStore.getVkVideoConfig(id),
+      'youtube': (id) => manageStore.getYoutubeConfig(id),
+      'facebook': (id) => manageStore.getFacebookConfig(id),
+      'ok': (id) => manageStore.getOkConfig(id),
+      'tiktok': (id) => manageStore.getTiktokConfig(id),
+      'instagram_reels': (id) => manageStore.getInstagramReelsConfig(id)
+    };
+
+    if (!configGetters[channel]) {
+      return res.status(400).json({ error: `Unknown channel: ${channel}` });
+    }
+
+    const channelConfig = configGetters[channel](chatId);
+    if (!channelConfig) {
+      return res.status(400).json({ error: `Channel ${channel} is not configured` });
+    }
+
+    const tz = channelConfig.scheduleTz || 'Europe/Moscow';
+
+    // Специальная логика для TikTok (использует stats в конфиге)
+    if (channel === 'tiktok') {
+      const states = manageStore.getAllStates();
+      const state = states[chatId] || {};
+      const cfg = manageStore.getTiktokConfig(chatId) || {};
+      cfg.stats = cfg.stats || { total_posts: 0, posts_today: 0, last_post_date: null };
+      cfg.stats.posts_today = 0;
+      state.tiktokConfig = cfg;
+      await manageStore.persist(chatId);
+      return res.json({ ok: true });
+    }
+
+    // Логика для каналов с publish_logs таблицами
+    const logTableMap = {
+      'pinterest': 'pinterest_publish_logs',
+      'instagram': 'instagram_publish_logs',
+      'vk': 'vk_publish_logs',
+      'youtube': 'youtube_publish_logs',
+      'facebook': 'facebook_publish_logs',
+      'ok': 'ok_publish_logs',
+      'instagram_reels': 'instagram_publish_logs' // Instagram Reels использует ту же таблицу
+    };
+
+    const logTable = logTableMap[channel];
+    if (logTable) {
+      await contentRepo.withClient(chatId, async (client) => {
+        await client.query(
+          `UPDATE ${logTable}
+              SET created_at = created_at - INTERVAL '1 day'
+            WHERE status = $1
+              AND to_char(created_at AT TIME ZONE $2, 'YYYY-MM-DD') = to_char(NOW() AT TIME ZONE $2, 'YYYY-MM-DD')`,
+          ['published', tz]
+        );
+      });
+      return res.json({ ok: true });
+    }
+
+    // Логика для VK Video (использует основную publish_logs с channel_id)
+    if (channel === 'vk_video') {
+      await contentRepo.withClient(chatId, async (client) => {
+        await client.query(
+          `UPDATE publish_logs
+              SET created_at = created_at - INTERVAL '1 day'
+            WHERE channel_id = $1
+              AND status = $2
+              AND to_char(created_at AT TIME ZONE $3, 'YYYY-MM-DD') = to_char(NOW() AT TIME ZONE $3, 'YYYY-MM-DD')`,
+          ['vk_video', 'published', tz]
+        );
+      });
+      return res.json({ ok: true });
+    }
+
+    return res.status(400).json({ error: `No handler for channel: ${channel}` });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

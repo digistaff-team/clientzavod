@@ -3034,3 +3034,35 @@ async function runInstagramReelsNow() {
     if (!chatId) return;
     await runChannelNow(`${API_MANAGE}/channels/instagram-reels/run-now`, { chat_id: chatId }, 'instagramReelsRunNowBtn', 'instagramReelsSettingsStatus', 'Задача запущена');
 }
+
+// === Универсальная функция сброса дневного счётчика ===
+async function resetChannelDailyCounter(channel) {
+    const chatId = getChatId();
+    if (!chatId) return;
+    const channelNames = {
+        'pinterest': 'Pinterest',
+        'instagram': 'Instagram',
+        'vk': 'VK',
+        'vk_video': 'VK Video',
+        'youtube': 'YouTube',
+        'facebook': 'Facebook',
+        'ok': 'OK',
+        'tiktok': 'TikTok',
+        'instagram_reels': 'Instagram Reels'
+    };
+    try {
+        const res = await fetch(`${API_CONTENT}/channels/reset-daily-counter`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId, channel })
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+            showToast(`Счётчик ${channelNames[channel] || channel} сброшен`, 'success');
+        } else {
+            showToast(`Ошибка: ${data.error || 'Неизвестная ошибка'}`, 'error');
+        }
+    } catch (e) {
+        showToast('Ошибка сети', 'error');
+    }
+}
