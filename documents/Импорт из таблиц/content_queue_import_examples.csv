@@ -1,0 +1,6 @@
+chat_id,job_type,job_id,priority,status,payload_json,correlation_id,run_at
+128247430,generate,,5,queued,"{""reason"": ""manual""}",corr_manual_001,
+128247430,generate,,5,queued,"{""reason"": ""manual""}",corr_manual_002,
+128247430,generate,,5,queued,"{""reason"": ""manual""}",corr_manual_003,
+128247430,publish,1,10,queued,"{""jobId"": 1, ""reason"": ""approve""}",corr_publish_001,
+128247430,generate,,0,queued,"{""reason"": ""schedule""}",corr_schedule_001,2026-03-24 09:00:00

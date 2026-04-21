@@ -1,0 +1,859 @@
+# АГЕНТНЫЙ ПЛАН: Рефакторинг публикации Pinterest → Buffer API
+
+> **Для AI-агента:** Выполняй фазы строго последовательно.
+> После каждой фазы — заполни шаблон отчёта и **добавь** его в этот документ
+> в раздел с соответствующей фазой (append, не перезаписывай весь файл).
+> Если шаг завершился ошибкой — запиши причину в отчёт и **остановись**.
+
+---
+
+## Контекст
+
+Текущая публикация в Pinterest идёт напрямую через Pinterest API v5
+(`services/pinterest.service.js`): изображение кодируется в base64 и передаётся
+в `POST /v5/pins`.
+
+Пользователь хочет публиковать через Buffer.com: у него есть аккаунт Buffer
+с подключённым Pinterest-каналом и API-ключ GraphQL API.
+
+Buffer API принимает изображение как **публичный URL**, а не base64.
+Это ключевое ограничение — сгенерированные картинки хранятся внутри
+Docker-контейнеров, поэтому нужен новый публичный HTTP-endpoint для их отдачи.
+
+Логика генерации контента, модерации и расписания **не меняется** — только
+слой публикации.
+
+Аналогичный паттерн уже реализован для Instagram в
+`documents/INSTAGRAM_BUFFER_SETUP.md` — используй его как образец.
+
+---
+
+## Статус фаз
+
+| Фаза | Описание | Статус |
+|------|----------|--------|
+| 0 | Подготовка документа | ✅ |
+| 1 | Публичный endpoint для изображений | ✅ |
+| 2 | Сервис Buffer API | ✅ |
+| 3 | Расширение pinterestConfig в store | ✅ |
+| 4 | Расширение POST /channels/pinterest | ✅ |
+| 5 | Условная логика publishPin() | ✅ |
+| 6 | Интеграционное тестирование | ✅ |
+
+---
+
+## ФАЗА 0: Подготовка документа плана
+
+### Шаг 0.1 — Убедиться что документ плана создан
+
+Документ создан. Статус обновлён.
+
+### Шаг 0.2 — Переход к Фазе 1
+
+Фаза 0 готова.
+
+---
+
+## ФАЗА 1: Публичный endpoint для изображений
+
+### Контекст
+
+Pinterest-изображения генерируются внутри Docker-контейнера и сохраняются по пути
+`/workspace/output/content/pin_{jobId}.png`. На хосте этот путь доступен через bind-mount:
+`/var/sandbox-data/{sanitized_chatId}/output/content/pin_{jobId}.png`.
+
+`storageService.getDataDir(chatId)` возвращает `/var/sandbox-data/{sanitized_chatId}`.
+
+Buffer API требует **публичный HTTPS URL** изображения. Значит нужен endpoint без авторизации.
+
+Итоговый URL: `https://clientzavod.ru/api/files/public/{chatId}/pin_{jobId}.png`
+
+### Шаги для выполнения
+
+1. Прочитать конец файла `routes/files.routes.js` (найти `module.exports = router;`)
+2. Добавить маршрут `GET /public/:chatId/:filename` перед экспортом
+3. Проверить что маршрут зарегистрирован в `routes/index.js` (уже должен быть)
+4. Добавить отчёт о завершении фазы
+
+### Код маршрута для добавления
+
+```javascript
+// Публичный endpoint для Buffer/внешних сервисов — без авторизации
+// Отдаёт сгенерированные изображения из output/content пользователя
+router.get('/public/:chatId/:filename', async (req, res) => {
+    const { chatId, filename } = req.params;
+
+    // Защита от path traversal
+    if (!filename || filename.includes('..') || filename.includes('/')) {
+        return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    // Разрешаем только изображения
+    const ext = path.extname(filename).toLowerCase();
+    if (!['.png', '.jpg', '.jpeg'].includes(ext)) {
+        return res.status(400).json({ error: 'Only image files allowed' });
+    }
+
+    const dataDir = storageService.getDataDir(chatId);
+    const filePath = path.join(dataDir, 'output', 'content', filename);
+
+    try {
+        await fs.access(filePath);
+        const contentType = ext === '.png' ? 'image/png' : 'image/jpeg';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        const fileBuffer = await fs.readFile(filePath);
+        res.send(fileBuffer);
+    } catch (e) {
+        res.status(404).json({ error: 'Image not found' });
+    }
+});
+```
+
+---
+
+## ФАЗА 2: Сервис Buffer GraphQL API
+
+### Контекст
+
+Buffer предоставляет GraphQL API: `POST https://api.buffer.com/graphql`.
+Авторизация: `Authorization: Bearer {apiKey}`.
+
+Мутация для создания поста использует переменные:
+- `channelId` — ID канала Pinterest в Buffer
+- `text` — текст поста
+- `schedulingType: "automatic"` — автоматический режим
+- `mode: "shareNow"` — публиковать немедленно
+- `assets.images[0].url` — публичный URL изображения
+
+### Файл для создания: `services/buffer.service.js`
+
+```javascript
+/**
+ * Buffer GraphQL API — публикация через Buffer.com
+ * Используется для Pinterest (и Instagram).
+ * Документация: https://developers.buffer.com/guides/getting-started.html
+ */
+const fetch = require('node-fetch');
+
+const BUFFER_GRAPHQL_URL = 'https://api.buffer.com/graphql';
+
+/**
+ * Создаёт пост в Buffer (режим shareNow).
+ * @param {string} apiKey - Bearer токен Buffer API
+ * @param {string} channelId - ID канала в Buffer (Pinterest/Instagram channel)
+ * @param {object} options
+ * @param {string} options.text - Текст поста
+ * @param {string} options.imageUrl - Публичный URL изображения
+ * @returns {Promise<{postId: string}>}
+ * @throws {Error} если Buffer вернул ошибку
+ */
+async function createPost(apiKey, channelId, { text, imageUrl }) {
+  const query = `
+    mutation CreatePost($input: CreatePostInput!) {
+      createPost(input: $input) {
+        post {
+          id
+          status
+        }
+        errors {
+          message
+          code
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    input: {
+      channelId,
+      text,
+      schedulingType: 'automatic',
+      mode: 'shareNow',
+      assets: {
+        images: [{ url: imageUrl }]
+      }
+    }
+  };
+
+  const response = await fetch(BUFFER_GRAPHQL_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Buffer API HTTP error ${response.status}: ${body}`);
+  }
+
+  const data = await response.json();
+
+  // GraphQL ошибки на уровне схемы
+  if (data.errors && data.errors.length > 0) {
+    const msg = data.errors.map((e) => e.message).join('; ');
+    throw new Error(`Buffer GraphQL error: ${msg}`);
+  }
+
+  // MutationError внутри ответа
+  const mutationErrors = data?.data?.createPost?.errors;
+  if (mutationErrors && mutationErrors.length > 0) {
+    const msg = mutationErrors.map((e) => e.message).join('; ');
+    throw new Error(`Buffer createPost error: ${msg}`);
+  }
+
+  const postId = data?.data?.createPost?.post?.id;
+  if (!postId) {
+    throw new Error('Buffer createPost: no post id in response');
+  }
+
+  return { postId };
+}
+
+module.exports = { createPost };
+```
+
+---
+
+## ФАЗА 3: Расширение pinterestConfig в manage/store.js
+
+### Контекст
+
+Функция `setPinterestConfig` в `manage/store.js` (строка ~567) принимает `patch`
+и обновляет конкретные поля. Нужно добавить три новых поля:
+- `buffer_api_key` — Bearer токен Buffer API
+- `buffer_channel_id` — ID канала Pinterest в Buffer
+- `publish_mode` — `'direct'` (по умолчанию) или `'buffer'`
+
+### Где добавить
+
+После строки:
+```javascript
+if (patch.stats !== undefined) next.stats = { ...(next.stats || {}), ...patch.stats };
+```
+
+Добавить:
+```javascript
+if (patch.buffer_api_key !== undefined) next.buffer_api_key = patch.buffer_api_key || null;
+if (patch.buffer_channel_id !== undefined) next.buffer_channel_id = String(patch.buffer_channel_id || '').trim() || null;
+if (patch.publish_mode !== undefined) next.publish_mode = ['direct', 'buffer'].includes(patch.publish_mode) ? patch.publish_mode : 'direct';
+```
+
+---
+
+## ФАЗА 4: Расширение POST /channels/pinterest в manage/routes.js
+
+### Контекст
+
+Маршрут `POST /channels/pinterest` находится в `manage/routes.js` (~строка 523).
+Сейчас он принимает: `chat_id, app_id, app_secret, board_id, board_name, website_url, is_active, auto_publish`.
+
+Нужно принять и передать в `setPinterestConfig` три новых поля:
+`buffer_api_key`, `buffer_channel_id`, `publish_mode`.
+
+### Что изменить
+
+**Строка деструктуризации** (найти и расширить):
+```javascript
+const { chat_id: chatId, app_id, app_secret, board_id, board_name, website_url, is_active, auto_publish } = req.body;
+```
+
+Заменить на:
+```javascript
+const { chat_id: chatId, app_id, app_secret, board_id, board_name, website_url, is_active, auto_publish, buffer_api_key, buffer_channel_id, publish_mode } = req.body;
+```
+
+**После блока проверок `is_active` и `auto_publish`** добавить:
+```javascript
+if (buffer_api_key !== undefined) patch.buffer_api_key = buffer_api_key;
+if (buffer_channel_id !== undefined) patch.buffer_channel_id = buffer_channel_id;
+if (publish_mode !== undefined) patch.publish_mode = publish_mode;
+```
+
+---
+
+## ФАЗА 5: Условная логика в publishPin()
+
+### Контекст
+
+Функция `publishPin(chatId, bot, jobId, correlationId)` в
+`services/pinterestMvp.service.js` (строка ~411).
+
+Нужно заменить блок публикации на условный `if/else`:
+- Если `cfg.publish_mode === 'buffer'` — публиковать через Buffer API
+- Иначе — использовать оригинальный код через Pinterest API v5
+
+### Что добавить
+
+1. Импорт `bufferService` в начало файла (после импорта `pinterestService`):
+```javascript
+const bufferService = require('./buffer.service');
+```
+
+2. В функции `publishPin()` найти блок публикации через Pinterest API
+   (между "Копируем изображение" и "Запись в лог")
+   и заменить на условный блок (см. планов файла).
+
+### Основная логика
+
+```javascript
+let result;
+
+if (cfg.publish_mode === 'buffer') {
+  // Публикация через Buffer GraphQL API
+  if (!cfg.buffer_api_key || !cfg.buffer_channel_id) {
+    throw new Error('Buffer API key или channel_id не настроены');
+  }
+  const imageUrl = `${config.APP_URL}/api/files/public/${chatId}/pin_${jobId}.png`;
+  const text = [job.pin_title, '', job.pin_description].filter(Boolean).join('\n');
+  const bufferResult = await bufferService.createPost(cfg.buffer_api_key, cfg.buffer_channel_id, { text, imageUrl });
+  result = { id: bufferResult.postId };
+  console.log(`[PINTEREST-MVP] Published via Buffer, postId=${bufferResult.postId}`);
+} else {
+  // Публикация напрямую через Pinterest API v5 (оригинальный код)
+  const session = await sessionService.getOrCreateSession(chatId);
+  const tempPath = path.join(os.tmpdir(), `pin-publish-${chatId}-${jobId}.png`);
+  await dockerService.copyFromContainer(session.containerId, job.image_path, tempPath);
+
+  let imageBuffer = await fs.readFile(tempPath);
+  await fs.unlink(tempPath).catch(() => {});
+
+  // Водяной знак
+  const logoPath = '/workspace/brand/logo.png';
+  const logoLocalPath = path.join(os.tmpdir(), `pin-logo-${chatId}.png`);
+  try {
+    await dockerService.copyFromContainer(session.containerId, logoPath, logoLocalPath);
+    imageBuffer = await imageService.overlayWatermark(imageBuffer, logoLocalPath);
+    await fs.unlink(logoLocalPath).catch(() => {});
+  } catch (e) {
+    console.log(`[PINTEREST-MVP] Watermark skipped: ${e.message}`);
+  }
+
+  const accessToken = await pinterestService.getValidToken(chatId, cfg);
+  const imageBase64 = imageBuffer.toString('base64');
+  result = await pinterestService.createPin(accessToken, {
+    boardId: job.board_id,
+    title: job.pin_title,
+    description: job.pin_description,
+    link: job.link || undefined,
+    mediaSource: {
+      source_type: 'image_base64',
+      content_type: 'image/png',
+      data: imageBase64
+    }
+  });
+}
+```
+
+---
+
+## ФАЗА 6: Интеграционное тестирование
+
+### Проверки
+
+1. **Синтаксис всех файлов:**
+   ```bash
+   node --check /root/docker-claw/routes/files.routes.js
+   node --check /root/docker-claw/services/buffer.service.js
+   node --check /root/docker-claw/manage/store.js
+   node --check /root/docker-claw/manage/routes.js
+   node --check /root/docker-claw/services/pinterestMvp.service.js
+   ```
+
+2. **APP_URL в config.js** — убедиться что задан (требуется для построения публичных URL)
+
+3. **node-fetch доступен** — проверить что `require('node-fetch')` работает
+
+4. **Endpoint функционирует** (при наличии тестовых изображений):
+   ```bash
+   curl -I "https://clientzavod.ru/api/files/public/{chatId}/pin_{jobId}.png"
+   ```
+
+5. **API endpoint принимает новые поля:**
+   ```bash
+   curl -X POST https://clientzavod.ru/api/manage/channels/pinterest \
+     -H "Content-Type: application/json" \
+     -d '{
+       "chat_id": "{chatId}",
+       "publish_mode": "buffer",
+       "buffer_api_key": "{API_KEY}",
+       "buffer_channel_id": "{CHANNEL_ID}",
+       "is_active": true
+     }'
+   ```
+
+---
+
+## Критические файлы для изменения
+
+| Файл | Изменение |
+|---|---|
+| `routes/files.routes.js` | +35 строк: `GET /public/:chatId/:filename` |
+| `services/buffer.service.js` | Новый файл: функция `createPost()` |
+| `manage/store.js` | +3 строки в `setPinterestConfig` |
+| `manage/routes.js` | +3 поля в destructuring + 3 строки в patch |
+| `services/pinterestMvp.service.js` | Импорт bufferService + условный if/else в `publishPin()` |
+
+### Остаются без изменений
+
+- `services/pinterest.service.js` — прямой API остаётся как fallback
+- Логика генерации, модерации, расписания
+- Таблицы БД, фронтенд
+- `routes/index.js` (файлы routes уже зарегистрированы)
+
+---
+
+## Справочная информация
+
+### Buffer GraphQL API Документация
+- https://developers.buffer.com/guides/getting-started.html
+- Мутация: `createPost`
+- Режим публикации: `shareNow` — публиковать немедленно
+- Автоматическое расписание: `schedulingType: automatic`
+
+### Образец для Instagram
+- `/root/docker-claw/documents/INSTAGRAM_BUFFER_SETUP.md`
+- Показывает как получить и использовать Buffer API ключ
+- Показывает как получить Channel ID через GraphQL
+
+### Обратная совместимость
+- Существующие пользователи без `publish_mode` продолжают использовать прямой Pinterest API
+- Можно переключаться между режимами через POST /api/manage/channels/pinterest
+- Откат: установить `publish_mode: "direct"` (или не передавать поле вообще)
+## ����� � ���������� ���� 1
+
+### ������
+? **���� 1 ��������� �������**
+
+### ����������� ���������
+- �������� �������  � 
+- ������� ������������ ������ � ��������������� ������������ ��� �����������
+- ������ �� path traversal � �������� ���������� �����
+
+### ��������
+? ������� ��������������� � routes/index.js (����� routes ��� ����������)
+? ��� ������������� ������������ �� �����
+
+### ����������
+- ��� ������������� ������� ��������� � routes/index.js
+- Endpoint ����� ��� ������������� Buffer API
+
+---
+
+
+## Отчёт о завершении Фазы 1
+
+### Статус
+✅ **Фаза 1 завершена успешно**
+
+### Выполненные изменения
+- Добавлен маршрут `GET /public/:chatId/:filename` в `routes/files.routes.js`
+- Маршрут обеспечивает доступ к сгенерированным изображениям без авторизации
+- Защита от path traversal и проверка расширения файла
+
+### Проверки
+✅ Маршурт зарегистрирован в routes/index.js (файлы routes уже подключены)
+✅ Код соответствует спецификации из плана
+
+### Примечания
+- Нет необходимости вносить изменения в routes/index.js
+- Endpoint готов для использования Buffer API
+
+---
+
+
+
+## Отчёт о завершении Фазы 2
+
+### Статус
+✅ **Фаза 2 завершена успешно**
+
+### Выполненные изменения
+- Создан новый файл `services/buffer.service.js`
+- Реализована функция `createPost()` для GraphQL мутации
+- Обработка ошибок: HTTP, GraphQL схемные, MutationError
+
+### Проверки
+✅ Синтаксис соответствует плану
+✅ Все типы ошибок обрабатываются
+
+### Примечания
+- node-fetch используется для HTTP запросов
+- Функция экспортируется как часть модуля
+
+---
+
+
+
+## Отчёт о завершении Фазы 3
+
+### Статус
+✅ **Фаза 3 завершена успешно**
+
+### Выполненные изменения
+- Добавлены 3 новых поля в `manage/store.js` → `setPinterestConfig()`:
+  - `buffer_api_key` — Bearer токен Buffer API
+  - `buffer_channel_id` — ID канала Pinterest в Buffer
+  - `publish_mode` — режим публикации (direct/buffer)
+
+### Проверки
+✅ Валидация publish_mode (только direct или buffer)
+✅ Поля сохраняются в next объект перед persist()
+
+---
+
+
+
+## Отчёт о завершении Фазы 4
+
+### Статус
+✅ **Фаза 4 завершена успешно**
+
+### Выполненные изменения
+- Расширена деструктуризация в `POST /channels/pinterest`:
+  - `buffer_api_key`
+  - `buffer_channel_id`
+  - `publish_mode`
+- Добавлена передача новых полей в `setPinterestConfig()`
+
+### Проверки
+✅ Все три поля принимаются из req.body
+✅ Поля передаются в patch объект
+
+---
+
+
+
+## Отчёт о завершении Фазы 5
+
+### Статус
+✅ **Фаза 5 завершена успешно**
+
+### Выполненные изменения
+- Добавлен импорт `bufferService` в `services/pinterestMvp.service.js`
+- Реализована условная логика в `publishPin()`:
+  - Если `cfg.publish_mode === buffer` — публикация через Buffer API
+  - Иначе — публикация напрямую через Pinterest API v5 (оригинальный код)
+- Публикация через Buffer использует публичный URL изображения
+- Логирование метода публикации в `addPublishLog()`
+
+### Проверки
+✅ Валидация Buffer API credentials
+✅ Сохранение обратной совместимости (fallback на direct mode)
+
+---
+
+
+
+---
+
+## ФИНАЛЬНЫЙ ОТЧЁТ
+
+### Общий статус
+✅ **ВСЕ ФАЗЫ ЗАВЕРШЕНЫ УСПЕШНО**
+
+### Итоговые изменения
+
+#### Файл 1: routes/files.routes.js
+- Добавлен маршрут `GET /public/:chatId/:filename`
+- Публичный доступ к изображениям без авторизации
+- Защита от path traversal
+- Проверка расширения файла (.png, .jpg, .jpeg)
+
+#### Файл 2: services/buffer.service.js (НОВЫЙ)
+- Создан сервис Buffer GraphQL API
+- Функция `createPost()` для мутации CreatePost
+- Обработка всех типов ошибок (HTTP, GraphQL, MutationError)
+
+#### Файл 3: manage/store.js
+- Расширена функция `setPinterestConfig()`
+- Добавлены поля: buffer_api_key, buffer_channel_id, publish_mode
+- Валидация publish_mode (только direct/buffer)
+
+#### Файл 4: manage/routes.js
+- Расширена деструктуризация в POST /channels/pinterest
+- Принимает новые поля: buffer_api_key, buffer_channel_id, publish_mode
+- Передаёт поля в setPinterestConfig()
+
+#### Файл 5: services/pinterestMvp.service.js
+- Добавлен импорт bufferService
+- Условная логика в publishPin():
+  - publish_mode === "buffer" → публикация через Buffer API
+  - publish_mode !== "buffer" → публикация напрямую через Pinterest API
+- Логирование метода публикации в addPublishLog()
+
+### Результаты тестирования
+
+✅ Синтаксис всех файлов проверен:
+  - routes/files.routes.js
+  - services/buffer.service.js
+  - manage/store.js
+  - manage/routes.js
+  - services/pinterestMvp.service.js
+
+✅ APP_URL задан в config.js: https://claw.pro-talk.ru
+
+✅ node-fetch доступен и работает
+
+✅ GET /api/files/public/:chatId/:filename функционирует (404 при отсутствии файла)
+
+✅ POST /api/manage/channels/pinterest принимает новые поля:
+  - publish_mode
+  - buffer_api_key
+  - buffer_channel_id
+
+### Готовность к использованию
+
+Интеграция Pinterest через Buffer API готова к использованию.
+
+**Инструкция для пользователя:**
+1. Получить API ключ Buffer: https://publish.buffer.com
+2. Получить Channel ID через GraphQL query в Buffer
+3. В настройках Pinterest канала в UI установить:
+   - buffer_api_key: ваш API ключ
+   - buffer_channel_id: ID вашего Pinterest канала в Buffer
+
+
+
+---
+
+
+
+---
+
+## ИСПРАВЛЕННЫЙ ФИНАЛЬНЫЙ ОТЧЁТ
+
+### Важное исправление
+❗ Убрана условная логика — только режим публикации через Buffer
+
+### Изменённые файлы (исправленные):
+
+| Файл | Изменение |
+|--------|----------|
+| `routes/files.routes.js` | +35 строк: публичный endpoint для изображений |
+| `services/buffer.service.js` | **НОВЫЙ файл**: Buffer GraphQL API сервис |
+| `manage/store.js` | +2 поля: buffer_api_key, buffer_channel_id (БЕЗ publish_mode) |
+| `manage/routes.js` | +2 поля в деструктуризации + 2 строки в patch (БЕЗ publish_mode) |
+| `services/pinterestMvp.service.js` | +импорт bufferService + публикация ТОЛЬКО через Buffer |
+
+### Что было реализовано (ИСПРАВЛЕНО):
+
+1. **Публичный endpoint** — `GET /api/files/public/:chatId/:filename`
+   - Доступ к изображениям без авторизации
+   - Защита от path traversal
+   - Проверка расширения файла
+
+2. **Buffer GraphQL API сервис** — `services/buffer.service.js`
+   - Мутация `createPost` для публикации
+   - Обработка всех типов ошибок
+
+3. **Расширение конфигурации Pinterest** — `manage/store.js`
+   - Новые поля: buffer_api_key, buffer_channel_id
+   - ✅ УБРАНО поле publish_mode (условная логика не нужна)
+
+4. **Расширение API endpoint** — `manage/routes.js`
+   - POST `/api/manage/channels/pinterest` принимает только Buffer поля
+   - ✅ УБРАНО поле publish_mode из деструктуризации и patch
+
+5. **Публикация через Buffer** — `services/pinterestMvp.service.js`
+   - ✅ ТОЛЬКО Buffer API (нет else для direct mode)
+   - Логирование метода публикации: \"buffer\"
+
+### Результаты тестирования
+
+✅ Синтаксис всех файлов проверен
+✅ APP_URL задан в config.js
+✅ node-fetch доступен
+✅ Публичный endpoint функционирует
+✅ API endpoint принимает Buffer поля
+
+### Для использования интеграции:
+
+1. Получите **API ключ Buffer**: https://publish.buffer.com
+2. Получите **Channel ID** вашего Pinterest канала в Buffer через GraphQL
+3. В настройках Pinterest канала установите:
+   - `buffer_api_key`: ваш API ключ
+   - `buffer_channel_id`: ID Pinterest канала в Buffer
+
+**ЕДИНЫЙ режим публикации:** Pinterest публикуется ТОЛЬКО через Buffer API.
+
+---
+
+
+
+---
+
+## ДОПОЛНЕНИЕ: ЗАМЕНА URL
+
+### Изменённые URL
+
+Заменены все вхождения старого URL на новый:
+
+| Старый URL | Новый URL |
+|-----------|----------|
+| `https://claw.pro-talk.ru` | `https://clientzavod.ru` |
+| `wss://claw.pro-talk.ru` | `wss://clientzavod.ru` |
+| `https://docker-claw.pro-talk.ru` | `https://docker-clientzavod.ru` |
+
+### Обновлённые файлы
+
+✅ config.js — APP_URL
+✅ manage/store.js — login link
+✅ .env.example — пример конфигурации
+✅ manage/telegram/runner.js — API URL
+✅ manage/telegram/authBot.js — (по grep результатам)
+✅ manage/prompts.js — WebSocket URL
+✅ manage/telegram/toolHandlers.js — (по grep результатам)
+✅ manage/telegram/agentLoop.js — (по grep результатам)
+✅ services/ai_router_service.js — Docker URL
+✅ .env — закомментированный пример
+
+✅ Верификация: все старые URL заменены
+
+---
+
+
+
+---
+
+## ИСПРАВЛЕНИЕ: docker-clientzavod.ru → clientzavod.ru
+
+### Исправлено
+
+Найдено и исправлено некорректное вхождение:
+
+| Было | Стало |
+|------|-------|
+| `https://docker-clientzavod.ru` | `https://clientzavod.ru` |
+| `Docker-Claw` | `ClientZavod` |
+
+### Обновлённый файл
+
+✅ `services/ai_router_service.js` — заголовок Referer и X-Title исправлены
+
+✅ Верификация: больше нет вхождений docker-clientzavod.ru
+
+---
+
+● Публикация в Pinterest — обзор
+
+  Архитектура
+
+  Планировщик (каждые 60 сек) → Очередь → Воркер → Генерация → Модерация → Публикация
+
+  1. Настройки (manage.getPinterestConfig(chatId))
+
+  {
+    is_active: true,           // Активен ли канал
+    auto_publish: true,        // Авто-публикация или через модерацию
+    board_rotation: 'random',  // 'random' | 'round_robin'
+    boards: [...],            // Список досок
+    schedule_time: '10:00',   // Время начала
+    publish_interval_hours: 4,  // Интервал между пинами
+    moderator_user_id: '...',   // ID модератора
+    stats: { total_pins, pins_today, last_pin_date }
+  }
+
+  2. Планировщик (tickPinterestSchedule)
+
+  - Запускается каждые 60 секунд
+  - Проверяет текущее время в таймзоне SCHEDULE_TZ (по умолчанию Europe/Moscow)
+  - Если время совпало со слотом — ставит задачу в очередь
+  - Проверяет дневной лимит (PINTEREST_DAILY_LIMIT = 10)
+
+  3. Генерация пина (handlePinterestGenerateJob)
+
+  Шаг 1 — Выбор доски
+  - random — случайная доска из списка
+  - round_robin — по очереди
+  - board_id — фиксированная
+
+  Шаг 2 — Выбор темы
+  - Резервирует следующую тему из content_topics
+  - Если тем нет — ошибка
+
+  Шаг 3 — Загрузка контекста
+  - loadMaterialsText() — до 12 материалов
+  - loadUserPersona() — файлы IDENTITY.md, SOUL.md из /workspace
+
+  Шаг 4 — Генерация текста AI
+  {
+    pinTitle: "до 100 символов, цепляющий",
+    pinDescription: "до 500 символов, с CTA и SEO",
+    seoKeywords: ["ключ1", "ключ2", ...]
+  }
+
+  Шаг 5 — Генерация изображения
+  - API: KIE_API_KEY (grok-imagine/text-to-image)
+  - Размер: 2:3 (вертикальный)
+  - Polling до 90 секунд
+  - Сохраняет в /workspace/output/content/pin_{jobId}.png
+
+  Шаг 6 — Запись в БД
+  - Создаёт запись в pinterest_jobs со статусом ready
+
+  4. Маршрутизация
+
+  ┌──────────────────────┬────────────────────────────┐
+  │        Режим         │          Действие          │
+  ├──────────────────────┼────────────────────────────┤
+  │ auto_publish = true  │ Сразу в очередь публикации │
+  ├──────────────────────┼────────────────────────────┤
+  │ auto_publish = false │ Отправка модератору        │
+  └──────────────────────┴────────────────────────────┘
+
+  5. Публикация (publishPin)
+
+  1. Копирует изображение из контейнера
+  2. Накладывает водяной знак (/workspace/brand/logo.png)
+  3. Публикует через Buffer API (GraphQL)
+    - Требует buffer_api_key и buffer_channel_id
+    - URL изображения: {APP_URL}/api/files/public/{chatId}/pin_{jobId}.png
+  4. Записывает в pinterest_publish_logs
+  5. Обновляет статистику (total_pins, pins_today)
+  6. Отправляет уведомление в Telegram бота пользователя
+
+  6. Модерация (sendPinToModerator)
+
+  При auto_publish = false:
+
+  📌 Черновик для Pinterest #123
+  Доска: Название доски
+
+  Заголовок: ...
+  Описание: ...
+
+  [✅ Одобрить] [❌ Отклонить]
+  [🔁 Текст]     [🖼  Фото]
+
+  Кнопки:
+  - approve — публикует пин
+  - reject — отклоняет (после 3 раз — задача закрывается)
+  - regen_text — перегенерация текста
+  - regen_image — перегенерация изображения
+
+  Иерархия модераторов:
+  1. Модератор канала (moderator_user_id)
+  2. Глобальный модератор (CONTENT_MVP_MODERATOR_USER_ID)
+  3. chatId пользователя (если свои боты)
+
+  Константы
+
+  ┌───────────────────────┬───────────────────────────────┐
+  │       Параметр        │           Значение            │
+  ├───────────────────────┼───────────────────────────────┤
+  │ DAILY_PIN_LIMIT       │ 10 (из PINTEREST_DAILY_LIMIT) │
+  ├───────────────────────┼───────────────────────────────┤
+  │ MAX_IMAGE_ATTEMPTS    │ 3                             │
+  ├───────────────────────┼───────────────────────────────┤
+  │ MAX_REJECT_ATTEMPTS   │ 3                             │
+  ├───────────────────────┼───────────────────────────────┤
+  │ Интервал планировщика │ 60 секунд                     │
+  ├───────────────────────┼───────────────────────────────┤
+  │ SCHEDULE_TZ           │ Europe/Moscow                 │
+  └───────────────────────┴───────────────────────────────┘
+
+  ---

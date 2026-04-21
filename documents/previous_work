@@ -1,0 +1,504 @@
+Разработай подключение нового пользователя через телеграм-бота. Пользователь   │       
+│    либо вводит свой телеграм ID (если его знает), либо переходит по ссылке в      │       
+│    телеграм бот @DigiStaff_Team_bot - в нем пользователь получает сообщение с     │       
+│    кнопкой "Войти в аккаунт". Нажав на эту кнопку, происходит авторизация         │       
+│    пользователя с его telegram ID в приложении.                                   │       
+╰───────────────────────────────────────────────────────────────────────────────────╯       
+
+❯ 
+  Изучу структуру проекта для понимания существующей системы авторизации и
+  Telegram-бота.
+
+ ╭───────────────────────────────────────────────────────────────────────────────╮
+ │ ✔  ReadManyFiles Will attempt to read and concatenate files using patterns:…  │
+ │                                                                               │
+ │                                                                               │
+ │    ### ReadManyFiles Result (Target Dir: `C:\Projects\Docker-Claw`)           │
+ │                                                                               │
+ │    Successfully read and concatenated content from **4 file(s)**.             │
+ │                                                                               │
+ │    **Processed Files:**                                                       │
+ │    - `manage/telegram/context.js`                                             │
+ │    - `manage/telegram/runner.js`                                              │
+ │    - `manage/telegram/toolHandlers.js`                                        │
+ │    - `manage/telegram/tools.js`                                               │
+ │ ✔  FindFiles '**/*auth*'                                                      │
+ │                                                                               │
+ │    Found 1 matching file(s)                                                   │
+ ╰───────────────────────────────────────────────────────────────────────────────╯
+ ╭──────────────────────────────────────────╮
+ │ ✔  ReadFile routes\auth.routes.js        │
+ │ ✔  ReadFile manage\store.js              │
+ │ ✔  ReadFile services\session.service.js  │
+ ╰──────────────────────────────────────────╯
+❯ Теперь изучу маршруты и конфигурацию:
+ ╭──────────────────────────────╮
+ │ ✔  ReadFile routes\index.js  │
+ │ ✔  ReadFile config.js        │
+ ╰──────────────────────────────╯
+ ╭───────────────────────────────╮
+ │ ✔  ReadFile manage\routes.js  │
+ ╰───────────────────────────────╯
+❯ Понял архитектуру. Вижу что в runner.js уже есть обработчик кнопки login_account,
+  который вызывает /api/auth/telegram-login, но этого эндпоинта нет в
+  auth.routes.js.
+
+  План реализации:
+
+   1. Добавить эндпоинт `/api/auth/telegram-login` — авторизация при нажатии кнопки в       
+      боте
+   2. Добавить эндпоинт `/api/auth/by-telegram-id` — вход по введённому Telegram ID
+      на сайте
+   3. Обновить обработчик в runner.js — улучшить логику и сообщения
+
+  Начну реализацию:
+ ╭──────────────────────────────────────────────────────────────────────────╮
+ │ ✔  Edit routes\auth.routes.js: /**... => /**...                          │
+ │                                                                          │
+ │    ... first 185 lines hidden ...                                        │
+ │    345 +                                                                 │
+ │    346 +             const apiUrl = process.env.API_URL ||               │
+ │        'https://claw.pro-talk.ru';                                       │
+ │    347 +                                                                 │
+ │    348 +             return res.json({                                   │
+ │    349 +                 success: true,                                  │
+ │    350 +                 chatId: telegramId,                             │
+ │    351 +                 username: directState.verifiedUsername || null  │
+ │        ,                                                                 │
+ │    352 +                 verified: !!directState.verifiedTelegramId,     │
+ │    353 +                 hasBot: !!directState.token,                    │
+ │    354 +                 hasAI: !!(directState.aiAuthToken &&            │
+ │        directState.aiModel),                                             │
+ │    355 +                 redirectUrl: `${apiUrl}/?chat_id=${telegramId}  │
+ │        `,                                                                │
+ │    356 +                 message: 'Вход выполнен'                        │
+ │    357 +             });                                                 │
+ │    358 +         } catch (e) {                                           │
+ │    359 +             return res.status(500).json({ error: e.message });  │
+ │    360 +         }                                                       │
+ │    361 +     }                                                           │
+ │    362 +                                                                 │
+ │    363 +     // Ищем по verifiedTelegramId                               │
+ │    364 +     const allStates = manageStore.getAllStates();               │
+ │    365 +     let foundChatId = null;                                     │
+ │    366 +     let foundState = null;                                      │
+ │    367 +                                                                 │
+ │    368 +     for (const [chatId, state] of Object.entries(allStates)) {  │
+ │    369 +         if (state.verifiedTelegramId === telegramId) {          │
+ │    370 +             foundChatId = chatId;                               │
+ │    371 +             foundState = state;                                 │
+ │    372 +             break;                                              │
+ │    373 +         }                                                       │
+ │    374 +     }                                                           │
+ │    375 +                                                                 │
+ │    376 +     if (foundChatId && foundState) {                            │
+ │    377 +         try {                                                   │
+ │    378 +             await sessionService.getOrCreateSession             │
+ │        (foundChatId);                                                    │
+ │    379 +                                                                 │
+ │    380 +             const apiUrl = process.env.API_URL ||               │
+ │        'https://claw.pro-talk.ru';                                       │
+ │    381 +                                                                 │
+ │    382 +             return res.json({                                   │
+ │    383 +                 success: true,                                  │
+ │    384 +                 chatId: foundChatId,                            │
+ │    385 +                 username: foundState.verifiedUsername || null,  │
+ │    386 +                 verified: true,                                 │
+ │    387 +                 hasBot: !!foundState.token,                     │
+ │    388 +                 hasAI: !!(foundState.aiAuthToken &&             │
+ │        foundState.aiModel),                                              │
+ │    389 +                 redirectUrl: `${apiUrl}/?chat_id=               │
+ │        ${foundChatId}`,                                                  │
+ │    390 +                 message: 'Вход выполнен'                        │
+ │    391 +             });                                                 │
+ │    392 +         } catch (e) {                                           │
+ │    393 +             return res.status(500).json({ error: e.message });  │
+ │    394 +         }                                                       │
+ │    395 +     }                                                           │
+ │    396 +                                                                 │
+ │    397 +     // Сессия не найдена — предлагаем перейти в бота            │
+ │    398 +     const apiUrl = process.env.API_URL ||                       │
+ │        'https://claw.pro-talk.ru';                                       │
+ │    399 +                                                                 │
+ │    400 +     res.status(404).json({                                      │
+ │    401 +         success: false,                                         │
+ │    402 +         error: 'Пользователь с таким Telegram ID не найден.',   │
+ │    403 +         needRegister: true,                                     │
+ │    404 +         botLink: 'https://t.me/DigiStaff_Team_bot',             │
+ │    405 +         message: 'Перейдите в бота и нажмите "Войти в аккаунт"  │
+ │        для создания аккаунта.'                                           │
+ │    406 +     });                                                         │
+ │    407 + });                                                             │
+ │    408 +                                                                 │
+ │    409 + /**                                                             │
+ │    410 +  * Получение информации о пользователе по Telegram ID           │
+ │    411 +  * GET /api/auth/telegram-info?telegram_id=123456789            │
+ │    412 +  */                                                             │
+ │    413 + router.get('/telegram-info', (req, res) => {                    │
+ │    414 +     const telegramId = String(req.query.telegram_id || '').     │
+ │        trim();                                                           │
+ │    415 +                                                                 │
+ │    416 +     if (!telegramId) {                                          │
+ │    417 +         return res.status(400).json({ error: 'telegram_id is    │
+ │        required' });                                                     │
+ │    418 +     }                                                           │
+ │    419 +                                                                 │
+ │    420 +     // Ищем по chatId                                           │
+ │    421 +     let state = manageStore.getState(telegramId);               │
+ │    422 +     let chatId = telegramId;                                    │
+ │    423 +                                                                 │
+ │    424 +     // Если не нашли — ищем по verifiedTelegramId               │
+ │    425 +     if (!state) {                                               │
+ │    426 +         const allStates = manageStore.getAllStates();           │
+ │    427 +         for (const [cid, s] of Object.entries(allStates)) {     │
+ │    428 +             if (s.verifiedTelegramId === telegramId) {          │
+ │    429 +                 state = s;                                      │
+ │    430 +                 chatId = cid;                                   │
+ │    431 +                 break;                                          │
+ │    432 +             }                                                   │
+ │    433 +         }                                                       │
+ │    434 +     }                                                           │
+ │    435 +                                                                 │
+ │    436 +     if (!state) {                                               │
+ │    437 +         return res.json({                                       │
+ │    438 +             found: false,                                       │
+ │    439 +             message: 'Пользователь не найден'                   │
+ │    440 +         });                                                     │
+ │    441 +     }                                                           │
+ │    442 +                                                                 │
+ │    443 +     const session = sessionService.getSession(chatId);          │
+ │    444 +                                                                 │
+ │    445 +     res.json({                                                  │
+ │    446 +         found: true,                                            │
+ │    447 +         chatId,                                                 │
+ │    448 +         telegramId: state.verifiedTelegramId || chatId,         │
+ │    449 +         username: state.verifiedUsername || null,               │
+ │    450 +         verified: !!state.verifiedTelegramId,                   │
+ │    451 +         hasBot: !!state.token,                                  │
+ │    452 +         hasAI: !!(state.aiAuthToken && state.aiModel),          │
+ │    453 +         sessionActive: !!session,                               │
+ │    454 +         containerId: session?.containerId || null               │
+ │    455 +     });                                                         │
+ │    456 + });                                                             │
+ │    457 +                                                                 │
+ │    458   module.exports = router;                                        │
+ ╰──────────────────────────────────────────────────────────────────────────╯
+❯ Теперь обновлю обработчик в runner.js:
+ ╭─────────────────────────────────────────────────────────────────────────────────────╮    
+ │ ✔  Edit manage\telegram\runner.js: const { Telegraf, Markup } = r... => const { Te… │    
+ │                                                                                     │    
+ │    ... first 968 lines hidden ...                                                   │    
+ │        .username}` : null;                                                          │    
+ │    824 -         const document = ctx.message?.document;                            │    
+ │    825 -         if (!document) return;                                             │    
+ │    826 -                                                                            │    
+ │    827 -         const tgChatId = String(ctx.chat.id);                              │    
+ │    828 -         console.log('[TG-FILE]', tgChatId, '(session:',                    │    
+ │        chatId, ')', document.file_name, document.file_size);                        │    
+ │    829 -                                                                            │    
+ │    830 -         const data = manageStore.getState(chatId);                         │    
+ │    831 -         if (!data || !data.token) {                                        │    
+ │    832 -             return ctx.reply('Бот отключён. Добавьте токен в               │    
+ │        панели управления.');                                                        │    
+ │    833 -         }                                                                  │    
+ │    834 -                                                                            │    
+ │    835 -         if (!data.verifiedTelegramId) {                                    │    
+ │    836 -             return ctx.reply('Сначала подтвердите аккаунт.                 │    
+ │        Отправьте текстовое сообщение для получения кода.');                         │    
+ │    837 -         }                                                                  │    
+ │    838 -                                                                            │    
+ │    839 -         if (data.verifiedTelegramId !== fromId) {                          │    
+ │    840 -             return ctx.reply('Управление окружением привязано              │    
+ │        к другому пользователю. Только он может загружать файлы.');                  │    
+ │    841 -         }                                                                  │    
+ │    842 -                                                                            │    
+ │    843 -         const session = sessionService.getSession(chatId);                 │    
+ │    844 -         if (!session) {                                                    │    
+ │    845 -             return ctx.reply('Сессия не найдена. Создайте                  │    
+ │        сессию в панели (войдите по Chat ID).');                                     │    
+ │    846 -         }                                                                  │    
+ │    847 -                                                                            │    
+ │    848 -         // Ограничение размера файла: 10MB                                 │    
+ │    849 -         const maxSize = 10 * 1024 * 1024;                                  │    
+ │    850 -         if (document.file_size > maxSize) {                                │    
+ │    851 -             return ctx.reply(`❌ Файл слишком большой (${Math              │     
+ │        .round(document.file_size / 1024 / 1024)}MB). Максимальный                   │    
+ │        размер: 10MB.`);                                                             │    
+ │    852 -         }                                                                  │    
+ │    853 -                                                                            │    
+ │    854 -         // Санитизация имени файла                                         │    
+ │    855 -         let fileName = document.file_name.replace(                         │    
+ │        /[^a-zA-Z0-9._-]/g, '_');                                                    │    
+ │    856 -         if (!fileName) fileName = 'uploaded_file';                         │    
+ │    857 -                                                                            │    
+ │    858 -         try {                                                              │    
+ │    859 -             // Скачиваем файл                                              │    
+ │    860 -             const fileLink = await ctx.telegram.getFileLink(               │    
+ │        document.file_id);                                                           │    
+ │    861 -             const response = await fetch(fileLink.href);                   │    
+ │    862 -             if (!response.ok) {                                            │    
+ │    863 -                 throw new Error(`HTTP ${response.status}:                  │    
+ │        ${response.statusText}`);                                                    │    
+ │    864 -             }                                                              │    
+ │    865 -                                                                            │    
+ │    866 -             const buffer = await response.arrayBuffer();                   │    
+ │    867 -             const timestamp = Date.now();                                  │    
+ │    868 -             const random = Math.floor(Math.random() * 10000);              │    
+ │    869 -             const tempFileName = `tg-upload-${timestamp}-                  │    
+ │        ${random}-${fileName}`;                                                      │
+ │    870 -             const tempPath = path.join('/tmp', tempFileName);              │    
+ │    871 -                                                                            │    
+ │    872 -             await fs.writeFile(tempPath, Buffer.from(buffer));             │    
+ │    873 -                                                                            │    
+ │    874 -             // Копируем в контейнер в /workspace/input                     │    
+ │    875 -             const containerPath = `/workspace/input/                       │    
+ │        ${fileName}`;                                                                │    
+ │    876 -             await dockerService.copyToContainer(tempPath,                  │    
+ │        session.containerId, containerPath);                                         │    
+ │    877 -                                                                            │    
+ │    878 -             // Удаляем временный файл                                      │    
+ │    879 -             await fs.unlink(tempPath).catch(() => {});                     │    
+ │    880 -                                                                            │    
+ │    881 -             await ctx.reply(`✅ Файл "${fileName}" загружен в              │     
+ │        /workspace/input\nРазмер: ${Math.round(document.file_size / 1024             │    
+ │        )}KB`);                                                                      │    
+ │    882 -                                                                            │    
+ │    883 -         } catch (err) {                                                    │    
+ │    884 -             console.error('[TG-FILE-ERROR]', chatId, err.                  │    
+ │        message);                                                                    │    
+ │    885 -             await ctx.reply(`❌ Ошибка загрузки файла:                     │     
+ │        ${err.message}`);                                                            │    
+ │    886 -         }                                                                  │    
+ │    887 -     });                                                                    │    
+ │    888 -                                                                            │    
+ │    889 -     bot.on('text', async (ctx) => {                                        │    
+ │    890 -         await handleTextMessage(ctx, chatId);                              │    
+ │    891 -     });                                                                    │    
+ │    892 -                                                                            │    
+ │    893 -     bot.launch().then(() => {                                              │    
+ │    894 -         bots.set(chatId, { bot, token });                                  │    
+ │    895 -         console.log('[MANAGE-TG] Bot started for chatId:',                 │    
+ │        chatId);                                                                     │    
+ │    896 -     }).catch((err) => {                                                    │    
+ │    897 -         console.error('[MANAGE-TG] Failed to start bot for',               │    
+ │        chatId, err.message);                                                        │    
+ │    898 -     });                                                                    │    
+ │    899 -                                                                            │    
+ │    900 -     return bot;                                                            │    
+ │    901 - }                                                                          │    
+ │    902 -                                                                            │    
+ │    903 - function stopBot(chatId) {                                                 │    
+ │    904 -     const entry = bots.get(chatId);                                        │    
+ │    905 -     if (entry) {                                                           │    
+ │    906 -         try {                                                              │    
+ │    907 -             entry.bot.stop();                                              │    
+ │    908 -         } catch (e) {                                                      │    
+ │    909 -             // ignore                                                      │    
+ │    910 -         }                                                                  │    
+ │    911 -         bots.delete(chatId);                                               │    
+ │    912 -         console.log('[MANAGE-TG] Bot stopped for chatId:',                 │    
+ │        chatId);                                                                     │    
+ │    913 -     }                                                                      │    
+ │    914 - }                                                                          │    
+ │    915 -                                                                            │    
+ │    916 - async function startAllBots() {                                            │    
+ │    917 -     const list = manageStore.getAllTokens();                               │    
+ │    918 -     for (const { chatId, token } of list) {                                │    
+ │    919 -         if (token) startBot(chatId, token);                                │    
+ │    920 -     }                                                                      │    
+ │    921 - }                                                                          │    
+ │    922 -                                                                            │    
+ │    923 - module.exports = {                                                         │    
+ │    924 -     startBot,                                                              │    
+ │    925 -     stopBot,                                                               │    
+ │    926 -     startAllBots,                                                          │    
+ │    927 -     bots                                                                   │    
+ │    928 - };                                                                         │    
+ ╰─────────────────────────────────────────────────────────────────────────────────────╯    
+❯ Теперь создам отдельный модуль для главного бота авторизации @DigiStaff_Team_bot:
+ ╭──────────────────────────────────────────────────────────────────────────╮
+ │ ✔  WriteFile Writing to manage\telegram\authBot.js                       │
+ │                                                                          │
+ │    ... first 184 lines hidden ...                                        │
+ │        Docker контейнер');                                               │
+ │    170                                                                   │
+ │    171                     if (services.length > 0) {                    │
+ │    172                         welcomeMsg += `<b>Активные                │
+ │        сервисы:</b>\n`;                                                  │
+ │    173                         services.forEach(s => welcomeMsg += `•    │
+ │        ${s}\n`);                                                         │
+ │    174                         welcomeMsg += `\n`;                       │
+ │    175                     }                                             │
+ │    176                                                                   │
+ │    177                     welcomeMsg += `🔗 <a href="                   │
+ │        ${result.redirectUrl}">Открыть панель управления</a>`;            │
+ │    178                 }                                                 │
+ │    179                                                                   │
+ │    180                 await ctx.reply(welcomeMsg, {                     │
+ │    181                     parse_mode: 'HTML',                           │
+ │    182                     disable_web_page_preview: true                │
+ │    183                 }).catch(() => {});                               │
+ │    184                                                                   │
+ │    185                 console.log(`[AUTH-BOT] Login success for         │
+ │        ${fromId}, chatId=${result.chatId}, isNew=${result.isNewUser ||   │
+ │        false}`);                                                         │
+ │    186             } else {                                              │
+ │    187                 // Ошибка авторизации                             │
+ │    188                 const errorMsg = result.error || 'Неизвестная     │
+ │        ошибка';                                                          │
+ │    189                                                                   │
+ │    190                 let errMsg = `❌ <b>Ошибка авторизации</b>\n\n    │
+ │        ${errorMsg}\n\n`;                                                 │
+ │    191                                                                   │
+ │    192                 if (result.needRegister) {                        │
+ │    193                     errMsg += `<i>Если это ваш первый вход,       │
+ │        попробуйте ещё раз или обратитесь в поддержку.</i>`;              │
+ │    194                 }                                                 │
+ │    195                                                                   │
+ │    196                 await ctx.reply(errMsg, {                         │
+ │    197                     parse_mode: 'HTML'                            │
+ │    198                 }).catch(() => {});                               │
+ │    199                                                                   │
+ │    200                 console.error(`[AUTH-BOT] Login failed for        │
+ │        ${fromId}:`, errorMsg);                                           │
+ │    201             }                                                     │
+ │    202         } catch (e) {                                             │
+ │    203             console.error('[AUTH-BOT] Login error:', e.message);  │
+ │    204             await ctx.reply('❌ Ошибка соединения с сервером.     │
+ │        Попробуйте позже.').catch(() => {});                              │
+ │    205         }                                                         │
+ │    206     });                                                           │
+ │    207                                                                   │
+ │    208     // Обработка текстовых сообщений (если пользователь просто    │
+ │        пишет что-то)                                                     │
+ │    209     bot.on('text', async (ctx) => {                               │
+ │    210         const text = ctx.message?.text?.toLowerCase() || '';      │
+ │    211                                                                   │
+ │    212         // Если пользователь спрашивает про ID                    │
+ │    213         if (text.includes('id') || text.includes('айди') ||       │
+ │        text.includes('какой мой')) {                                     │
+ │    214             const fromId = ctx.from?.id;                          │
+ │    215             return ctx.reply(`🆔 Ваш Telegram ID: <code>          │
+ │        ${fromId}</code>\n\nНажмите /start для входа в аккаунт.`, {       │
+ │    216                 parse_mode: 'HTML'                                │
+ │    217             });                                                   │
+ │    218         }                                                         │
+ │    219                                                                   │
+ │    220         // Если пользователь хочет войти                          │
+ │    221         if (text.includes('войти') || text.includes('вход') ||    │
+ │        text.includes('логин') || text.includes('login')) {               │
+ │    222             return ctx.reply('🔐 Нажмите кнопку для входа:',      │
+ │    223                 Markup.inlineKeyboard([                           │
+ │    224                     [Markup.button.callback('🔑 Войти в аккаунт'  │
+ │        , 'login_account')]                                               │
+ │    225                 ])                                                │
+ │    226             );                                                    │
+ │    227         }                                                         │
+ │    228                                                                   │
+ │    229         // Default response                                       │
+ │    230         await ctx.reply(                                          │
+ │    231             '👋 Привет! Я помогу вам войти в аккаунт DigiStaff    │
+ │        Team.\n\n' +                                                      │
+ │    232             'Нажмите /start или кнопку ниже:',                    │
+ │    233             Markup.inlineKeyboard([                               │
+ │    234                 [Markup.button.callback('🔑 Войти в аккаунт',     │
+ │        'login_account')]                                                 │
+ │    235             ])                                                    │
+ │    236         );                                                        │
+ │    237     });                                                           │
+ │    238                                                                   │
+ │    239     bot.launch().then(() => {                                     │
+ │    240         authBot = bot;                                            │
+ │    241         console.log('[AUTH-BOT] Auth bot @DigiStaff_Team_bot      │
+ │        started successfully');                                           │
+ │    242     }).catch((err) => {                                           │
+ │    243         console.error('[AUTH-BOT] Failed to start auth bot:',     │
+ │        err.message);                                                     │
+ │    244     });                                                           │
+ │    245                                                                   │
+ │    246     return bot;                                                   │
+ │    247 }                                                                 │
+ │    248                                                                   │
+ │    249 /**                                                               │
+ │    250  * Останавливает главный бот авторизации                          │
+ │    251  */                                                               │
+ │    252 function stopAuthBot() {                                          │
+ │    253     if (authBot) {                                                │
+ │    254         try {                                                     │
+ │    255             authBot.stop();                                       │
+ │    256         } catch (e) {                                             │
+ │    257             // ignore                                             │
+ │    258         }                                                         │
+ │    259         authBot = null;                                           │
+ │    260         console.log('[AUTH-BOT] Auth bot stopped');               │
+ │    261     }                                                             │
+ │    262 }                                                                 │
+ │    263                                                                   │
+ │    264 /**                                                               │
+ │    265  * Возвращает экземпляр бота                                      │
+ │    266  */                                                               │
+ │    267 function getAuthBot() {                                           │
+ │    268     return authBot;                                               │
+ │    269 }                                                                 │
+ │    270                                                                   │
+ │    271 module.exports = {                                                │
+ │    272     startAuthBot,                                                 │
+ │    273     stopAuthBot,                                                  │
+ │    274     getAuthBot                                                    │
+ │    275 };                                                                │
+ ╰──────────────────────────────────────────────────────────────────────────╯
+❯ Теперь добавлю запуск auth-бота в server.js и конфигурацию:
+ ╭────────────────────────╮
+ │ ✔  ReadFile server.js  │
+ ╰────────────────────────╯
+ ╭─────────────────────────────────────────────────────────────────────────────────────╮    
+ │ ✔  Edit server.js: require('dotenv').config();... => require('dotenv').config();... │    
+ │                                                                                     │    
+ │    39   // Управление: загрузка состояния и запуск Telegram-ботов                   │    
+ │    40   const manageStore = require('./manage/store');                              │    
+ │    41   const telegramRunner = require('./manage/telegram/runner');                 │    
+ │    42 + const authBot = require('./manage/telegram/authBot');                       │    
+ │    43                                                                               │    
+ │    44   // Сначала загружаем состояние                                              │    
+ │    45   await manageStore.load();                                                   │    
+ │    46                                                                               │    
+ │    47 + // Запуск главного бота авторизации @DigiStaff_Team_bot                     │    
+ │    48 + const authBotToken = process.env.AUTH_BOT_TOKEN;                            │
+ │    49 + if (authBotToken) {                                                         │    
+ │    50 +     authBot.startAuthBot(authBotToken);                                     │    
+ │    51 +     console.log('🤖 Auth bot: ✅ STARTED (@DigiStaff_Team_bot)'             │     
+ │       );                                                                            │    
+ │    52 + } else {                                                                    │    
+ │    53 +     console.log('🤖 Auth bot: ⏸️  SKIPPED (AUTH_BOT_TOKEN not               │    
+ │       set)');                                                                       │    
+ │    54 + }                                                                           │    
+ │    55 +                                                                             │    
+ │    56   // Email processor - запуск cron для опроса почты                           │    
+ │    57   let emailProcessor;                                                         │    
+ │    58   try {                                                                       │    
+ ╰─────────────────────────────────────────────────────────────────────────────────────╯    
+ ╭─────────────────────────────────────────────────────────────────────────────────────╮    
+ │ ✔  Edit server.js: require('dotenv').config();... => require('dotenv').config();... │    
+ │                                                                                     │    
+ │    126   // Остановка Telegram-ботов                                                │    
+ │    127   try {                                                                      │    
+ │    128       const telegramRunner = require('./manage/telegram/runner'              │    
+ │          );                                                                         │    
+ │    129 +     const authBot = require('./manage/telegram/authBot');                  │    
+ │    130       const manageStore = require('./manage/store');                         │    
+ │    131       const contentMvpService = require(                                     │    
+ │          './services/contentMvp.service');                                          │    
+ │    132       let emailProcessor;                                                    │    
+ │    135       } catch (e) {                                                          │    
+ │    136           // ignore                                                          │    
+ │    137       }                                                                      │    
+ │    138 +                                                                            │    
+ │    139 +     // Остановка auth-бота                                                 │    
+ │    140 +     authBot.stopAuthBot();                                                 │    
+ │    141 +                                                                            │    
+ │    142 +     // Остановка пользовательских ботов                                    │    
+ │    143       for (const chatId of Array.from(telegramRunner.bots.keys               │    
+ │          ())) {                                                                     │    
+ │    144           telegramRunner.stopBot(chatId);                                    │    
+ │    145       }                                                                      │    
+ ╰─────────────────────────────────────────────────────────────────────────────────────╯    

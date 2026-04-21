@@ -1,0 +1,59 @@
+### ✅ Исправление применено (Вариант 1: туннель ngrok)
+
+---
+
+### 📝 Внесённые изменения
+
+**1. Добавлена переменная `APP_URL` в `config.js`:**
+```javascript
+// App URL (для Telegram inline keyboard — должен быть https://)
+APP_URL: process.env.APP_URL || 'https://claw.pro-talk.ru',
+```
+
+**2. Обновлён `routes/auth.routes.js`:**
+- Импортирован `config`
+- Все `redirectUrl` теперь используют `config.APP_URL` вместо `process.env.API_URL`
+
+**3. Обновлён `manage/telegram/authBot.js`:**
+- Добавлен импорт `config`
+- URL для inline-кнопок теперь берётся из `config.APP_URL`
+
+**4. Создан `.env.example` с примерами конфигурации**
+
+---
+
+### 🚀 Как использовать
+
+#### Для локальной разработки:
+
+1. **Установите ngrok:** https://ngrok.com/
+
+2. **Запустите туннель:**
+```bash
+ngrok http 3015
+```
+
+3. **Скопируйте HTTPS URL** (например, `https://abc123.ngrok-free.app`)
+
+4. **Создайте `.env` файл:**
+```env
+APP_URL=https://abc123.ngrok-free.app
+API_URL=https://abc123.ngrok-free.app
+BOT_TOKEN=your_bot_token
+```
+
+5. **Перезапустите сервер**
+
+#### Для продакшена:
+
+В `.env` укажите ваш публичный домен:
+```env
+APP_URL=https://your-domain.com
+API_URL=https://your-domain.com
+```
+
+---
+
+### ✅ Результат
+
+Теперь inline-кнопки в Telegram будут использовать HTTPS URL, что соответствует требованиям Telegram Bot API.

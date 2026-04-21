@@ -1,0 +1,9 @@
+{
+  "chatId": "test_chat_id",
+  "data": {
+    "pinterestConfig": {
+      "is_active": true
+    }
+  },
+  "savedAt": 1774980805660
+}

@@ -1,0 +1,12 @@
+Канал,Тип,ID канала,Имя,Токен,Активен,Автопубликация,Настройки
+telegram,social,-1001142729178,Клиент-завод | SMM и реклама,,TRUE,FALSE,"{""disable_notification"": false, ""chat_id"": ""-1001142729178""}"
+vk,social,123456789,Клиент-завод ВКонтакте,,TRUE,FALSE,"{""group_id"": ""123456789"", ""post_type"": ""post""}"
+facebook,social,123456789012345,Клиент-завод Facebook,,FALSE,FALSE,"{""page_id"": ""123456789012345"", ""access_token"": ""EAAB...""}"
+instagram,social,client_zavod,@client_zavod,,FALSE,FALSE,"{""is_business"": true, ""account_type"": ""business"", ""instagram_business_account_id"": ""17841400...""}"
+ok,social,12345678901234,Клиент-завод ОК,,FALSE,FALSE,"{""group_id"": ""12345678901234"", ""application_key"": ""...""}"
+pinterest,social,980870062533264681,Клиент-завод Pinterest,,FALSE,FALSE,"{""board_id"": ""980870062533264681"", ""board_name"": ""Клиент-завод"", ""link"": ""https://clientzavod.ru""}"
+youtube,video,UCxxxxxxxxxxxxx,ClientZavod,,FALSE,FALSE,"{""category"": ""Education"", ""privacy"": ""public""}"
+tiktok,social,@client_zavod,Клиент-завод TikTok,,FALSE,FALSE,"{""username"": ""client_zavod"", ""display_name"": ""Клиент-завод""}"
+zen,social,zen-channel-id,Дзен канал,,FALSE,FALSE,"{""channel_id"": ""zen-channel-id"", ""publication_type"": ""article""}"
+blog,blog,/blog,Корпоративный блог,,TRUE,TRUE,"{""author_id"": ""1"", ""category"": ""SMM""}"
+email,email,newsletter,Email рассылка,,TRUE,FALSE,"{""template"": ""default"", ""from_name"": ""Клиент-завод""}"

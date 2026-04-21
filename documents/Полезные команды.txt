@@ -1,0 +1,14 @@
+# Проверить запущенные контейнеры
+docker ps -a
+
+# Посмотреть образы
+docker images
+
+# Протестировать запуск контейнера
+docker run hello-world
+
+# Посмотреть логи контейнера
+docker logs <container_id>
+
+# Очистить неиспользуемые данные
+docker system prune -f

@@ -1,0 +1,10 @@
+{
+  "chatId": "987654321",
+  "data": {
+    "token": "test:123456:ABCDEF",
+    "verifiedTelegramId": null,
+    "verifiedUsername": null,
+    "pending": null
+  },
+  "savedAt": 1774959067843
+}

@@ -1,0 +1,19 @@
+{
+  "chatId": "123456789",
+  "data": {
+    "token": "test:token",
+    "verifiedTelegramId": null,
+    "verifiedUsername": null,
+    "pending": null,
+    "aiBotId": "test",
+    "aiBotToken": "test",
+    "aiUserEmail": "test@test.com",
+    "aiAuthToken": "test_test",
+    "aiModel": "test",
+    "aiBalance": 200000,
+    "aiBalanceExpired": "2024-03-06",
+    "aiBlocked": true,
+    "aiBlockReason": "Срок действия тарифа истёк. Продлите Ваш тариф."
+  },
+  "savedAt": 1774957456227
+}
