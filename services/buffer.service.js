@@ -25,7 +25,7 @@ const BUFFER_GRAPHQL_URL = 'https://api.buffer.com/graphql';
 const MAX_RETRIES = 3;
 const BACKOFF_MS = [15000, 30000, 60000];
 
-async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbnailUrl, boardServiceId, youtubeTitle, youtubeCategoryId, postType }) {
+async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbnailUrl, boardServiceId, youtubeTitle, youtubeCategoryId, postType, instagramType }) {
   const query = `
     mutation CreatePost($input: CreatePostInput!) {
       createPost(input: $input) {
@@ -84,10 +84,12 @@ async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbna
 
   // Facebook post type (post, story, reel)
   if (postType) {
-    input.metadata = {
-      ...input.metadata,
-      facebook: { type: postType }
-    };
+    input.metadata = { ...input.metadata, facebook: { type: postType } };
+  }
+
+  // Instagram post type (post, story, reel)
+  if (instagramType) {
+    input.metadata = { ...input.metadata, instagram: { type: instagramType, shouldShareToFeed: true } };
   }
 
   const variables = { input };

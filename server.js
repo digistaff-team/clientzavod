@@ -385,9 +385,9 @@ async function startServer() {
 
                 const igConfig = manageStore.getInstagramConfig?.(cid) || {};
                 const globalSettings = data.contentSettings || {};
-                const channelModeratorId = igConfig.moderator_user_id ||
+                const channelModeratorId = String(igConfig.moderator_user_id ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 

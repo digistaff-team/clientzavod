@@ -1623,6 +1623,18 @@ router.post('/channels/instagram-reels', async (req, res) => {
     }
 });
 
+router.post('/channels/instagram/run-now', async (req, res) => {
+    try {
+        const { chat_id: chatId } = req.body;
+        if (!chatId) return res.status(400).json({ error: 'chat_id required' });
+        const igMvp = require('../services/instagramMvp.service');
+        const result = await igMvp.runNow(chatId, null, 'manual');
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
 router.post('/channels/instagram-reels/run-now', async (req, res) => {
     try {
         const { chat_id: chatId } = req.body;

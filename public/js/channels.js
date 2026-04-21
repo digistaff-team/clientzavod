@@ -1228,7 +1228,22 @@ async function disconnectPinterest() {
 
 function fetchInstagramBufferChannels() {
     const apiKey = getBufferApiKey('instagramBufferApiKey');
-    loadBufferChannels(apiKey, 'instagram', 'instagramBufferChannelSelect', getChatId());
+    loadBufferChannels(apiKey, 'instagram', 'instagramBufferChannelSelect', getChatId()).then(() => {
+        const selectEl = document.getElementById('instagramBufferChannelSelect');
+        const hiddenEl = document.getElementById('instagramBufferChannelId');
+        if (!selectEl || !hiddenEl) return;
+        const currentVal = hiddenEl.value;
+        const optionExists = Array.from(selectEl.options).some(opt => opt.value === currentVal);
+        if (!optionExists) {
+            const firstReal = Array.from(selectEl.options).find(opt => opt.value);
+            if (firstReal) {
+                selectEl.value = firstReal.value;
+                hiddenEl.value = firstReal.value;
+            } else {
+                hiddenEl.value = '';
+            }
+        }
+    });
 }
 
 function onInstagramChannelSelectChange() {
@@ -1345,7 +1360,7 @@ async function loadInstagramConfig() {
 
             const premoderationEl = document.getElementById('instagramPremoderation');
             if (premoderationEl) {
-                premoderationEl.checked = !!cfg.premoderation;
+                premoderationEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
             }
             const instagramModeratorEl = document.getElementById('instagramModeratorUserId');
             if (instagramModeratorEl) instagramModeratorEl.value = cfg.moderator_user_id || '';
@@ -1467,7 +1482,7 @@ async function saveInstagramConfig() {
         publish_interval_hours: publishInterval,
         allowed_weekdays: allowedWeekdays,
         random_publish: randomPublish,
-        premoderation: premoderation,
+        auto_publish: !premoderation,
         moderator_user_id: instagramModeratorUserId
     };
     if (bufferChannelId) body.buffer_channel_id = bufferChannelId;
@@ -3152,6 +3167,26 @@ async function saveInstagramReelsSettings() {
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
             if (statusEl) statusEl.innerHTML = `<span style="color:#c00;">❌ ${data.error || 'Ошибка сохранения'}</span>`;
+        }
+    } catch (e) {
+        showToast('Ошибка сети', 'error');
+    }
+}
+
+async function runInstagramNow() {
+    const chatId = getChatId();
+    if (!chatId) return;
+    try {
+        const res = await fetch(`${API_MANAGE}/channels/instagram/run-now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+            showToast(data.message || 'Задача запущена', 'success');
+        } else {
+            showToast(data.message || data.error || 'Ошибка', 'error');
         }
     } catch (e) {
         showToast('Ошибка сети', 'error');
