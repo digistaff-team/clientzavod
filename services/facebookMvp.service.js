@@ -655,42 +655,44 @@ async function tickFacebookSchedule(chatId, bot) {
   const [startH, startM] = settings.scheduleTime.split(':').map(Number);
   const startMinutes = startH * 60 + startM;
 
-  if (settings.scheduleEndTime) {
+  if (settings.scheduleEndTime && settings.scheduleEndTime !== '00:00') {
     const [endH, endM] = settings.scheduleEndTime.split(':').map(Number);
-    if (currentMinutes >= endH * 60 + endM) return;
+    const endMinutes = endH * 60 + endM;
+    if (endMinutes > 0 && currentMinutes >= endMinutes) return;
   }
   const intervalMinutes = settings.publishIntervalHours * 60;
 
-  // Найдём последний слот для публикации
+  // Найдём текущий слот для публикации
   const startOfDay = startMinutes;
+  if (currentMinutes < startOfDay) return;
   const slotsSinceStart = Math.floor((currentMinutes - startOfDay) / intervalMinutes);
-  const nextSlotStart = startOfDay + (slotsSinceStart + 1) * intervalMinutes;
+  const currentSlotStart = startOfDay + slotsSinceStart * intervalMinutes;
 
   let targetMinutes;
 
   if (settings.randomPublish) {
-    // Рандомный режим: 85-100% от интервала
+    // Рандомный режим: 0-15% от интервала после начала слота
     const randomOffset = Math.floor(intervalMinutes * 0.15 * Math.random());
-    targetMinutes = nextSlotStart + randomOffset;
+    targetMinutes = currentSlotStart + randomOffset;
   } else {
-    // Фиксированный режим
-    targetMinutes = nextSlotStart;
+    // Фиксированный режим: публикуем в начале слота
+    targetMinutes = currentSlotStart;
   }
 
   // Проверяем, наступило ли время
   if (currentMinutes >= targetMinutes) {
-    console.log(`[FB] Time to publish for ${chatId}`);
-
-    // Проверяем, не было ли публикации в этом слоте
-    const lastPostDate = settings.stats?.last_post_date;
-    if (lastPostDate) {
-      const lastPostTime = new Date(lastPostDate).getTime();
-      const slotTime = Date.now() - (currentMinutes - targetMinutes) * 60000;
-      if (lastPostTime > slotTime) {
-        console.log(`[FB] Already published in this slot for ${chatId}`);
-        return;
-      }
+    // Дедупликация: один enqueue на слот (как у других каналов)
+    const slotKey = `fbLastEnqueued:${Math.floor(currentSlotStart / 60).toString().padStart(2,'0')}:${(currentSlotStart % 60).toString().padStart(2,'0')}`;
+    const data = manageStore.getState(chatId) || {};
+    if (data[slotKey] === now.date) {
+      return;
     }
+    data[slotKey] = now.date;
+    const states = manageStore.getAllStates();
+    if (!states[chatId]) states[chatId] = data;
+    await manageStore.persist(chatId);
+
+    console.log(`[FB] Time to publish for ${chatId}`);
 
     // Постановка в очередь
     const correlationId = generateCorrelationId();
