@@ -902,6 +902,9 @@ async function loadPinterestConfig() {
 
         const cfg = data.config || {};
 
+        const pinDisplay = document.getElementById('pinterestBufferApiKeyDisplay');
+        if (pinDisplay && data.masked_api_key) pinDisplay.value = data.masked_api_key;
+
         if (data.connected && cfg.buffer_channel_id) {
             statusEl.innerHTML = '<span style="color: #0a0;">✅ Pinterest подключён</span>';
             const connectStatusRow = document.getElementById('pinterestConnectStatusRow');
@@ -1254,6 +1257,9 @@ async function loadInstagramConfig() {
         if (!statusEl) return;
 
         const cfg = data.config || {};
+
+        const igDisplay = document.getElementById('instagramBufferApiKeyDisplay');
+        if (igDisplay && data.masked_api_key) igDisplay.value = data.masked_api_key;
 
         if (data.connected && cfg.buffer_channel_id) {
             statusEl.innerHTML = '<span style="color: #0a0;">✅ Instagram подключён</span>';

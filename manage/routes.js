@@ -547,9 +547,11 @@ router.get('/channels/pinterest', (req, res) => {
         delete safeConfig.refresh_token;
         delete safeConfig.access_token_expires;
         const isConnected = !!safeConfig.buffer_channel_id;
-        res.json({ connected: isConnected, config: safeConfig, buffer_api_key_global_set: bufferApiKeyGlobalSet });
+        const maskedApiKey = globalInt.buffer_api_key ? globalInt.buffer_api_key.slice(0, 6) + '***' : (safeConfig.buffer_api_key || null);
+        res.json({ connected: isConnected, config: safeConfig, buffer_api_key_global_set: bufferApiKeyGlobalSet, masked_api_key: maskedApiKey });
     } else {
-        res.json({ connected: false, config: null, buffer_api_key_global_set: bufferApiKeyGlobalSet });
+        const maskedApiKey = globalInt.buffer_api_key ? globalInt.buffer_api_key.slice(0, 6) + '***' : null;
+        res.json({ connected: false, config: null, buffer_api_key_global_set: bufferApiKeyGlobalSet, masked_api_key: maskedApiKey });
     }
 });
 
@@ -769,7 +771,8 @@ router.get('/channels/instagram', (req, res) => {
     const safe = { ...config };
     if (safe.buffer_api_key) safe.buffer_api_key = safe.buffer_api_key.slice(0, 6) + '***';
     const isConnected = !!safe.buffer_channel_id;
-    res.json({ connected: isConnected, config: safe, buffer_api_key_global_set: bufferApiKeyGlobalSet });
+    const maskedApiKey = globalInt.buffer_api_key ? globalInt.buffer_api_key.slice(0, 6) + '***' : (safe.buffer_api_key || null);
+    res.json({ connected: isConnected, config: safe, buffer_api_key_global_set: bufferApiKeyGlobalSet, masked_api_key: maskedApiKey });
 });
 
 router.post('/channels/instagram', async (req, res) => {
