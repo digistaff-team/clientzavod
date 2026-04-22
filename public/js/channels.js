@@ -881,8 +881,6 @@ async function autoConnectPinterest() {
         const connectStatusRow = document.getElementById('pinterestConnectStatusRow');
         if (connectStatusRow) connectStatusRow.style.display = '';
         if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ Pinterest подключён</span>';
-        const disconnectBtn = document.getElementById('disconnectPinterestBtn');
-        if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
 
         await loadPinterestBoards();
     } catch (e) {
@@ -898,14 +896,12 @@ async function loadPinterestConfig() {
         const res = await fetch(`${API_MANAGE}/channels/pinterest?chat_id=${encodeURIComponent(chatId)}`);
         const data = await res.json();
         const statusEl = document.getElementById('pinterestStatus');
-        const disconnectBtn = document.getElementById('disconnectPinterestBtn');
         if (!statusEl) return;
 
         const cfg = data.config || {};
 
         if (data.connected && cfg.buffer_channel_id) {
             statusEl.innerHTML = '<span style="color: #0a0;">✅ Pinterest подключён</span>';
-            if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
             const connectStatusRow = document.getElementById('pinterestConnectStatusRow');
             const channelNameEl = document.getElementById('pinterestChannelName');
             if (connectStatusRow && channelNameEl) {
@@ -915,11 +911,9 @@ async function loadPinterestConfig() {
             await loadPinterestBoards();
         } else if (data.buffer_api_key_global_set) {
             statusEl.textContent = '';
-            if (disconnectBtn) disconnectBtn.style.display = 'none';
             await autoConnectPinterest();
         } else {
             statusEl.innerHTML = '<span style="color:#888;">⚠️ Buffer API Key не настроен — укажите в разделе Интеграции</span>';
-            if (disconnectBtn) disconnectBtn.style.display = 'none';
         }
 
         if (cfg.board_id) document.getElementById('pinterestBoardId').value = cfg.board_id;
@@ -1201,31 +1195,6 @@ async function savePinterestConfig() {
             await loadIntegrationSettings();
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
-        }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    }
-}
-
-async function disconnectPinterest() {
-    const chatId = getChatId();
-    if (!chatId || !confirm('Отключить Pinterest? При следующем открытии страницы канал подключится снова автоматически.')) return;
-    try {
-        const res = await fetch(`${API_MANAGE}/channels/pinterest?chat_id=${encodeURIComponent(chatId)}`, { method: 'DELETE' });
-        if (res.ok) {
-            showToast('Pinterest отключён', 'success');
-            document.getElementById('pinterestBoardId').value = '';
-            document.getElementById('pinterestWebsiteUrl').value = '';
-            const boardSelect = document.getElementById('pinterestBoardSelect');
-            if (boardSelect) boardSelect.innerHTML = '<option value="">— выберите доску —</option>';
-            const connectStatusRow = document.getElementById('pinterestConnectStatusRow');
-            if (connectStatusRow) connectStatusRow.style.display = 'none';
-            const statusEl = document.getElementById('pinterestStatus');
-            if (statusEl) statusEl.innerHTML = '<span style="color:#888;">Отключено. Обновите страницу для повторного подключения.</span>';
-            const disconnectBtn = document.getElementById('disconnectPinterestBtn');
-            if (disconnectBtn) disconnectBtn.style.display = 'none';
-        } else {
-            showToast('Ошибка отключения', 'error');
         }
     } catch (e) {
         showToast('Ошибка сети', 'error');
