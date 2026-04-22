@@ -781,6 +781,8 @@ function applyBufferApiKeyState(maskedKey) {
     });
     const pinDisplay = document.getElementById('pinterestBufferApiKeyDisplay');
     if (pinDisplay) pinDisplay.value = maskedKey || '';
+    const igDisplay = document.getElementById('instagramBufferApiKeyDisplay');
+    if (igDisplay) igDisplay.value = maskedKey || '';
 }
 
 async function loadIntegrationSettings() {
@@ -1203,82 +1205,42 @@ async function savePinterestConfig() {
 
 // === Instagram ===
 
-function fetchInstagramBufferChannels() {
-    const apiKey = getBufferApiKey('instagramBufferApiKey');
-    loadBufferChannels(apiKey, 'instagram', 'instagramBufferChannelSelect', getChatId()).then(() => {
-        const selectEl = document.getElementById('instagramBufferChannelSelect');
-        const hiddenEl = document.getElementById('instagramBufferChannelId');
-        if (!selectEl || !hiddenEl) return;
-        const currentVal = hiddenEl.value;
-        const optionExists = Array.from(selectEl.options).some(opt => opt.value === currentVal);
-        if (!optionExists) {
-            const firstReal = Array.from(selectEl.options).find(opt => opt.value);
-            if (firstReal) {
-                selectEl.value = firstReal.value;
-                hiddenEl.value = firstReal.value;
-            } else {
-                hiddenEl.value = '';
-            }
-        }
-    });
-}
-
-function onInstagramChannelSelectChange() {
-    const selectEl = document.getElementById('instagramBufferChannelSelect');
-    const hiddenEl = document.getElementById('instagramBufferChannelId');
-    if (hiddenEl && selectEl) hiddenEl.value = selectEl.value;
-}
-
-async function testInstagramBufferConnection() {
+async function autoConnectInstagram() {
     const chatId = getChatId();
     if (!chatId) return;
-    const apiKey = getBufferApiKey('instagramBufferApiKey');
-    const channelId = (document.getElementById('instagramBufferChannelId')?.value || '').trim();
-    if (!channelId) {
-        showToast('Выберите Buffer Channel', 'error');
-        return;
-    }
+    const statusEl = document.getElementById('instagramStatus');
+    if (statusEl) statusEl.innerHTML = '<span style="color:#888;">⏳ Подключение к Instagram...</span>';
     try {
-        const res = await fetch(`${API_MANAGE}/channels/instagram/test-buffer`, {
+        const chRes = await fetch(`${API_MANAGE}/channels/buffer/channels?service=instagram`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, buffer_api_key: apiKey, buffer_channel_id: channelId })
+            body: JSON.stringify({ chat_id: chatId })
         });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-            showToast(`✅ Соединение успешно: ${data.name || 'Instagram'}`, 'success');
-        } else {
-            showToast(data.error || 'Ошибка проверки', 'error');
+        const chData = await chRes.json();
+        if (!chRes.ok || !chData.channels?.length) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ Instagram-канал не найден в Buffer</span>';
+            return;
         }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    }
-}
+        const channel = chData.channels[0];
 
-async function connectInstagram() {
-    const chatId = getChatId();
-    if (!chatId) return;
-    const apiKey = getBufferApiKey('instagramBufferApiKey');
-    const channelId = (document.getElementById('instagramBufferChannelId')?.value || '').trim();
-    if (!channelId) {
-        showToast('Выберите Buffer Channel', 'error');
-        return;
-    }
-    try {
-        const res = await fetch(`${API_MANAGE}/channels/instagram`, {
+        const saveRes = await fetch(`${API_MANAGE}/channels/instagram`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, buffer_api_key: apiKey, buffer_channel_id: channelId })
+            body: JSON.stringify({ chat_id: chatId, buffer_channel_id: channel.id })
         });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-            showToast('Instagram подключён', 'success');
-            await loadInstagramConfig();
-        } else {
-            showToast(data.error || 'Ошибка подключения', 'error');
+        if (!saveRes.ok) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ Ошибка сохранения channel_id</span>';
+            return;
         }
+
+        const channelNameEl = document.getElementById('instagramChannelName');
+        if (channelNameEl) channelNameEl.value = channel.name || channel.id;
+        const connectStatusRow = document.getElementById('instagramConnectStatusRow');
+        if (connectStatusRow) connectStatusRow.style.display = '';
+        if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ Instagram подключён</span>';
     } catch (e) {
-        showToast('Ошибка сети', 'error');
+        const statusEl = document.getElementById('instagramStatus');
+        if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ Ошибка подключения: ' + e.message + '</span>';
     }
 }
 
@@ -1289,51 +1251,55 @@ async function loadInstagramConfig() {
         const res = await fetch(`${API_MANAGE}/channels/instagram?chat_id=${encodeURIComponent(chatId)}`);
         const data = await res.json();
         const statusEl = document.getElementById('instagramStatus');
-        const disconnectBtn = document.getElementById('disconnectInstagramBtn');
         if (!statusEl) return;
 
-        if (data.connected) {
-            statusEl.innerHTML = '<span style="color: #0a0;">✅ Instagram подключён через Buffer</span>';
-            if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
+        const cfg = data.config || {};
 
-            const cfg = data.config || {};
-            if (cfg.buffer_channel_id) {
-                document.getElementById('instagramBufferChannelId').value = cfg.buffer_channel_id;
+        if (data.connected && cfg.buffer_channel_id) {
+            statusEl.innerHTML = '<span style="color: #0a0;">✅ Instagram подключён</span>';
+            const connectStatusRow = document.getElementById('instagramConnectStatusRow');
+            const channelNameEl = document.getElementById('instagramChannelName');
+            if (connectStatusRow && channelNameEl) {
+                channelNameEl.value = cfg.buffer_channel_id;
+                connectStatusRow.style.display = '';
             }
-            const dailyLimitEl = document.getElementById('instagramDailyLimit');
-            if (dailyLimitEl) dailyLimitEl.value = cfg.daily_limit || 5;
-
-            if (cfg.schedule_time) {
-                setInstagramScheduleTimeInputs(cfg.schedule_time);
-            } else {
-                const hourEl = document.getElementById('instagramScheduleHour');
-                const minuteEl = document.getElementById('instagramScheduleMinute');
-                if (hourEl) hourEl.value = '09';
-                if (minuteEl) minuteEl.value = '00';
-                updateInstagramScheduleTime();
-            }
-            if (cfg.schedule_end_time) setInstagramScheduleEndTimeInputs(cfg.schedule_end_time);
-            if (cfg.schedule_tz) setInstagramScheduleTzInput(cfg.schedule_tz);
-            if (cfg.publish_interval_hours) {
-                const intervalEl = document.getElementById('instagramPublishInterval');
-                if (intervalEl) intervalEl.value = cfg.publish_interval_hours.toString();
-            }
-            if (cfg.allowed_weekdays) setWeekdays('instagram-weekday', cfg.allowed_weekdays);
-
-            const randomPublishEl = document.getElementById('instagramRandomPublish');
-            if (randomPublishEl) randomPublishEl.checked = !!cfg.random_publish;
-
-            const premoderationEl = document.getElementById('instagramPremoderation');
-            if (premoderationEl) {
-                premoderationEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
-            }
-            const instagramModeratorEl = document.getElementById('instagramModeratorUserId');
-            if (instagramModeratorEl) instagramModeratorEl.value = cfg.moderator_user_id || chatId;
-            toggleInstagramModeratorField();
-        } else {
+        } else if (data.buffer_api_key_global_set) {
             statusEl.textContent = '';
-            if (disconnectBtn) disconnectBtn.style.display = 'none';
+            await autoConnectInstagram();
+        } else {
+            statusEl.innerHTML = '<span style="color:#888;">⚠️ Buffer API Key не настроен — укажите в разделе Интеграции</span>';
         }
+
+        const dailyLimitEl = document.getElementById('instagramDailyLimit');
+        if (dailyLimitEl) dailyLimitEl.value = cfg.daily_limit || 5;
+
+        if (cfg.schedule_time) {
+            setInstagramScheduleTimeInputs(cfg.schedule_time);
+        } else {
+            const hourEl = document.getElementById('instagramScheduleHour');
+            const minuteEl = document.getElementById('instagramScheduleMinute');
+            if (hourEl) hourEl.value = '09';
+            if (minuteEl) minuteEl.value = '00';
+            updateInstagramScheduleTime();
+        }
+        if (cfg.schedule_end_time) setInstagramScheduleEndTimeInputs(cfg.schedule_end_time);
+        if (cfg.schedule_tz) setInstagramScheduleTzInput(cfg.schedule_tz);
+        if (cfg.publish_interval_hours) {
+            const intervalEl = document.getElementById('instagramPublishInterval');
+            if (intervalEl) intervalEl.value = cfg.publish_interval_hours.toString();
+        }
+        if (cfg.allowed_weekdays) setWeekdays('instagram-weekday', cfg.allowed_weekdays);
+
+        const randomPublishEl = document.getElementById('instagramRandomPublish');
+        if (randomPublishEl) randomPublishEl.checked = !!cfg.random_publish;
+
+        const premoderationEl = document.getElementById('instagramPremoderation');
+        if (premoderationEl) {
+            premoderationEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
+        }
+        const instagramModeratorEl = document.getElementById('instagramModeratorUserId');
+        if (instagramModeratorEl) instagramModeratorEl.value = cfg.moderator_user_id || chatId;
+        toggleInstagramModeratorField();
     } catch (e) {
         console.error('loadInstagramConfig', e);
     }
@@ -1423,7 +1389,6 @@ async function saveInstagramConfig() {
     const chatId = getChatId();
     if (!chatId) return;
 
-    const bufferChannelId = (document.getElementById('instagramBufferChannelId')?.value || '').trim();
     const dailyLimit = parseInt(document.getElementById('instagramDailyLimit')?.value || '5', 10);
 
     updateInstagramScheduleEndTime();
@@ -1448,8 +1413,6 @@ async function saveInstagramConfig() {
         auto_publish: !premoderation,
         moderator_user_id: instagramModeratorUserId
     };
-    if (bufferChannelId) body.buffer_channel_id = bufferChannelId;
-
     try {
         const res = await fetch(`${API_MANAGE}/channels/instagram`, {
             method: 'POST',
@@ -1463,25 +1426,6 @@ async function saveInstagramConfig() {
             await loadIntegrationSettings();
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
-        }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    }
-}
-
-async function disconnectInstagram() {
-    const chatId = getChatId();
-    if (!chatId || !confirm('Отключить Instagram?')) return;
-    try {
-        const res = await fetch(`${API_MANAGE}/channels/instagram?chat_id=${encodeURIComponent(chatId)}`, { method: 'DELETE' });
-        if (res.ok) {
-            showToast('Instagram отключён', 'success');
-            document.getElementById('instagramBufferChannelId').value = '';
-            const selectEl = document.getElementById('instagramBufferChannelSelect');
-            if (selectEl) selectEl.innerHTML = '<option value="">— выберите канал —</option>';
-            await loadInstagramConfig();
-        } else {
-            showToast('Ошибка отключения', 'error');
         }
     } catch (e) {
         showToast('Ошибка сети', 'error');

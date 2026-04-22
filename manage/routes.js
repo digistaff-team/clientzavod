@@ -761,11 +761,15 @@ router.delete('/channels/pinterest/board', async (req, res) => {
 router.get('/channels/instagram', (req, res) => {
     const chatId = req.query.chat_id;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
+    manageStore.migrateIntegrationSettings(chatId);
+    const globalInt = manageStore.getIntegrationSettings(chatId) || {};
+    const bufferApiKeyGlobalSet = !!globalInt.buffer_api_key;
     const config = manageStore.getInstagramConfig(chatId);
-    if (!config) return res.json({ connected: false });
+    if (!config) return res.json({ connected: false, buffer_api_key_global_set: bufferApiKeyGlobalSet });
     const safe = { ...config };
     if (safe.buffer_api_key) safe.buffer_api_key = safe.buffer_api_key.slice(0, 6) + '***';
-    res.json({ connected: true, config: safe });
+    const isConnected = !!safe.buffer_channel_id;
+    res.json({ connected: isConnected, config: safe, buffer_api_key_global_set: bufferApiKeyGlobalSet });
 });
 
 router.post('/channels/instagram', async (req, res) => {
