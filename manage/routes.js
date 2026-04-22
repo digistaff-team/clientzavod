@@ -535,21 +535,21 @@ router.get('/channels/pinterest', (req, res) => {
     const chatId = req.query.chat_id;
     if (!chatId) return res.status(400).json({ error: 'chat_id is required' });
     const config = manageStore.getPinterestConfig(chatId);
+    manageStore.migrateIntegrationSettings(chatId);
+    const globalInt = manageStore.getIntegrationSettings(chatId) || {};
+    const bufferApiKeyGlobalSet = !!globalInt.buffer_api_key;
     if (config) {
         const safeConfig = { ...config };
-        // Маскируем Buffer API ключ
         if (safeConfig.buffer_api_key) safeConfig.buffer_api_key = safeConfig.buffer_api_key.slice(0, 6) + '***';
-        // Убираем legacy OAuth-поля
         delete safeConfig.app_id;
         delete safeConfig.app_secret;
         delete safeConfig.access_token;
         delete safeConfig.refresh_token;
         delete safeConfig.access_token_expires;
-        // connected = true если есть хотя бы Buffer credentials, иначе false (но конфиг всё равно возвращаем)
-        const isConnected = !!(safeConfig.buffer_api_key && safeConfig.buffer_channel_id);
-        res.json({ connected: isConnected, config: safeConfig });
+        const isConnected = !!safeConfig.buffer_channel_id;
+        res.json({ connected: isConnected, config: safeConfig, buffer_api_key_global_set: bufferApiKeyGlobalSet });
     } else {
-        res.json({ connected: false, config: null });
+        res.json({ connected: false, config: null, buffer_api_key_global_set: bufferApiKeyGlobalSet });
     }
 });
 

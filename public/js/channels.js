@@ -830,59 +830,52 @@ async function testGlobalBufferConnection() {
 
 // === Pinterest ===
 
-async function connectPinterestBuffer() {
+async function autoConnectPinterest() {
     const chatId = getChatId();
     if (!chatId) return;
-    const bufferChannelId = (document.getElementById('bufferChannelId')?.value || '').trim();
-    if (!bufferChannelId) {
-        showToast('Выберите Buffer Channel', 'error');
-        return;
-    }
+    const statusEl = document.getElementById('pinterestStatus');
+    if (statusEl) statusEl.innerHTML = '<span style="color:#888;">⏳ Подключение к Pinterest...</span>';
     try {
-        const res = await fetch(`${API_MANAGE}/channels/pinterest`, {
+        const chRes = await fetch(`${API_MANAGE}/channels/buffer/channels?service=pinterest`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, buffer_channel_id: bufferChannelId })
+            body: JSON.stringify({ chat_id: chatId })
         });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-            showToast('Pinterest подключён через Buffer', 'success');
-            await loadPinterestConfig();
-        } else {
-            showToast(data.error || 'Ошибка подключения', 'error');
+        const chData = await chRes.json();
+        if (!chRes.ok || !chData.channels?.length) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ Pinterest-канал не найден в Buffer</span>';
+            return;
         }
-    } catch (e) {
-        showToast('Ошибка сети', 'error');
-    }
-}
+        const channel = chData.channels[0];
 
-async function testPinterestBufferConnection() {
-    const chatId = getChatId();
-    if (!chatId) return;
-    const bufferApiKey = getBufferApiKey('pinterestBufferApiKey');
-    const bufferChannelId = (document.getElementById('bufferChannelId')?.value || '').trim();
-    if (!bufferChannelId) {
-        showToast('Выберите Buffer Channel', 'error');
-        return;
-    }
-    try {
-        const res = await fetch(`${API_MANAGE}/channels/pinterest/test-buffer`, {
+        const saveRes = await fetch(`${API_MANAGE}/channels/pinterest`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, buffer_api_key: bufferApiKey, buffer_channel_id: bufferChannelId })
+            body: JSON.stringify({ chat_id: chatId, buffer_channel_id: channel.id })
         });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.success) {
-            if (data.rateLimited) {
-                showToast('Ключ принят (Buffer подтвердил авторизацию, но сейчас rate limit — детали канала будут доступны позже)', 'success');
-            } else {
-                showToast(`Соединение OK: ${data.channelName || 'канал'} (${data.service || 'pinterest'})`, 'success');
-            }
-        } else {
-            showToast(data.error || 'Ошибка проверки соединения', 'error');
+        if (!saveRes.ok) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ Ошибка сохранения channel_id</span>';
+            return;
         }
+
+        await fetch(`${API_MANAGE}/channels/pinterest/boards/import-buffer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId })
+        });
+
+        const channelNameEl = document.getElementById('pinterestChannelName');
+        if (channelNameEl) channelNameEl.value = channel.name || channel.id;
+        const connectStatusRow = document.getElementById('pinterestConnectStatusRow');
+        if (connectStatusRow) connectStatusRow.style.display = '';
+        if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ Pinterest подключён</span>';
+        const disconnectBtn = document.getElementById('disconnectPinterestBtn');
+        if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
+
+        await loadPinterestBoards();
     } catch (e) {
-        showToast('Ошибка сети', 'error');
+        const statusEl = document.getElementById('pinterestStatus');
+        if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ Ошибка подключения: ' + e.message + '</span>';
     }
 }
 
@@ -894,45 +887,39 @@ async function loadPinterestConfig() {
         const data = await res.json();
         const statusEl = document.getElementById('pinterestStatus');
         const disconnectBtn = document.getElementById('disconnectPinterestBtn');
-        const settingsBlock = document.getElementById('pinterestSettingsBlock');
         if (!statusEl) return;
 
-        // Загружаем настройки независимо от статуса подключения
         const cfg = data.config || {};
 
-        // Обновляем статус подключения
-        if (data.connected) {
+        const apiKeyDisplay = document.getElementById('pinterestBufferApiKeyDisplay');
+        if (apiKeyDisplay) {
+            apiKeyDisplay.value = data.buffer_api_key_global_set ? '●●●●●● (из настроек Интеграций)' : '';
+        }
+
+        if (data.connected && cfg.buffer_channel_id) {
             statusEl.innerHTML = '<span style="color: #0a0;">✅ Pinterest подключён</span>';
             if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
-        } else {
+            const connectStatusRow = document.getElementById('pinterestConnectStatusRow');
+            const channelNameEl = document.getElementById('pinterestChannelName');
+            if (connectStatusRow && channelNameEl) {
+                channelNameEl.value = cfg.buffer_channel_id;
+                connectStatusRow.style.display = '';
+            }
+            await loadPinterestBoards();
+        } else if (data.buffer_api_key_global_set) {
             statusEl.textContent = '';
+            if (disconnectBtn) disconnectBtn.style.display = 'none';
+            await autoConnectPinterest();
+        } else {
+            statusEl.innerHTML = '<span style="color:#888;">⚠️ Buffer API Key не настроен — укажите в разделе Интеграции</span>';
             if (disconnectBtn) disconnectBtn.style.display = 'none';
         }
 
-        // Заполняем поля (всегда, даже если не подключён к Buffer)
-        if (cfg.buffer_channel_id) {
-            document.getElementById('bufferChannelId').value = cfg.buffer_channel_id;
-            // Также пробуем выбрать нужный option в select (если он уже загружен)
-            const selectEl = document.getElementById('pinterestBufferChannelSelect');
-            if (selectEl) {
-                const optionExists = Array.from(selectEl.options).some(opt => opt.value === cfg.buffer_channel_id);
-                if (optionExists) {
-                    selectEl.value = cfg.buffer_channel_id;
-                }
-            }
-        }
         if (cfg.board_id) document.getElementById('pinterestBoardId').value = cfg.board_id;
         if (cfg.website_url) document.getElementById('pinterestWebsiteUrl').value = cfg.website_url;
-        // Планировщик
-        if (cfg.schedule_time) {
-            setPinterestScheduleTimeInputs(cfg.schedule_time);
-        }
-        if (cfg.schedule_end_time) {
-            setPinterestScheduleEndTimeInputs(cfg.schedule_end_time);
-        }
-        if (cfg.schedule_tz) {
-            setPinterestScheduleTzInput(cfg.schedule_tz);
-        }
+        if (cfg.schedule_time) setPinterestScheduleTimeInputs(cfg.schedule_time);
+        if (cfg.schedule_end_time) setPinterestScheduleEndTimeInputs(cfg.schedule_end_time);
+        if (cfg.schedule_tz) setPinterestScheduleTzInput(cfg.schedule_tz);
         if (cfg.daily_limit != null) {
             const dlEl = document.getElementById('pinterestDailyLimit');
             if (dlEl) dlEl.value = cfg.daily_limit;
@@ -941,20 +928,15 @@ async function loadPinterestConfig() {
             const piEl = document.getElementById('pinterestPublishInterval');
             if (piEl) piEl.value = String(cfg.publish_interval_hours);
         }
-        if (cfg.allowed_weekdays) {
-            setWeekdays('pinterest-weekday', cfg.allowed_weekdays);
-        }
-        // Load toggles
+        if (cfg.allowed_weekdays) setWeekdays('pinterest-weekday', cfg.allowed_weekdays);
         const randomEl = document.getElementById('pinterestRandomPublish');
         if (randomEl) randomEl.checked = !!cfg.random_publish;
         const premoderEl = document.getElementById('pinterestPremoderation');
-        if (premoderEl) {
-            premoderEl.checked = !!cfg.premoderation_enabled;
-        }
-        const pinterestModeratorEl = document.getElementById('pinterestModeratorUserId');
-        if (pinterestModeratorEl) pinterestModeratorEl.value = cfg.moderator_user_id || chatId;
+        if (premoderEl) premoderEl.checked = !!cfg.premoderation_enabled;
+        const moderatorEl = document.getElementById('pinterestModeratorUserId');
+        if (moderatorEl) moderatorEl.value = cfg.moderator_user_id || chatId;
         togglePinterestModeratorField();
-        // Устанавливаем выбранную доску в select
+
         const boardSelect = document.getElementById('pinterestBoardSelect');
         if (boardSelect && cfg.board_id) {
             const exists = Array.from(boardSelect.options).some(o => o.value === cfg.board_id);
@@ -1219,17 +1201,21 @@ async function savePinterestConfig() {
 
 async function disconnectPinterest() {
     const chatId = getChatId();
-    if (!chatId || !confirm('Отключить Pinterest?')) return;
+    if (!chatId || !confirm('Отключить Pinterest? При следующем открытии страницы канал подключится снова автоматически.')) return;
     try {
         const res = await fetch(`${API_MANAGE}/channels/pinterest?chat_id=${encodeURIComponent(chatId)}`, { method: 'DELETE' });
         if (res.ok) {
             showToast('Pinterest отключён', 'success');
-            document.getElementById('bufferChannelId').value = '';
             document.getElementById('pinterestBoardId').value = '';
             document.getElementById('pinterestWebsiteUrl').value = '';
             const boardSelect = document.getElementById('pinterestBoardSelect');
             if (boardSelect) boardSelect.innerHTML = '<option value="">— выберите доску —</option>';
-            await loadPinterestConfig();
+            const connectStatusRow = document.getElementById('pinterestConnectStatusRow');
+            if (connectStatusRow) connectStatusRow.style.display = 'none';
+            const statusEl = document.getElementById('pinterestStatus');
+            if (statusEl) statusEl.innerHTML = '<span style="color:#888;">Отключено. Обновите страницу для повторного подключения.</span>';
+            const disconnectBtn = document.getElementById('disconnectPinterestBtn');
+            if (disconnectBtn) disconnectBtn.style.display = 'none';
         } else {
             showToast('Ошибка отключения', 'error');
         }
@@ -2367,21 +2353,6 @@ function fetchYoutubeBufferChannels() {
 /**
  * Обработчик выбора канала в Pinterest select.
  */
-function onPinterestChannelSelectChange() {
-    const selectEl = document.getElementById('pinterestBufferChannelSelect');
-    const hiddenInput = document.getElementById('bufferChannelId');
-    if (selectEl && hiddenInput) {
-        hiddenInput.value = selectEl.value;
-    }
-}
-
-/**
- * Обработчик кнопки загрузки Pinterest каналов.
- */
-function fetchPinterestBufferChannels() {
-    const apiKey = getBufferApiKey('pinterestBufferApiKey');
-    loadBufferChannels(apiKey, 'pinterest', 'pinterestBufferChannelSelect', getChatId());
-}
 
 // ============================================
 // VK Video Channel

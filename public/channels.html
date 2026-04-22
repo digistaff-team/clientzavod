@@ -188,7 +188,7 @@
                 <div class="channel-panel" id="channelPanel-pinterest" style="display: none;">
                     <div class="channel-card">
                         <h3>📌 Pinterest</h3>
-                        <p>Публикация пинов через Buffer. Введите API-ключ Buffer и Channel ID подключённого канала Pinterest.</p>
+                        <p>Публикация пинов через Buffer. Канал и доски подключаются автоматически при открытии.</p>
 
                         <div id="pinterestAuthBlock" style="display: none;"></div>
                         <div id="pinterestStatus" class="channel-status" style="margin-top: 0; font-size: 14px;"></div>
@@ -201,24 +201,19 @@
                                     <h3>⚙️ Настройки канала</h3>
 
                                     <div class="scheduler-field-row">
-                                        <label for="pinterestBufferApiKey">Buffer API Token</label>
-                                        <div style="display: flex; gap: 6px; align-items: center;">
-                                            <input type="text" class="buffer-api-key-input" id="pinterestBufferApiKey" placeholder="Введите Buffer API Token" autocomplete="off" style="flex: 1;" oninput="syncBufferApiKey(this.value)" />
-                                            <button class="btn btn-secondary" onclick="testPinterestBufferConnection()" style="white-space: nowrap; padding: 12px 14px;" title="Проверить токен">🧪</button>
-                                        </div>
+                                        <label>Buffer API Token</label>
+                                        <input type="text" id="pinterestBufferApiKeyDisplay" readonly
+                                               style="background: #f1f3f5; color: #666; flex: 1;"
+                                               placeholder="Не настроен — укажите в разделе Интеграции" />
                                     </div>
 
-                                    <div class="scheduler-field-row">
-                                        <label for="bufferChannelId">Buffer Channel ID</label>
-                                        <select id="pinterestBufferChannelSelect" onchange="onPinterestChannelSelectChange()">
-                                            <option value="">— выберите канал —</option>
-                                        </select>
-                                        <input type="hidden" id="bufferChannelId" />
+                                    <div class="scheduler-field-row" id="pinterestConnectStatusRow" style="display: none;">
+                                        <label>Канал Pinterest</label>
+                                        <input type="text" id="pinterestChannelName" readonly
+                                               style="background: #f1f3f5; color: #444; flex: 1;" />
                                     </div>
 
                                     <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px;">
-                                        <button class="btn btn-secondary" onclick="fetchPinterestBufferChannels()" title="Загрузить каналы из Buffer">📥 Загрузить каналы</button>
-                                        <button class="btn btn-primary" onclick="connectPinterestBuffer()">🔗 Подключить</button>
                                         <button class="btn btn-secondary" id="disconnectPinterestBtn" style="display: none;" onclick="disconnectPinterest()">Отключить</button>
                                     </div>
 
@@ -229,7 +224,6 @@
                                                 <option value="">— выберите доску —</option>
                                             </select>
                                             <button class="btn btn-secondary" onclick="loadPinterestBoards()" style="white-space: nowrap; padding: 12px 14px;" title="Обновить из БД">🔄</button>
-                                            <button class="btn btn-secondary" onclick="importBoardsFromBuffer()" style="white-space: nowrap; padding: 12px 14px;" title="Загрузить доски из Buffer API">📥</button>
                                         </div>
                                     </div>
 
