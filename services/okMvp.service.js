@@ -377,7 +377,8 @@ async function handleOkGenerateJob(chatId, queueJob, bot, correlationId) {
   if (!imagePath) {
     console.error(`[OK-GENERATE] ${chatId} image generation failed after ${imageAttempts} attempts: ${imageErr}`);
     await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `ok_image_failed: ${imageErr}`);
-    return { success: false, error: `OK image generation failed: ${imageErr}`, retry: true };
+    const isKieLimit = imageErr.includes('daily limit') || imageErr.includes('KieDailyLimit');
+    return { success: false, error: `OK image generation failed: ${imageErr}`, retry: !isKieLimit };
   }
   console.log(`[OK-GENERATE] ${chatId} image saved: ${imagePath} (attempts: ${imageAttempts})`);
 

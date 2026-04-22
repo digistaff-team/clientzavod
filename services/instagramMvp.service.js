@@ -336,7 +336,8 @@ async function handleIgGenerateJob(chatId, queueJob, bot, correlationId) {
   if (!imagePath) {
     console.error(`[IG-GENERATE] ${chatId} image generation failed after ${imageAttempts} attempts: ${imageErr}`);
     await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `ig_image_failed: ${imageErr}`);
-    return { success: false, error: `IG image generation failed: ${imageErr}`, retry: true };
+    const isKieLimit = imageErr.includes('daily limit') || imageErr.includes('KieDailyLimit');
+    return { success: false, error: `IG image generation failed: ${imageErr}`, retry: !isKieLimit };
   }
   console.log(`[IG-GENERATE] ${chatId} image saved: ${imagePath} (attempts: ${imageAttempts})`);
 

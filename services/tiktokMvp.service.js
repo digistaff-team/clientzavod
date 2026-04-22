@@ -303,14 +303,17 @@ async function publishTiktokPost(chatId, bot, jobId) {
 
   // Публикация через Buffer API (per-user credentials)
   const cfg = manageStore.getTiktokConfig(chatId) || {};
-  if (!cfg.buffer_api_key || !cfg.buffer_channel_id) {
+  manageStore.migrateIntegrationSettings(chatId);
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
+  const bufferApiKey = cfg.buffer_api_key || globalInt.buffer_api_key;
+  if (!bufferApiKey || !cfg.buffer_channel_id) {
     throw new Error('Buffer API key или channel_id не настроены в настройках TikTok');
   }
 
   const videoFilename = path.basename(draft.videoPath);
   const videoUrl = `${config.APP_URL}/api/video/temp/${chatId}/${videoFilename}`;
   const postText = [draft.caption, ...draft.hashtags].join(' ');
-  await bufferService.createPost(cfg.buffer_api_key, cfg.buffer_channel_id, { text: postText, videoUrl });
+  await bufferService.createPost(bufferApiKey, cfg.buffer_channel_id, { text: postText, videoUrl });
 
   // Завершаем жизненный цикл топика
   if (draft.topicId) {

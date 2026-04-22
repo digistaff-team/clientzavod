@@ -305,6 +305,7 @@ window.saveFacebookConfig = async function() {
 
         // Перезагружаем конфиг
         await loadFacebookConfig();
+        await loadIntegrationSettings();
         setFbStatus('✅ Сохранено', '#0a0');
 
         showToast('Настройки Facebook сохранены', 'success');

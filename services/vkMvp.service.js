@@ -332,7 +332,8 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
   if (!imagePath) {
     console.error(`[VK-GENERATE] ${chatId} image generation failed after ${imageAttempts} attempts: ${imageErr}`);
     await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `vk_image_failed: ${imageErr}`);
-    return { success: false, error: `VK image generation failed: ${imageErr}`, retry: true };
+    const isKieLimit = imageErr.includes('daily limit') || imageErr.includes('KieDailyLimit');
+    return { success: false, error: `VK image generation failed: ${imageErr}`, retry: !isKieLimit };
   }
   console.log(`[VK-GENERATE] ${chatId} image saved: ${imagePath} (attempts: ${imageAttempts})`);
 

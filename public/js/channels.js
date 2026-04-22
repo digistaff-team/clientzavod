@@ -766,6 +766,23 @@ function syncBufferApiKey(value) {
 
 // === Глобальные настройки интеграций ===
 
+function applyBufferApiKeyState(maskedKey) {
+    document.querySelectorAll('.buffer-api-key-input').forEach(el => {
+        if (maskedKey) {
+            el.value = maskedKey;
+            el.readOnly = true;
+            el.style.background = '#f1f3f5';
+            el.style.color = '#666';
+        } else {
+            el.readOnly = false;
+            el.style.background = '';
+            el.style.color = '';
+        }
+    });
+    const pinDisplay = document.getElementById('pinterestBufferApiKeyDisplay');
+    if (pinDisplay) pinDisplay.value = maskedKey || '';
+}
+
 async function loadIntegrationSettings() {
     const chatId = getChatId();
     if (!chatId) return;
@@ -774,15 +791,8 @@ async function loadIntegrationSettings() {
         const data = await res.json();
         const s = data.settings || {};
         const keyEl = document.getElementById('globalBufferApiKey');
-        if (s.buffer_api_key) {
-            if (keyEl) keyEl.value = s.buffer_api_key;
-            document.querySelectorAll('.buffer-api-key-input').forEach(el => {
-                el.value = s.buffer_api_key;
-            });
-            // Pinterest использует readonly-поле без класса buffer-api-key-input
-            const pinDisplay = document.getElementById('pinterestBufferApiKeyDisplay');
-            if (pinDisplay) pinDisplay.value = s.buffer_api_key;
-        }
+        if (keyEl) keyEl.value = s.buffer_api_key || '';
+        applyBufferApiKeyState(s.buffer_api_key || null);
     } catch (e) { console.error('loadIntegrationSettings error:', e); }
 }
 
@@ -1188,6 +1198,7 @@ async function savePinterestConfig() {
         if (res.ok) {
             showToast('Настройки Pinterest сохранены', 'success');
             await loadPinterestConfig();
+            await loadIntegrationSettings();
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
         }
@@ -1480,6 +1491,7 @@ async function saveInstagramConfig() {
         if (res.ok) {
             showToast('Настройки Instagram сохранены', 'success');
             await loadInstagramConfig();
+            await loadIntegrationSettings();
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
         }
@@ -2067,6 +2079,7 @@ async function saveYoutubeConfig() {
             if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ Настройки сохранены</span>';
             showToast('Настройки YouTube сохранены', 'success');
             loadYoutubeConfig();
+            loadIntegrationSettings();
         } else {
             const errMsg = data.error || 'Ошибка сохранения';
             if (statusEl) statusEl.innerHTML = '<span style="color:#c00;">❌ ' + errMsg + '</span>';
@@ -2670,6 +2683,7 @@ async function saveTiktokSettings() {
         if (res.ok) {
             showToast('Настройки TikTok сохранены', 'success');
             if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ Настройки сохранены</span>';
+            await loadIntegrationSettings();
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
             if (statusEl) statusEl.innerHTML = `<span style="color:#c00;">❌ ${data.error || 'Ошибка сохранения'}</span>`;
@@ -2982,6 +2996,7 @@ async function saveInstagramReelsSettings() {
         if (res.ok) {
             showToast('Настройки Instagram Reels сохранены', 'success');
             if (statusEl) statusEl.innerHTML = '<span style="color:#0a0;">✅ Настройки сохранены</span>';
+            await loadIntegrationSettings();
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
             if (statusEl) statusEl.innerHTML = `<span style="color:#c00;">❌ ${data.error || 'Ошибка сохранения'}</span>`;

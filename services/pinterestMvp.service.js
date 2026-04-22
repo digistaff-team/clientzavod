@@ -354,7 +354,8 @@ async function handlePinterestGenerateJob(chatId, queueJob, bot, correlationId) 
   }
   if (!imagePath) {
     await repository.updateTopicStatus(chatId, topic.sheetRow, 'pending', `pin_image_failed: ${imageErr}`);
-    return { success: false, error: `Pin image generation failed: ${imageErr}`, retry: true };
+    const isKieLimit = imageErr.includes('daily limit') || imageErr.includes('KieDailyLimit');
+    return { success: false, error: `Pin image generation failed: ${imageErr}`, retry: !isKieLimit };
   }
 
   // Запись в БД
@@ -409,6 +410,10 @@ async function publishPin(chatId, bot, jobId, correlationId) {
   const cfg = manageStore.getPinterestConfig(chatId);
   if (!cfg) throw new Error('Pinterest не настроен');
 
+  manageStore.migrateIntegrationSettings(chatId);
+  const globalInt = manageStore.getIntegrationSettings(chatId) || {};
+  const bufferApiKey = cfg.buffer_api_key || globalInt.buffer_api_key;
+
   // Копируем изображение из контейнера
   const session = await sessionService.getOrCreateSession(chatId);
   const tempPath = path.join(os.tmpdir(), `pin-publish-${chatId}-${jobId}.png`);
@@ -423,7 +428,7 @@ async function publishPin(chatId, bot, jobId, correlationId) {
   await fs.writeFile(path.join(hostDir, `pin_${jobId}.png`), imageBuffer);
 
   // Публикация через Buffer GraphQL API (единственный режим)
-  if (!cfg.buffer_api_key || !cfg.buffer_channel_id) {
+  if (!bufferApiKey || !cfg.buffer_channel_id) {
     throw new Error('Buffer API key или channel_id не настроены');
   }
   const imageUrl = `${config.APP_URL}/api/files/public/${chatId}/pin_${jobId}.png`;
@@ -439,7 +444,7 @@ async function publishPin(chatId, bot, jobId, correlationId) {
     boardServiceId = board?.service_id || null;
   }
 
-  const bufferResult = await bufferService.createPost(cfg.buffer_api_key, cfg.buffer_channel_id, { text, imageUrl, boardServiceId });
+  const bufferResult = await bufferService.createPost(bufferApiKey, cfg.buffer_channel_id, { text, imageUrl, boardServiceId });
   const result = { id: bufferResult.postId };
   console.log(`[PINTEREST-MVP] Published via Buffer, postId=${bufferResult.postId}`);
 
