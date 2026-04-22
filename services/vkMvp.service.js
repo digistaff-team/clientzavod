@@ -162,15 +162,13 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 Ответь строго в формате JSON:
 {
   "postText": "текст поста для VK (до 2000 символов, вовлекающий, с абзацами)",
-  "hookText": "хук — цепляющая фраза 4-6 слов для наложения на изображение",
-  "imagePrompt": "промпт для генерации изображения на английском (стиль: яркий, профессиональный, без текста на изображении, люди: только славянской внешности)"
+  "hookText": "хук — цепляющая фраза 4-6 слов для наложения на изображение"
 }
 
 Требования:
 - postText: до 2000 символов, информативный, с призывом к действию, с эмодзи
 - hookText: короткая цепляющая фраза для наложения на картинку (4-6 слов, русский)
-- imagePrompt: на английском, описание визуала для поста, без текста на изображении, люди - только славяне
-- Язык: русский (кроме imagePrompt)`;
+- Язык: русский`;
 
   const sysPrompt = await channelSkills.buildSystemPrompt(
     'vk-copywriter',
@@ -194,15 +192,19 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
   const parsed = JSON.parse(jsonMatch[0]);
   return {
     postText: stripMarkdown(String(parsed.postText || '')).slice(0, 2000),
-    hookText: stripMarkdown(String(parsed.hookText || '')).slice(0, 100),
-    imagePrompt: String(parsed.imagePrompt || '').slice(0, 800)
+    hookText: stripMarkdown(String(parsed.hookText || '')).slice(0, 100)
   };
 }
 
-async function generateVkImage(chatId, topic, imagePrompt) {
-  const basePrompt = (imagePrompt || `Topic: ${topic.topic}`).slice(0, 300);
+async function generateVkImage(chatId, topic) {
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'vk');
+  return inputImageContext.generateImageWithFullContext(
+    chatId,
+    topic,
+    `Topic: ${topic.topic}`,  // fallback если нет файлов в /input/
+    '1:1',
+    'vk'
+  );
 }
 
 async function saveImageToContainer(chatId, buffer, jobId) {
@@ -318,7 +320,7 @@ async function handleVkGenerateJob(chatId, queueJob, bot, correlationId) {
   for (let i = 1; i <= MAX_IMAGE_ATTEMPTS; i++) {
     try {
       imageAttempts = i;
-      const imageBuffer = await generateVkImage(chatId, topic, vkText.imagePrompt);
+      const imageBuffer = await generateVkImage(chatId, topic);
       const tempId = `${topic.sheetRow}_${Date.now()}`;
       imagePath = await saveImageToContainer(chatId, imageBuffer, tempId);
       imageErr = '';
@@ -631,7 +633,7 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
   if (action === 'regen_image') {
     console.log(`[VK-MODERATION-ACTION] Regenerating image for jobId=${jobId}`);
     try {
-      const imageBuffer = await generateVkImage(chatId, draft.topic, draft.imagePrompt);
+      const imageBuffer = await generateVkImage(chatId, draft.topic);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
       await vkRepo.updateJob(chatId, jobId, { imagePath });
@@ -662,7 +664,7 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
         loadUserPersona(chatId)
       ]);
       const vkText = await generateVkPostText(chatId, draft.topic, materialsText, personaText);
-      const imageBuffer = await generateVkImage(chatId, draft.topic, vkText.imagePrompt);
+      const imageBuffer = await generateVkImage(chatId, draft.topic);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
 
       draft.postText = vkText.postText;

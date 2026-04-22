@@ -13,18 +13,20 @@ const TEXT_EXTS = new Set(['.txt', '.md']);
 /**
  * Чистая функция: разбирает список файлов и возвращает контекст.
  * Экспортируется для тестирования.
+ * Ищет конкретно файл imageprompt.txt для текстового контекста.
  * @param {Array<{name: string, ext: string}>} files
  * @param {Map<string, string>} textContents  имя файла → содержимое
  * @returns {{ textPrompt: string|null, imageFile: string|null }}
  */
 function _parseFiles(files, textContents) {
   let textPrompt = null;
-  for (const f of files) {
-    if (!TEXT_EXTS.has(f.ext)) continue;
-    const content = textContents.get(f.name);
+
+  // Ищем конкретно imageprompt.txt (case-insensitive)
+  const imagePromptFile = files.find(f => f.name.toLowerCase() === 'imageprompt.txt');
+  if (imagePromptFile) {
+    const content = textContents.get(imagePromptFile.name);
     if (content && content.trim()) {
       textPrompt = content.trim().slice(0, 500);
-      break;
     }
   }
 
@@ -70,6 +72,7 @@ async function _readFileContent(chatId, filepath) {
 
 /**
  * Читает /workspace/input пользователя и возвращает контекст для генерации.
+ * Ищет конкретно файл imageprompt.txt для текстового контекста.
  * @param {string} chatId
  * @returns {Promise<{ textPrompt: string|null, imageFile: string|null }>}
  */
@@ -77,14 +80,24 @@ async function getInputContext(chatId) {
   const files = await _getInputFiles(chatId);
   if (files.length === 0) return { textPrompt: null, imageFile: null };
 
-  const textContents = new Map();
-  for (const f of files) {
-    if (!TEXT_EXTS.has(f.ext)) continue;
-    const content = await _readFileContent(chatId, f.path);
-    if (content) textContents.set(f.name, content);
+  let textPrompt = null;
+
+  // Ищем конкретно imageprompt.txt
+  const imagePromptFile = files.find(f => f.name.toLowerCase() === 'imageprompt.txt');
+  if (imagePromptFile) {
+    const content = await _readFileContent(chatId, imagePromptFile.path);
+    if (content && content.trim()) {
+      textPrompt = content.trim().slice(0, 500);
+    }
   }
 
-  return _parseFiles(files, textContents);
+  // Выбираем случайное изображение из доступных
+  const imageFiles = files.filter(f => IMAGE_EXTS.has(f.ext));
+  const imageFile = imageFiles.length > 0
+    ? imageFiles[Math.floor(Math.random() * imageFiles.length)].name
+    : null;
+
+  return { textPrompt, imageFile };
 }
 
 // Схемы i2i по моделям: поле для изображения + дополнительные обязательные параметры
@@ -311,4 +324,91 @@ async function generateImage(chatId, basePrompt, aspectRatio, t2iModel, channel 
   return await _generateT2I(prompt, aspectRatio, effectiveT2iModel);
 }
 
-module.exports = { getInputContext, generateImage, _parseFiles, _buildPrompt, I2I_SCHEMAS };
+/**
+ * Генерирует изображение с полным контекстом из /workspace/input
+ *
+ * Алгоритм:
+ * 1. Загружает контекст из /workspace/input (случайное изображение + текстовый файл)
+ * 2. Загружает случайный интерьер из БД (video_assets.interiors)
+ * 3. Приоритизирует: textPrompt из файла > fallbackPrompt (LLM/Topic)
+ * 4. Строит финальный промпт через _buildPrompt()
+ * 5. Выбирает режим: i2i если есть исходное изображение, иначе t2i
+ *
+ * @param {string} chatId
+ * @param {object} topic - { topic, focus, secondary, lsi } - данные темы для логирования
+ * @param {string} fallbackPrompt - резервный промпт (LLM imagePrompt или Topic:...)
+ * @param {string} aspectRatio - '1:1', '2:3', '1.91:1', '16:9'
+ * @param {string} channel - название канала для логов
+ * @returns {Promise<Buffer>} - image buffer
+ */
+async function generateImageWithFullContext(chatId, topic, fallbackPrompt, aspectRatio, channel = 'unknown') {
+  const tag = `[IMAGE-FULL-CTX][${channel}][${chatId}]`;
+
+  // Pre-flight: проверяем дневной лимит вызовов KIE.ai
+  const KIE_DAILY_LIMIT = parseInt(process.env.KIE_DAILY_LIMIT || '30', 10);
+  const kieUsageRepo = require('./content/kieUsage.repository');
+  try {
+    await kieUsageRepo.ensureKieUsageSchema(chatId);
+    const count = await kieUsageRepo.incrementAndGetKieCallCount(chatId);
+    if (count > KIE_DAILY_LIMIT) {
+      await kieUsageRepo.decrementKieCallCount(chatId);
+      const limitErr = new Error(`KIE.ai daily limit reached: ${count - 1}/${KIE_DAILY_LIMIT}`);
+      limitErr.name = 'KieDailyLimitError';
+      throw limitErr;
+    }
+    console.log(`${tag} KIE daily usage: ${count}/${KIE_DAILY_LIMIT}`);
+  } catch (e) {
+    if (e.name === 'KieDailyLimitError') throw e;
+    console.warn(`${tag} KIE usage tracking failed (non-blocking): ${e.message}`);
+  }
+
+  // 1. Загружаем контекст из /input/ и интерьер из БД параллельно
+  const [{ textPrompt, imageFile }, interior] = await Promise.all([
+    getInputContext(chatId),
+    vpRepo.ensureSchema(chatId)
+      .then(() => vpRepo.getRandomInterior(chatId))
+      .catch(e => {
+        console.warn(`${tag} Interior fetch skipped: ${e.message}`);
+        return null;
+      })
+  ]);
+
+  // 2. Приоритизируем контекст: файл > fallback
+  const productContext = textPrompt || fallbackPrompt;
+  const prompt = _buildPrompt(productContext, interior);
+
+  console.log(`${tag} topic=${topic.topic || 'unknown'} hasInputFile=${!!imageFile} hasInterior=${!!interior} hasTextFromFile=${!!textPrompt}`);
+
+  // Получаем модель из manageStore
+  const manageStore = require('../manage/store');
+  const imageModel = manageStore.getImageGenSettings(chatId).model;
+
+  // 3. Выбираем режим генерации: i2i если есть файл и модель его поддерживает
+  if (imageFile && I2I_SCHEMAS[imageModel]) {
+    const imagePublicUrl = `${config.APP_URL}/api/video/input/${chatId}/${encodeURIComponent(imageFile)}`;
+    console.log(`${tag} mode=i2i model=${imageModel} file=${imageFile}`);
+    try {
+      const result = await _generateI2I(prompt, imagePublicUrl, aspectRatio, imageModel);
+      console.log(`${tag} i2i SUCCESS`);
+      return result;
+    } catch (e) {
+      if (e.name === 'InsufficientBalanceError') throw e;
+      console.warn(`${tag} i2i FAILED (${e.message}), falling back to t2i`);
+    }
+  }
+
+  // 4. Fallback на t2i если нет файла или i2i не поддерживается
+  const effectiveT2iModel = I2I_ONLY_MODELS.has(imageModel) ? 'grok-imagine/text-to-image' : imageModel;
+  const reason = !imageFile ? 'no-input-file' : !I2I_SCHEMAS[imageModel] ? 'model-no-i2i' : 'i2i-failed';
+  console.log(`${tag} mode=t2i model=${effectiveT2iModel} reason=${reason}`);
+  return await _generateT2I(prompt, aspectRatio, effectiveT2iModel);
+}
+
+module.exports = {
+  getInputContext,
+  generateImage,
+  generateImageWithFullContext,
+  _parseFiles,
+  _buildPrompt,
+  I2I_SCHEMAS
+};

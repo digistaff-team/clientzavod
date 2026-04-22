@@ -235,10 +235,15 @@ function validateOkContent(text) {
   return { valid: warnings.length === 0, warnings };
 }
 
-async function generateOkImage(chatId, topic, imagePrompt) {
-  const basePrompt = (imagePrompt || `Topic: ${topic.topic}`).slice(0, 300);
+async function generateOkImage(chatId, topic) {
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'ok');
+  return inputImageContext.generateImageWithFullContext(
+    chatId,
+    topic,
+    `Topic: ${topic.topic}`,  // fallback если нет файлов в /input/
+    '1:1',
+    'ok'
+  );
 }
 
 async function saveImageToContainer(chatId, buffer, jobId) {
@@ -360,7 +365,7 @@ async function handleOkGenerateJob(chatId, queueJob, bot, correlationId) {
   for (let i = 1; i <= MAX_IMAGE_ATTEMPTS; i++) {
     try {
       imageAttempts = i;
-      const imageBuffer = await generateOkImage(chatId, topic, okText.imagePrompt);
+      const imageBuffer = await generateOkImage(chatId, topic);
       const tempId = `${topic.sheetRow}_${Date.now()}`;
       imagePath = await saveImageToContainer(chatId, imageBuffer, tempId);
       imageErr = '';
@@ -649,7 +654,7 @@ async function handleOkModerationAction(chatId, bot, jobId, action) {
   if (action === 'regen_image') {
     console.log(`[OK-MODERATION-ACTION] Regenerating image for jobId=${jobId}`);
     try {
-      const imageBuffer = await generateOkImage(chatId, draft.topic, draft.imagePrompt);
+      const imageBuffer = await generateOkImage(chatId, draft.topic);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
       await okRepo.updateJob(chatId, jobId, { imagePath });
@@ -680,7 +685,7 @@ async function handleOkModerationAction(chatId, bot, jobId, action) {
         loadUserPersona(chatId)
       ]);
       const okText = await generateOkPostText(chatId, draft.topic, materialsText, personaText);
-      const imageBuffer = await generateOkImage(chatId, draft.topic, okText.imagePrompt);
+      const imageBuffer = await generateOkImage(chatId, draft.topic);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
 
       draft.postText = okText.postText;

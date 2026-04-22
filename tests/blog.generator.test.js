@@ -139,7 +139,8 @@ require.cache[require.resolve('../services/inputImageContext.service')] = {
   filename: require.resolve('../services/inputImageContext.service'),
   loaded: true,
   exports: {
-    generateImage: async (...args) => mockGenerateImageFn(...args)
+    generateImage: async (...args) => mockGenerateImageFn(...args),
+    generateImageWithFullContext: async (...args) => mockGenerateImageFn(...args)
   }
 };
 

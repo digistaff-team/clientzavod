@@ -103,7 +103,14 @@ async function generate(chatId, { topic, keywords, techDocId, moderatorNote }) {
   const imageModel = manageStore.getImageGenSettings(chatId).model;
   let imageBuffer = null;
   try {
-    imageBuffer = await inputImageContext.generateImage(chatId, imagePromptText.trim(), '16:9', imageModel, 'wordpress');
+    const topicObj = { topic, focus: '', secondary: '', lsi: '' };
+    imageBuffer = await inputImageContext.generateImageWithFullContext(
+      chatId,
+      topicObj,
+      imagePromptText.trim(),  // fallback если нет файлов в /input/
+      '16:9',  // WordPress требует горизонтальное изображение для обложки
+      'wordpress'
+    );
   } catch (imgErr) {
     if (imgErr.name === 'InsufficientBalanceError' || imgErr.name === 'KieDailyLimitError') {
       throw imgErr;

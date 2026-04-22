@@ -176,16 +176,14 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 Ответь строго в формате JSON:
 {
   "postText": "текст поста для Facebook (100-500 символов, первая строка — хук, CTA в конце)",
-  "hashtags": ["#хештег1", "#хештег2", "#хештег3"],
-  "imagePrompt": "промпт для генерации изображения на английском (соотношение 1.91:1, профессиональный Facebook стиль, без текста на изображении)"
+  "hashtags": ["#хештег1", "#хештег2", "#хештег3"]
 }
 
 Требования:
 - postText: 100-500 символов оптимально, вовлекающий, без канцелярита
 - hashtags: 3-5 релевантных хештегов в конце текста
-- imagePrompt: на английском, описание визуала, 1.91:1, без текста на изображении
 - Стиль: разговорный, профессиональный, CTA в конце
-- Язык: русский (кроме imagePrompt)`;
+- Язык: русский`;
 
   const sysPrompt = await channelSkills.buildSystemPrompt(
     'facebook-copywriter',
@@ -209,15 +207,19 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
   const parsed = JSON.parse(jsonMatch[0]);
   return {
     postText: String(parsed.postText || '').slice(0, 500),
-    hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags.slice(0, 5) : [],
-    imagePrompt: String(parsed.imagePrompt || '').slice(0, 800)
+    hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags.slice(0, 5) : []
   };
 }
 
-async function generateFbImage(chatId, topic, imagePrompt, jobId) {
-  const basePrompt = (imagePrompt || `Topic: ${topic.topic}`).slice(0, 300);
+async function generateFbImage(chatId, topic) {
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'facebook');
+  return inputImageContext.generateImageWithFullContext(
+    chatId,
+    topic,
+    `Topic: ${topic.topic}`,  // fallback если нет файлов в /input/
+    '1:1',
+    'facebook'
+  );
 }
 
 async function saveImageToContainer(chatId, imageBuffer, jobId) {
@@ -292,7 +294,7 @@ async function handleFacebookGenerateJob(chatId, queueJob, bot, correlationId) {
       imageAttempts++;
       try {
         console.log(`[FB] Image generation attempt ${imageAttempts}/${MAX_IMAGE_ATTEMPTS}`);
-        imageBuffer = await generateFbImage(chatId, topic, aiResult.imagePrompt, jobId);
+        imageBuffer = await generateFbImage(chatId, topic);
         imagePath = await saveImageToContainer(chatId, imageBuffer, jobId);
         console.log(`[FB] Image saved to ${imagePath}`);
       } catch (e) {
@@ -554,7 +556,7 @@ async function handleFacebookModerationAction(chatId, bot, jobId, action) {
     }
 
     try {
-      const imageBuffer = await generateFbImage(chatId, topic, job.image_prompt, jobId);
+      const imageBuffer = await generateFbImage(chatId, topic);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, jobId);
 
       await fbRepo.updateJob(chatId, jobId, {

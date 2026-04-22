@@ -167,15 +167,13 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 
 Ответь строго в формате JSON:
 {
-  "caption": "подпись к посту для Instagram (150–2200 символов, вовлекающая, с хэштегами в конце)",
-  "imagePrompt": "промпт для генерации изображения на английском (стиль: яркий, Instagram-формат, без текста)"
+  "caption": "подпись к посту для Instagram (150–2200 символов, вовлекающая, с хэштегами в конце)"
 }
 
 Требования:
 - caption: 300–500 символов оптимально, первая строка — хук (цепляет внимание), 5–15 хэштегов в конце, эмодзи как маркеры (2–4), CTA в конце
-- imagePrompt: на английском, описание визуала, Instagram-стиль (яркий, квадратный формат 1:1), без текста на изображении
 - Стиль: живой, разговорный, без канцелярита
-- Язык: русский (кроме imagePrompt)`;
+- Язык: русский`;
 
   const sysPrompt = await channelSkills.buildSystemPrompt(
     skillSlug,
@@ -198,15 +196,19 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
 
   const parsed = JSON.parse(jsonMatch[0]);
   return {
-    caption: String(parsed.caption || '').slice(0, 2200),
-    imagePrompt: String(parsed.imagePrompt || '').slice(0, 800)
+    caption: String(parsed.caption || '').slice(0, 2200)
   };
 }
 
-async function generateIgImage(chatId, topic, imagePrompt) {
-  const basePrompt = (imagePrompt || `Topic: ${topic.topic}`).slice(0, 300);
+async function generateIgImage(chatId, topic) {
   const imageModel = manageStore.getImageGenSettings(chatId).model;
-  return inputImageContext.generateImage(chatId, basePrompt, '1:1', imageModel, 'instagram');
+  return inputImageContext.generateImageWithFullContext(
+    chatId,
+    topic,
+    `Topic: ${topic.topic}`,  // fallback если нет файлов в /input/
+    '1:1',
+    'instagram'
+  );
 }
 
 async function saveImageToContainer(chatId, buffer, jobId) {
@@ -322,7 +324,7 @@ async function handleIgGenerateJob(chatId, queueJob, bot, correlationId) {
   for (let i = 1; i <= MAX_IMAGE_ATTEMPTS; i++) {
     try {
       imageAttempts = i;
-      const imageBuffer = await generateIgImage(chatId, topic, igText.imagePrompt);
+      const imageBuffer = await generateIgImage(chatId, topic);
       const tempId = `${topic.sheetRow}_${Date.now()}`;
       imagePath = await saveImageToContainer(chatId, imageBuffer, tempId);
       imageErr = '';
@@ -591,7 +593,7 @@ async function handleInstagramModerationAction(chatId, bot, jobId, action) {
 
   if (action === 'regen_image') {
     try {
-      const imageBuffer = await generateIgImage(chatId, draft.topic, draft.imagePrompt);
+      const imageBuffer = await generateIgImage(chatId, draft.topic);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
       await igRepo.updateJob(chatId, jobId, { imagePath });
@@ -634,7 +636,7 @@ async function handleInstagramModerationAction(chatId, bot, jobId, action) {
         await sendIgVideoToModerator(chatId, bot, draft);
       } else {
         // For photo posts: regen both image and text
-        const imageBuffer = await generateIgImage(chatId, draft.topic, igText.imagePrompt);
+        const imageBuffer = await generateIgImage(chatId, draft.topic);
         const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
 
         draft.caption = igText.caption;

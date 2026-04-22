@@ -44,24 +44,36 @@ test('пустой список → null/null', () => {
 });
 
 group('_parseFiles: только текстовые файлы');
-test('.txt файл с содержимым → textPrompt заполнен', () => {
-  const files = [{ name: 'desc.txt', ext: '.txt' }];
-  const contents = new Map([['desc.txt', 'Описание товара']]);
+test('imageprompt.txt с содержимым → textPrompt заполнен', () => {
+  const files = [{ name: 'imageprompt.txt', ext: '.txt' }];
+  const contents = new Map([['imageprompt.txt', 'Описание товара']]);
   const r = _parseFiles(files, contents);
   assert.strictEqual(r.textPrompt, 'Описание товара');
   assert.strictEqual(r.imageFile, null);
 });
-test('.txt файл пустой → textPrompt null', () => {
-  const files = [{ name: 'empty.txt', ext: '.txt' }];
-  const contents = new Map([['empty.txt', '   ']]);
+test('imageprompt.txt пустой → textPrompt null', () => {
+  const files = [{ name: 'imageprompt.txt', ext: '.txt' }];
+  const contents = new Map([['imageprompt.txt', '   ']]);
   const r = _parseFiles(files, contents);
   assert.strictEqual(r.textPrompt, null);
 });
-test('текст обрезается до 500 символов', () => {
-  const files = [{ name: 'long.txt', ext: '.txt' }];
-  const contents = new Map([['long.txt', 'x'.repeat(600)]]);
+test('текст из imageprompt.txt обрезается до 500 символов', () => {
+  const files = [{ name: 'imageprompt.txt', ext: '.txt' }];
+  const contents = new Map([['imageprompt.txt', 'x'.repeat(600)]]);
   const r = _parseFiles(files, contents);
   assert.strictEqual(r.textPrompt.length, 500);
+});
+test('другие .txt файлы игнорируются, используется только imageprompt.txt', () => {
+  const files = [
+    { name: 'desc.txt', ext: '.txt' },
+    { name: 'notes.txt', ext: '.txt' },
+  ];
+  const contents = new Map([
+    ['desc.txt', 'Описание товара'],
+    ['notes.txt', 'Заметки']
+  ]);
+  const r = _parseFiles(files, contents);
+  assert.strictEqual(r.textPrompt, null);
 });
 
 group('_parseFiles: только изображения');
@@ -93,12 +105,12 @@ test('несколько изображений → возвращается о�
 });
 
 group('_parseFiles: текст + изображение');
-test('оба типа → textPrompt и imageFile заполнены', () => {
+test('imageprompt.txt + изображение → оба заполнены', () => {
   const files = [
-    { name: 'desc.txt', ext: '.txt' },
+    { name: 'imageprompt.txt', ext: '.txt' },
     { name: 'photo.jpg', ext: '.jpg' },
   ];
-  const contents = new Map([['desc.txt', 'Описание']]);
+  const contents = new Map([['imageprompt.txt', 'Описание']]);
   const r = _parseFiles(files, contents);
   assert.strictEqual(r.textPrompt, 'Описание');
   assert.strictEqual(r.imageFile, 'photo.jpg');

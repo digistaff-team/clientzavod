@@ -60,3 +60,4 @@ Final reminder: Output ONLY the .gitignore content. If nothing should be ignored
 .env
 .env.local
 .env.*
+.claude/settings.local.json
