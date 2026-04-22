@@ -776,10 +776,12 @@ async function loadIntegrationSettings() {
         const keyEl = document.getElementById('globalBufferApiKey');
         if (s.buffer_api_key) {
             if (keyEl) keyEl.value = s.buffer_api_key;
-            // Populate all per-channel Buffer API Token fields
             document.querySelectorAll('.buffer-api-key-input').forEach(el => {
                 el.value = s.buffer_api_key;
             });
+            // Pinterest использует readonly-поле без класса buffer-api-key-input
+            const pinDisplay = document.getElementById('pinterestBufferApiKeyDisplay');
+            if (pinDisplay) pinDisplay.value = s.buffer_api_key;
         }
     } catch (e) { console.error('loadIntegrationSettings error:', e); }
 }
@@ -890,11 +892,6 @@ async function loadPinterestConfig() {
         if (!statusEl) return;
 
         const cfg = data.config || {};
-
-        const apiKeyDisplay = document.getElementById('pinterestBufferApiKeyDisplay');
-        if (apiKeyDisplay) {
-            apiKeyDisplay.value = data.buffer_api_key_global_set ? '●●●●●● (из настроек Интеграций)' : '';
-        }
 
         if (data.connected && cfg.buffer_channel_id) {
             statusEl.innerHTML = '<span style="color: #0a0;">✅ Pinterest подключён</span>';
