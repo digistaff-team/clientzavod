@@ -661,7 +661,7 @@ router.post('/channels/pinterest/boards/import-buffer', async (req, res) => {
             name: b.name,
             serviceId: b.serviceId,
             description: b.description || '',
-            link: b.url || ''
+            link: null
         }));
         await pinterestRepo.ensureBoardsSchema(chatId);
         const saved = await pinterestRepo.saveBoards(chatId, mapped);
@@ -1682,11 +1682,17 @@ router.get('/check-cw-subscriber', async (req, res) => {
     if (!moderator_id) return res.json({ subscribed: false });
     try {
         const cwBot = require('../services/telegramMvp.service').getContentBot();
-        if (!cwBot) return res.json({ subscribed: false, error: 'CW bot not available' });
-        await cwBot.telegram.getChat(moderator_id);
+        if (!cwBot) return res.json({ subscribed: true });
+        await cwBot.telegram.sendChatAction(moderator_id, 'typing');
         res.json({ subscribed: true });
     } catch (e) {
-        res.json({ subscribed: false });
+        const notStarted =
+            e?.response?.error_code === 403 ||
+            (e?.response?.error_code === 400 && (
+                String(e?.response?.description).includes('chat not found') ||
+                String(e?.response?.description).includes('PEER_ID_INVALID')
+            ));
+        res.json({ subscribed: !notStarted });
     }
 });
 
