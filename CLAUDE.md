@@ -4,54 +4,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Tool preferences
+
+Read > `cat`/`head`/`tail`. Glob > `find`. Grep > `grep`/`rg`. Edit > `sed`/`awk`. Native tools stream ranged output; Bash pipes dump everything.
+
+---
+
 ## Project Overview
 
-**Docker-Claw (Клиент Завод) v3.0.0** — AI-платформа для управления изолированными Docker-контейнерами. Каждый пользователь получает персональный контейнер (Node.js-среда), персональную PostgreSQL БД и Telegram-бота. Публикация контента в Telegram, ВКонтакте, OK, Pinterest, Instagram (фото + Reels), TikTok, YouTube, Facebook, WordPress, VK Video.
+**Docker-Claw (Клиент Завод) v3.0.0** — AI-платформа для управления Docker-контейнерами. Каждый пользователь: персональный контейнер (Node.js), PostgreSQL БД, Telegram-бот. Каналы: Telegram, VK, OK, Pinterest, Instagram (фото+Reels), TikTok, YouTube, Facebook, WordPress, VK Video.
 
-**Стек:** Node.js 18 + Express.js, PostgreSQL 15, MySQL 8 (навыки), Docker, Telegraf, Buffer API, YouTube Data API, WordPress REST API, KIE.ai API. Фронтенд — статические HTML/CSS/JS (без фреймворка). Playwright для E2E.
+**Стек:** Node.js 18 + Express.js, PostgreSQL 15, MySQL 8, Docker, Telegraf, Buffer API, YouTube Data API, WordPress REST API, KIE.ai API. Фронтенд — статические HTML/CSS/JS. Playwright для E2E.
 
 ---
 
 ## Commands
 
 ```bash
-npm install          # Установить зависимости
-npm run dev          # Development: nodemon + auto-reload
-npm start            # Production: node server.js
-
-# Тесты (Node.js assert, без раннера)
-npm test                                    # Все unit-тесты (9 файлов)
-node tests/content.status.test.js
-node tests/validators.extended.test.js
-node tests/wordpress.publisher.test.js
-node tests/blog.generator.test.js
-node tests/blog.moderation.test.js
-node tests/video.pipeline.test.js
-node tests/inputImageContext.test.js
-node tests/channel.topics.test.js
-
-# Отдельно (не в npm test)
-node tests/vk.moderation.test.js
-node tests/vk.publisher.test.js
-node tests/youtube.mvp.test.js
-
-# E2E (Playwright)
-npm run test:e2e
-npm run test:e2e:smoke                      # Только critical path
-npm run test:e2e:ui                         # Headed + UI mode
-npm run test:e2e:debug                      # Debugger
-npm run test:e2e:ci                         # HTML reporter
-
-# Docker
-docker-compose restart app     # Применить изменения кода
-docker-compose up -d
+npm install && npm run dev   # dev (nodemon); npm start — prod
+npm test                     # 9 unit-тестов (Node.js assert, без раннера)
+npm run test:e2e             # Playwright; :smoke :ui :debug :ci — варианты
+docker-compose restart app   # после ЛЮБЫХ backend-изменений
 docker-compose logs -f app
-docker-compose down
 ```
 
-Порт `3015`. Конфиг: `.env` + `.env.local` (`.env.local` переопределяет). Все переменные — в `config.js`.
-
-**При изменении любого backend-файла:** `docker-compose restart app`.
+Порт `3015`. Конфиг: `.env` + `.env.local` (переопределяет). Все переменные — в `config.js`.
 
 ---
 
@@ -60,105 +37,74 @@ docker-compose down
 ### Поток данных
 
 ```
-Telegram auth bot → one-time token → /auth.html → сессия создана
-    ↓
-Docker container spawned (sandbox-user-{chatId})
-    ↓
-Per-user PostgreSQL DB auto-provisioned (db_{chatId})
-    ↓
-AI агент (agentLoop) обрабатывает сообщения через LLM с tool-calling
-    ↓
-Контент генерируется и публикуется по расписанию (каждые 60 сек)
+Telegram auth bot → one-time token → /auth.html → сессия
+    ↓ Docker container spawned (sandbox-user-{chatId})
+    ↓ Per-user PostgreSQL DB auto-provisioned (db_{chatId})
+    ↓ AI агент (agentLoop) → LLM tool-calling → публикация по расписанию (60 сек)
 ```
 
 ### Два Telegram-бота
 
-- **Auth Bot** (`AUTH_BOT_TOKEN`, `manage/telegram/authBot.js`) — `/start`, выдаёт login-токен
-- **CW Bot** (`CW_BOT_TOKEN`) — модерация контента для всех пользователей. Callback-префиксы: `content:` (TG), `vk_mod:`, `ok_mod:`, `ig_mod:`, `yt_mod:`, `pin_mod:`, `wp_mod:`, `tt_mod:`, `vk_vid_mod:`, `fb_mod:`. Webhook или long polling fallback. **ВАЖНО:** `moderator_user_id` хранится в JSON как число, `fromId` из Telegram всегда строка — сравнивать только через `String()`, иначе `Set.has()` молча не срабатывает.
+- **Auth Bot** (`AUTH_BOT_TOKEN`, `manage/telegram/authBot.js`) — `/start`, login-токен
+- **CW Bot** (`CW_BOT_TOKEN`) — модерация для всех пользователей. Callback-префиксы: `content:` (TG), `vk_mod:`, `ok_mod:`, `ig_mod:`, `yt_mod:`, `pin_mod:`, `wp_mod:`, `tt_mod:`, `vk_vid_mod:`, `fb_mod:`. **ВАЖНО:** `moderator_user_id` в JSON — число, `fromId` из Telegram — строка; сравнивать только через `String()`, иначе `Set.has()` молча не срабатывает.
 - Режимы user-бота: CHAT, WORKSPACE, TERMINAL
 
 ### Базы данных
 
-1. **PostgreSQL центральная** (`clientzavod`) — `content_queue`, `content_channels`, `content_analytics`, `content_templates`, `content_assets`, `content_workflow`, `content_import_sources`
-2. **PostgreSQL per-user** (`db_{chatId}`) — `content_jobs`, `content_posts`, `content_job_queue`, `publish_logs`, `content_topics`, `content_config`, `content_knowledge_base`, `vk_jobs`, `ok_jobs`, `pinterest_jobs`, `facebook_jobs`, `video_assets`, `interiors`, `video_channel_usage`
+1. **PostgreSQL центральная** (`clientzavod`) — `content_queue`, каналы, аналитика, шаблоны, assets, workflow, import_sources
+2. **PostgreSQL per-user** (`db_{chatId}`) — jobs, posts, topics, configs, knowledge_base, jobs по каналам, video_assets, interiors
 3. **MySQL** (`ai_skills_db`) — `ai_skills`, `user_selected_skills`. Init: `services/mysql/init.sql`
 
-**Три хоста PostgreSQL в `config.js`:**
-- `PG_HOST` — основное подключение из Node.js
-- `PG_ADMIN_HOST` — операции CREATE/DROP DB (admin ops)
-- `PG_SANDBOX_HOST` — передаётся в sandbox-контейнеры через `DATABASE_URL`
-
-В Docker они часто различаются (bridge IP vs container localhost). Несовпадение вызывает молчаливые сбои при провизионинге `db_{chatId}`.
+**Три хоста PostgreSQL в `config.js`:** `PG_HOST` (Node.js), `PG_ADMIN_HOST` (CREATE/DROP DB), `PG_SANDBOX_HOST` (sandbox-контейнеры, передаётся через `DATABASE_URL`). В Docker часто различаются — несовпадение вызывает молчаливые сбои при провизионинге `db_{chatId}`.
 
 ### Маршрутизация
 
-`routes/index.js` под `/api`: `/session`, `/execute`, `/files`, `/database`, `/manage`, `/plans`, `/apps`, `/content`, `/auth`, `/health`.
-
-`server.js` (порядок важен):
-- `/admin` → `routes/admin.routes.js`
-- `/sandbox` → `routes/sandbox.routes.js`
-- `/api` → `routes/index.js`
-- `/api/video` → `routes/video.routes.js` (до `'/'`)
-- `/hook` → `routes/user_hooks.routes.js`
-- `/` → `routes/webhook.routes.js` (последним — перехватывает все пути)
-
+`server.js` (порядок важен): `/admin` → `/sandbox` → `/api` → `/api/video` (до `'/'`) → `/hook` → `/` (webhook — последним, перехватывает всё).  
 `/api/manage/*` — `manage/routes.js`. `/api/content/*` — `routes/content.routes.js`.
 
 ### Фильтрация тем по каналу (КРИТИЧНО)
 
-`reserveNextTopic(chatId, channel)` в `services/content/repository.js`. Топики с `channel IS NULL` — универсальные.
+`reserveNextTopic(chatId, channel)` в `services/content/repository.js`. Топики с `channel IS NULL` — универсальные. Валидация через `normalizeChannel(value)` + `VALID_CHANNELS` в `services/telegramMvp.service.js`.
 
-**11 допустимых значений `content_topics.channel`:** `telegram`, `vk`, `vk_video`, `ok`, `instagram`, `instagram_reels`, `facebook`, `pinterest`, `youtube`, `wordpress`, `tiktok`.
+**Жизненный цикл:** `reserveNextTopic` → `status='used'`; ошибка → `releaseTopic` → `status='pending'`; успех → `updateTopicStatus(chatId, topicId, 'completed')`. Facebook хранит `topic_id` в `facebook_jobs`.
 
-Валидация: `normalizeChannel(value)` + `VALID_CHANNELS` в `services/telegramMvp.service.js`.
-
-**Жизненный цикл топика:**
-- `reserveNextTopic` → `status = 'used'`
-- Ошибка генерации → `releaseTopic` → `status = 'pending'`
-- Успех → `updateTopicStatus(chatId, topicId, 'completed')`
-
-Facebook хранит `topic_id` в `facebook_jobs` для вызова `updateTopicStatus` после публикации.
-
-**Конфиги каналов в `manage-state-{chatId}.json`** хранятся как отдельные ключи: `instagramConfig`, `facebookConfig`, `vkConfig`, `okConfig`, `pinterestConfig`, `wordpressConfig`, `tiktokConfig`. Глобальный `buffer_api_key` — в `integrationSettings`. Instagram требует привязки аккаунта к Facebook Странице для прямой публикации через Buffer (иначе ошибка "media issue"). После переподключения канала в Buffer его ID меняется — нужно перевыбрать в настройках канала.
+**Конфиги каналов в `manage-state-{chatId}.json`:** `instagramConfig`, `facebookConfig`, `vkConfig`, `okConfig`, `pinterestConfig`, `wordpressConfig`, `tiktokConfig`. Глобальный `buffer_api_key` — в `integrationSettings`. Instagram требует привязки к Facebook Странице (иначе "media issue"). После переподключения в Buffer ID канала меняется — нужно перевыбрать.
 
 ### Контент-пайплайн
 
-FSM: `draft → ready → approved → published` (+ `error/failed`).
-
-AI генерирует черновик → если `premoderationEnabled` → CW Bot (✅/🔁/❌) → очередь → worker → публикация. `services/content/`: `index.js`, `repository.js`, `queue.repository.js`, `worker.js`, `status.js`, `validators.js`, `limits.js`, `video.service.js`, `alerts.js`.
-
-`services/content/index.js` — фасад, экспортирует: `STATUS`, `validateJobStatusTransition`, `repository`, `worker`, `queueRepo`. Канальные репозитории (`vk`, `ok`, `pinterest`, `youtube`, `instagram`, `wordpress`, `facebook`) — **отдельные модули**, не реэкспортируются из index.
+FSM: `draft → ready → approved → published` (+ `error/failed`). `services/content/index.js` — фасад. Канальные репозитории (`vk`, `ok`, `pinterest`, `youtube`, `instagram`, `wordpress`, `facebook`) — **отдельные модули**, не реэкспортируются из index.
 
 ### Frontend (КРИТИЧНЫЕ ПРАВИЛА)
 
-**Auth pattern:** `common.js` объявляет `let currentChatId` и `getChatId()`. Page-specific JS определяет `async function onLoginSuccess()`. **Не объявлять `let currentChatId` в page-specific JS** — вызовет `SyntaxError: Identifier already been declared`.
+**Auth pattern:** `common.js` объявляет `let currentChatId` и `getChatId()`. **Не объявлять `let currentChatId` в page-specific JS** — вызовет `SyntaxError: Identifier already been declared`.
 
-**Channel scheduler:** Использовать утилиты из `public/js/timezone-helper.js`: `generateTimezoneSelect`, `generateWeekdayCheckboxes`, `getWeekdays`, `setWeekdays`. Эталон: `public/templates/channel-scheduler-template.html`. Сложная логика — в отдельный файл (`channels-wordpress.js`, `channels-facebook.js`). Инициализация через `initSchedulerChannels()` в `channels.js`.
+**Channel scheduler:** Утилиты из `public/js/timezone-helper.js` (`generateTimezoneSelect`, `generateWeekdayCheckboxes`, `getWeekdays`, `setWeekdays`). Эталон: `public/templates/channel-scheduler-template.html`. Инициализация через `initSchedulerChannels()` в `channels.js`.
 
-Страницы UI: `index.html`, `auth.html`, `setup.html`, `channels.html`, `content.html`, `console.html`, `files.html`, `ai.html` (настройки моделей), `skills.html`, `balance.html`, `info.html`. Навигация: `renderMenu(activePath)` в `public/js/common.js`.
+### Sandbox-контейнеры
 
-### Файловая система
+`sandbox-user-{chatId}`. Workspace хоста `/var/sandbox-data/{chatId}/` → `/workspace/`. `PG_SANDBOX_HOST` должен быть bridge IP (например `172.17.0.1`) — иначе sandbox не достучится до PostgreSQL.
 
-```
-/var/sandbox-data/                     # DATA_ROOT
-├── manage-state-{chatId}.json
-├── .video-temp/{chatId}/              # Временные файлы видео-пайплайна
-└── {chatId}/                          # → /workspace в контейнере
-    ├── input/                         # Фото товаров для видео-пайплайна
-    └── output/content/                # Очищается в 05:00 МСК
+### Добавление нового канала (8 мест)
 
-/var/sandbox-backups/{chatId}_{timestamp}/   # TTL 7 дней
-/var/sandbox-snapshots/{chatId}/{path}/{ts}.snap
-```
+1. `VALID_CHANNELS` + `normalizeChannel()` в `services/telegramMvp.service.js`
+2. Getter/setter конфига в `manage/store.js`
+3. API-роуты в `manage/routes.js` (`GET/POST/DELETE /channels/{name}`, `/run-now`, `/settings`)
+4. Репозиторий `services/content/{name}.repository.js`
+5. Job handler в `services/content/worker.js`
+6. Лимиты в `services/content/limits.js`
+7. SQL-миграция в `migrations/`
+8. UI в `public/channels.html` + `channels.js`
 
-### Авторизация
+### Известные ограничения
 
-Auth Bot → `POST /api/auth/telegram-login` → hex token (TTL 10 мин) → `/auth.html` → `chatId` в localStorage. Admin-авторизация: query-параметры `admin_auth` + `chatId` (токен в `state.adminAuthToken`).
+- Facebook daily limit захардкожен как `10` в `limits.js` (TODO: из `facebookConfig.daily_limit`)
+- TikTok random publish не реализован — TODO
+- `APP_URL` в `.env` должен быть `https://`
 
 ---
 
 ## Подробная документация
 
-- @docs/architecture.md — таблица подсистем, сервисы каналов, admin panel
+- @docs/architecture.md — подсистемы, сервисы каналов, admin panel
 - @docs/video-pipeline.md — KIE.ai адаптеры, модели изображений/видео
-- @docs/migrations.md — список SQL-миграций
+- @docs/migrations.md — SQL-миграции
