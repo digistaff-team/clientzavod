@@ -684,9 +684,14 @@ async function sendBlogModerationRequest(chatId, postId, bot) {
     const cwBot = new Telegraf(cwBotToken);
 
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('✅ Опубликовать', `wp_mod:approve:${postId}`)],
-      [Markup.button.callback('🔁 Переписать', `wp_mod:rewrite:${postId}`)],
-      [Markup.button.callback('❌ Отклонить', `wp_mod:reject:${postId}`)]
+      [
+        Markup.button.callback('✅ Одобрить', `wp_mod:approve:${postId}`),
+        Markup.button.callback('❌ Отклонить', `wp_mod:reject:${postId}`)
+      ],
+      [
+        Markup.button.callback('🔁 Текст', `wp_mod:rewrite:${postId}`),
+        Markup.button.callback('🖼 Фото', `wp_mod:regen_image:${postId}`)
+      ]
     ]);
 
     await cwBot.telegram.sendMessage(moderatorId, message, {
@@ -723,16 +728,20 @@ async function handleWordPressPublish(chatId, job, bot) {
     // Обновляем статус
     await wpRepo.markPublished(chatId, postId, published.link);
 
-    // Уведомляем владельца об успешной публикации
+    // Уведомляем модератора об успешной публикации
     try {
       if (bot && bot.telegram) {
+        const wpConfig = manageStore.getWpConfig(chatId);
+        const notifyId = wpConfig?.moderatorUserId
+          || process.env.CONTENT_MVP_MODERATOR_USER_ID
+          || chatId;
         await bot.telegram.sendMessage(
-          chatId,
+          notifyId,
           `✅ Статья опубликована!\n\n📝 ${post.seo_title || 'Без заголовка'}\n\n🔗 ${published.link}`
         );
       }
     } catch (notifyErr) {
-      console.warn('[CONTENT-WORKER-BLOG] Failed to notify owner:', notifyErr.message);
+      console.warn('[CONTENT-WORKER-BLOG] Failed to notify moderator:', notifyErr.message);
     }
 
     // Публикуем анонс в Telegram канале пользователя

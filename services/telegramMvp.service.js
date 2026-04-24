@@ -1171,12 +1171,12 @@ async function sendVideoDraftToModerator(chatId, bot, draft) {
   const kb = {
     inline_keyboard: [
       [
-        { text: '✅ Approve', callback_data: `${callbackBase}:approve` },
-        { text: '🔁 Regenerate Text', callback_data: `${callbackBase}:regen_text` }
+        { text: '✅ Одобрить', callback_data: `${callbackBase}:approve` },
+        { text: '❌ Отклонить', callback_data: `${callbackBase}:reject` }
       ],
       [
-        { text: '🎬 Regenerate Video', callback_data: `${callbackBase}:regen_video` },
-        { text: '❌ Reject', callback_data: `${callbackBase}:reject` }
+        { text: '🔁 Текст', callback_data: `${callbackBase}:regen_text` },
+        { text: '🎬 Видео', callback_data: `${callbackBase}:regen_video` }
       ]
     ]
   };
@@ -1296,12 +1296,12 @@ async function sendDraftToModerator(chatId, bot, draft) {
   const kb = {
     inline_keyboard: [
       [
-        { text: '✅ Approve', callback_data: `${callbackBase}:approve` },
-        { text: '🔁 Regenerate Text', callback_data: `${callbackBase}:regen_text` }
+        { text: '✅ Одобрить', callback_data: `${callbackBase}:approve` },
+        { text: '❌ Отклонить', callback_data: `${callbackBase}:reject` }
       ],
       [
-        { text: '🖼 Regenerate Image', callback_data: `${callbackBase}:regen_image` },
-        { text: '❌ Reject', callback_data: `${callbackBase}:reject` }
+        { text: '🔁 Текст', callback_data: `${callbackBase}:regen_text` },
+        { text: '🖼 Фото', callback_data: `${callbackBase}:regen_image` }
       ]
     ]
   };

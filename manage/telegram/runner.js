@@ -927,9 +927,9 @@ function startBot(chatId, token) {
         }
 
         console.log(`[CONTENT-MOD] ${action} job ${jobId} for chatId=${resolvedChatId} (fromId=${fromId})`);
+        await ctx.answerCbQuery('Обрабатываю...').catch(() => {});
         try {
             const result = await telegramMvpService.handleModerationAction(resolvedChatId, { telegram: ctx.telegram }, action, jobId);
-            await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
             if (result?.ok) {
                 await ctx.reply(result.message || 'Операция выполнена.');
             } else {
@@ -937,7 +937,6 @@ function startBot(chatId, token) {
             }
         } catch (e) {
             console.error(`[CONTENT-MOD] Error:`, e);
-            await ctx.answerCbQuery('Ошибка').catch(() => {});
             await ctx.reply(`Ошибка модерации: ${e.message}`);
         }
     });
@@ -999,12 +998,11 @@ function startBot(chatId, token) {
             return;
         }
 
+        await ctx.answerCbQuery('Обрабатываю...').catch(() => {});
         try {
             const result = await pinterestMvpService.handlePinModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-            await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
             await ctx.reply(result?.message || 'Операция выполнена.');
         } catch (e) {
-            await ctx.answerCbQuery('Ошибка').catch(() => {});
             await ctx.reply(`Ошибка модерации Pinterest: ${e.message}`);
         }
     });
@@ -1067,12 +1065,11 @@ function startBot(chatId, token) {
             return;
         }
 
+        await ctx.answerCbQuery('Обрабатываю...').catch(() => {});
         try {
             const result = await vkMvpService.handleVkModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-            await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
             await ctx.reply(result?.message || 'Операция выполнена.');
         } catch (e) {
-            await ctx.answerCbQuery('Ошибка').catch(() => {});
             await ctx.reply(`Ошибка модерации VK: ${e.message}`);
         }
     });
@@ -1127,12 +1124,11 @@ function startBot(chatId, token) {
             return;
         }
 
+        await ctx.answerCbQuery('Обрабатываю...').catch(() => {});
         try {
             const result = await okMvpService.handleOkModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-            await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
             await ctx.reply(result?.message || 'Операция выполнена.');
         } catch (e) {
-            await ctx.answerCbQuery('Ошибка').catch(() => {});
             await ctx.reply(`Ошибка модерации ОК: ${e.message}`);
         }
     });
@@ -1188,18 +1184,17 @@ function startBot(chatId, token) {
             return;
         }
 
+        await ctx.answerCbQuery('Обрабатываю...').catch(() => {});
         try {
             const result = await instagramMvpService.handleInstagramModerationAction(resolvedChatId, { telegram: ctx.telegram }, jobId, action);
-            await ctx.answerCbQuery(result?.ok ? 'Готово' : 'Ошибка').catch(() => {});
             await ctx.reply(result?.message || 'Операция выполнена.');
         } catch (e) {
-            await ctx.answerCbQuery('Ошибка').catch(() => {});
             await ctx.reply(`Ошибка модерации Instagram: ${e.message}`);
         }
     });
 
     // WordPress blog moderation callbacks
-    bot.action(/^wp_mod:(approve|rewrite|reject):(\d+)$/, async (ctx) => {
+    bot.action(/^wp_mod:(approve|rewrite|reject|regen_image):(\d+)$/, async (ctx) => {
         const fromId = String(ctx.from?.id || '');
         const tgChatId = String(ctx.chat?.id || '');
 
@@ -1245,16 +1240,14 @@ function startBot(chatId, token) {
             return;
         }
 
+        await ctx.answerCbQuery('Обрабатываю...').catch(() => {});
         try {
             if (action === 'approve') {
                 await wpRepo.markApproved(resolvedChatId, postId);
                 const { enqueueJob } = require('../../services/content/worker');
                 await enqueueJob(resolvedChatId, { jobType: 'wordpress_publish', payload: { postId } });
-                await ctx.answerCbQuery('✅ Одобрено').catch(() => {});
                 await ctx.reply(`✅ Статья #${postId} одобрена и поставлена в очередь на публикацию.`);
             } else if (action === 'rewrite') {
-                // Запрашиваем комментарий от модератора
-                await ctx.answerCbQuery('🔁 Переписать').catch(() => {});
                 const msg = await ctx.reply(
                     '📝 Напишите замечания для переписывания статьи (следующим сообщением):',
                     Markup.forceReply().selective()
@@ -1266,18 +1259,42 @@ function startBot(chatId, token) {
                     data.pendingRewritePostId = postId;
                     manageStore.persist(resolvedChatId);
                 }
+            } else if (action === 'regen_image') {
+                const post = await wpRepo.getPostById(resolvedChatId, postId);
+                if (!post || !post.wp_post_id) throw new Error('Пост не найден');
+                const inputImageContext = require('../../services/inputImageContext.service');
+                const imageBuffer = await inputImageContext.generateImageWithFullContext(
+                    resolvedChatId,
+                    { topic: post.seo_title || '', focus: '', secondary: '', lsi: '' },
+                    post.seo_title || '',
+                    '16:9',
+                    'wordpress'
+                );
+                const media = await wordpressMvpService.uploadMedia(resolvedChatId, {
+                    buffer: imageBuffer,
+                    filename: 'cover.jpg',
+                    mimeType: 'image/jpeg',
+                    altText: post.seo_title || '',
+                    title: post.seo_title || ''
+                });
+                await wordpressMvpService.updateDraft(resolvedChatId, post.wp_post_id, { featured_media: media.id });
+                await wpRepo.updateWpIds(resolvedChatId, postId, {
+                    featuredImageUrl: media.source_url,
+                    wpMediaId: media.id
+                });
+                const { sendBlogModerationRequest } = require('../../services/content/worker');
+                await sendBlogModerationRequest(resolvedChatId, postId, null);
+                await ctx.reply(`🖼 Фото статьи #${postId} перегенерировано.`);
             } else if (action === 'reject') {
                 const post = await wpRepo.getPostById(resolvedChatId, postId);
                 if (post && post.wp_post_id) {
                     await wordpressMvpService.deletePost(resolvedChatId, post.wp_post_id);
                 }
                 await wpRepo.markRejected(resolvedChatId, postId);
-                await ctx.answerCbQuery('❌ Отклонено').catch(() => {});
                 await ctx.reply(`❌ Статья #${postId} отклонена и удалена из WordPress.`);
             }
         } catch (e) {
             console.error('[WP-MOD] Error:', e);
-            await ctx.answerCbQuery('Ошибка').catch(() => {});
             await ctx.reply(`Ошибка модерации блога: ${e.message}`);
         }
     });
