@@ -148,7 +148,7 @@ router.post('/create', requireVerifiedChatId(req => req.body?.chat_id), async (r
 });
 
 // Удалить сессию
-router.post('/destroy', async (req, res) => {
+router.post('/destroy', requireVerifiedChatId(req => req.body?.chat_id), async (req, res) => {
     const { chat_id } = req.body;
     
     if (!chat_id) {
@@ -165,7 +165,7 @@ router.post('/destroy', async (req, res) => {
 });
 
 // Сбросить файлы
-router.post('/reset', async (req, res) => {
+router.post('/reset', requireVerifiedChatId(req => req.body?.chat_id), async (req, res) => {
     const { chat_id } = req.body;
     
     if (!chat_id) {

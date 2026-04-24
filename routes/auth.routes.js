@@ -10,6 +10,7 @@
 const router = require('express').Router();
 const crypto = require('crypto');
 const manageStore = require('../manage/store');
+const requireVerifiedChatId = require('../middleware/requireVerifiedChatId');
 const sessionService = require('../services/session.service');
 const config = require('../config');
 const telegramRunner = require('../manage/telegram/runner');
@@ -218,7 +219,7 @@ router.get('/me', (req, res) => {
  * POST /api/auth/create-session
  * Body: { telegram_id: "123456789" }
  */
-router.post('/create-session', async (req, res) => {
+router.post('/create-session', requireVerifiedChatId(req => req.body?.telegram_id), async (req, res) => {
     const telegramId = String(req.body.telegram_id || '').trim();
     
     if (!telegramId) {
