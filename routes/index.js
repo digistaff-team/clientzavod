@@ -18,7 +18,7 @@ router.use('/execute', executeRoutes);
 router.use('/files', filesRoutes);
 router.use('/database', databaseRoutes);
 router.use('/manage', requireVerifiedChatId(
-    req => req.body?.chatId || req.query?.chatId
+    req => req.body?.chatId || req.body?.chat_id || req.query?.chatId || req.query?.chat_id
 ), manageRoutes);
 router.use('/plans', plansRoutes);
 router.use('/apps', appsRoutes);
