@@ -767,7 +767,10 @@ router.get('/channels/instagram', (req, res) => {
     const globalInt = manageStore.getIntegrationSettings(chatId) || {};
     const bufferApiKeyGlobalSet = !!globalInt.buffer_api_key;
     const config = manageStore.getInstagramConfig(chatId);
-    if (!config) return res.json({ connected: false, buffer_api_key_global_set: bufferApiKeyGlobalSet });
+    if (!config) {
+        const maskedApiKey = globalInt.buffer_api_key ? globalInt.buffer_api_key.slice(0, 6) + '***' : null;
+        return res.json({ connected: false, buffer_api_key_global_set: bufferApiKeyGlobalSet, masked_api_key: maskedApiKey });
+    }
     const safe = { ...config };
     if (safe.buffer_api_key) safe.buffer_api_key = safe.buffer_api_key.slice(0, 6) + '***';
     const isConnected = !!safe.buffer_channel_id;
@@ -969,6 +972,7 @@ router.post('/channels/vk-video/settings', async (req, res) => {
     try {
         const {
             chat_id,
+            is_active,
             schedule_time,
             schedule_end_time,
             schedule_tz,
@@ -982,7 +986,7 @@ router.post('/channels/vk-video/settings', async (req, res) => {
 
         if (!chat_id) return res.status(400).json({ error: 'chat_id is required' });
 
-        manageStore.setVkVideoConfig(chat_id, {
+        const patch = {
             schedule_time,
             schedule_end_time,
             schedule_tz,
@@ -992,7 +996,9 @@ router.post('/channels/vk-video/settings', async (req, res) => {
             auto_publish: !premoderation_enabled,
             allowed_weekdays: Array.isArray(allowed_weekdays) ? allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
             moderator_user_id: moderator_user_id || null
-        });
+        };
+        if (is_active !== undefined) patch.is_active = !!is_active;
+        manageStore.setVkVideoConfig(chat_id, patch);
 
         res.json({ success: true });
     } catch (e) {
@@ -1289,7 +1295,7 @@ router.post('/channels/youtube', async (req, res) => {
             chat_id: chatId, buffer_api_key, buffer_channel_id,
             is_active, auto_publish, schedule_time, schedule_end_time, schedule_tz,
             daily_limit, publish_interval_hours, allowed_weekdays,
-            moderator_user_id, random_publish
+            moderator_user_id, random_publish, premoderation_enabled
         } = req.body;
 
         console.log(`[YOUTUBE] POST /channels/youtube chatId=${chatId}, is_active=${is_active}`);
@@ -1301,6 +1307,7 @@ router.post('/channels/youtube', async (req, res) => {
         if (buffer_channel_id !== undefined) patch.buffer_channel_id = buffer_channel_id;
         if (is_active !== undefined) patch.is_active = is_active;
         if (auto_publish !== undefined) patch.auto_publish = auto_publish;
+        if (premoderation_enabled !== undefined) patch.auto_publish = !premoderation_enabled;
         if (schedule_time !== undefined) patch.schedule_time = schedule_time;
         if (schedule_end_time !== undefined) patch.schedule_end_time = schedule_end_time;
         if (schedule_tz !== undefined) patch.schedule_tz = schedule_tz;
@@ -1310,7 +1317,7 @@ router.post('/channels/youtube', async (req, res) => {
         if (moderator_user_id !== undefined) patch.moderator_user_id = moderator_user_id;
         if (random_publish !== undefined) patch.random_publish = random_publish;
 
-        manageStore.setYoutubeConfig(chatId, patch);
+        await manageStore.setYoutubeConfig(chatId, patch);
 
         // Инициализация YouTube-схемы в БД пользователя (не критично, если БД недоступна)
         try {

@@ -207,6 +207,9 @@ function initChannelTabs() {
             if (channel === 'instagramreels') {
                 loadInstagramReelsConfig();
             }
+            if (channel === 'youtube') {
+                loadYoutubeConfig();
+            }
         });
     });
 }
@@ -729,7 +732,7 @@ async function saveContentSettings() {
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
-            showToast('Контент-настройки сохранены', 'success');
+            showToast('Настройки Telegram сохранены', 'success');
             await loadContentSettings();
         } else {
             showToast(data.error || 'Ошибка сохранения', 'error');
@@ -1024,7 +1027,7 @@ async function loadSelectedPinterestBoardSettings(boardId) {
     if (!chatId || !boardId) return;
 
     try {
-        const res = await fetch(`${API_CONTENT}/channels/pinterest/boards`);
+        const res = await fetch(`${API_MANAGE}/channels/pinterest/boards?chat_id=${encodeURIComponent(chatId)}`);
         const boards = await res.json();
         const board = boards.find(b => b.board_id === boardId);
         if (board) {
@@ -1132,7 +1135,8 @@ function togglePinterestModeratorField() {
 async function runPinterestNow() {
     const chatId = getChatId();
     if (!chatId) return;
-    await runChannelNow(`${API_CONTENT}/pinterest/run-now`, { chat_id: chatId, reason: 'ui_manual' }, 'pinterestRunNowBtn', 'pinterestSettingsStatus', 'Пин сгенерирован');
+    const boardId = (document.getElementById('pinterestBoardId')?.value || '').trim() || undefined;
+    await runChannelNow(`${API_CONTENT}/pinterest/run-now`, { chat_id: chatId, reason: 'ui_manual', board_id: boardId }, 'pinterestRunNowBtn', 'pinterestSettingsStatus', 'Генерация запущена');
 }
 
 async function savePinterestConfig() {
@@ -1946,7 +1950,7 @@ async function loadYoutubeConfig() {
         if (randomEl) randomEl.checked = !!cfg.random_publish;
         const premoderEl = document.getElementById('youtubePremoderation');
         if (premoderEl) {
-            premoderEl.checked = !!cfg.premoderation_enabled;
+            premoderEl.checked = cfg.auto_publish === false || cfg.auto_publish === undefined;
         }
         const youtubeModeratorEl = document.getElementById('youtubeModeratorUserId');
         if (youtubeModeratorEl) youtubeModeratorEl.value = cfg.moderator_user_id || chatId;
@@ -2252,6 +2256,12 @@ async function loadBufferChannels(apiKey, service, selectElementId, chatId = nul
         });
 
         selectEl.disabled = false;
+
+        const savedValue = document.getElementById(selectElementId.replace('Select', 'Id'))?.value;
+        if (savedValue) {
+            const found = Array.from(selectEl.options).some(opt => opt.value === savedValue);
+            if (found) selectEl.value = savedValue;
+        }
     } catch (e) {
         selectEl.innerHTML = '<option value="">— ошибка загрузки —</option>';
         selectEl.disabled = false;

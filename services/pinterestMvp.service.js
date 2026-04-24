@@ -301,8 +301,22 @@ async function handlePinterestGenerateJob(chatId, queueJob, bot, correlationId) 
     return { success: false, error: `Дневной лимит пинов исчерпан (${publishedToday}/${DAILY_PIN_LIMIT})`, retry: false };
   }
 
-  // Выбор доски
-  const board = await selectNextBoard(chatId);
+  // Выбор доски: если передан boardId в payload — использовать его, иначе авто-выбор
+  const payloadBoardId = queueJob?.payload?.boardId || null;
+  let board;
+  if (payloadBoardId) {
+    const dbBoards = await pinterestRepo.getBoards(chatId).catch(() => []);
+    const found = dbBoards.find(b => b.board_id === payloadBoardId);
+    if (found) {
+      board = { board_id: found.board_id, board_name: found.board_name, service_id: found.service_id, idea: found.idea, focus: found.focus, purpose: found.purpose, keywords: found.keywords, link: found.link };
+    } else {
+      const cfg = manageStore.getPinterestConfig(chatId);
+      if (cfg?.board_id === payloadBoardId) {
+        board = { board_id: cfg.board_id, board_name: cfg.board_name || '', keywords: '', link: cfg.website_url || '' };
+      }
+    }
+  }
+  if (!board) board = await selectNextBoard(chatId);
   if (!board) {
     return { success: false, error: 'Нет настроенных досок Pinterest', retry: false };
   }
@@ -770,7 +784,7 @@ async function tickPinterestSchedule(chatId, bot) {
   });
 }
 
-async function runNow(chatId, bot, reason = 'manual') {
+async function runNow(chatId, bot, reason = 'manual', boardId = null) {
   await repository.ensureSchema(chatId);
 
   const settings = getPinterestSettings(chatId);
@@ -781,27 +795,11 @@ async function runNow(chatId, bot, reason = 'manual') {
 
   const correlationId = generateCorrelationId();
 
-  if (reason !== 'schedule') {
-    try {
-      const result = await handlePinterestGenerateJob(chatId, {
-        payload: { reason },
-        correlation_id: correlationId
-      }, bot, correlationId);
-      if (result.success) {
-        return { ok: true, message: 'Пин сгенерирован.', correlationId };
-      } else {
-        return { ok: false, message: result.error || 'Генерация не удалась.', correlationId };
-      }
-    } catch (e) {
-      return { ok: false, message: `Ошибка: ${e.message}`, correlationId };
-    }
-  }
-
   await queueRepo.ensureQueueSchema(chatId);
   const queueJobId = await queueRepo.enqueue(chatId, {
     jobType: 'pinterest_generate',
     priority: 0,
-    payload: { reason },
+    payload: { reason, boardId: boardId || null },
     correlationId
   });
 
