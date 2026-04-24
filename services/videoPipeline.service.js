@@ -31,7 +31,7 @@ const vpRepo = require('./content/videoPipeline.repository');
 // ============================================
 
 const VIDEO_TEMP_ROOT = process.env.VIDEO_TEMP_ROOT || path.join(config.DATA_ROOT, '.video-temp');
-const VIDEO_MODEL = process.env.VIDEO_MODEL || 'veo3.1';
+const VIDEO_MODEL = process.env.VIDEO_MODEL || 'veo3_lite';
 const VIDEO_ASPECT_RATIO = process.env.VIDEO_ASPECT_RATIO || '9:16';
 const VIDEO_POLL_INTERVAL_SEC = parseInt(process.env.VIDEO_POLL_INTERVAL_SEC || '25', 10);
 const VIDEO_TIMEOUT_SEC = parseInt(process.env.VIDEO_TIMEOUT_SEC || '600', 10);
@@ -161,24 +161,32 @@ async function generateScene(chatId, productImage, interior, correlationId) {
   // Используем AI для создания промпта сцены
   let enhancedPrompt = prompt;
   try {
-    const aiResponse = await aiRouterService.chatCompletion(
-      chatId,
-      [
-        {
-          role: 'system',
-          content: 'You are a professional product photography director. Given a product filename and interior description, create a detailed image generation prompt for placing the product in the interior.'
-        },
-        {
-          role: 'user',
-          content: `Product: ${productImage.filename}\nInterior: ${description}\nStyle: ${style}\n\nCreate a detailed image generation prompt (max 200 chars) for placing this product in the described interior. Focus on composition, lighting, and mood. No text, no logos.`
-        }
-      ],
-      { temperature: 0.7, max_tokens: 200 }
-    );
-
-    if (aiResponse?.content) {
-      enhancedPrompt = aiResponse.content.trim().slice(0, 500);
-      console.log(`[VIDEO-PIPELINE] Enhanced prompt: ${enhancedPrompt}`);
+    const session = await sessionService.getOrCreateSession(chatId);
+    const customPromptPath = path.join(session.dataDir, 'input', 'imageprompt.txt');
+    const customPrompt = await fs.readFile(customPromptPath, 'utf8').catch(() => null);
+    if (customPrompt && customPrompt.trim()) {
+      enhancedPrompt = customPrompt.trim().slice(0, 500);
+      console.log(`[VIDEO-PIPELINE] Using imageprompt.txt: ${enhancedPrompt}`);
+    } else {
+      const aiResponse = await aiRouterService.callAI(
+        chatId, null, null,
+        [
+          {
+            role: 'system',
+            content: 'You are a professional product photography director. Given a product filename and interior description, create a detailed image generation prompt for placing the product in the interior.'
+          },
+          {
+            role: 'user',
+            content: `Product: ${productImage.filename}\nInterior: ${description}\nStyle: ${style}\n\nCreate a detailed image generation prompt (max 200 chars) for placing this product in the described interior. Focus on composition, lighting, and mood. No text, no logos.`
+          }
+        ],
+        null, null
+      );
+      const enhancedContent = aiResponse?.choices?.[0]?.message?.content;
+      if (enhancedContent) {
+        enhancedPrompt = enhancedContent.trim().slice(0, 500);
+        console.log(`[VIDEO-PIPELINE] Enhanced prompt: ${enhancedPrompt}`);
+      }
     }
   } catch (e) {
     console.warn(`[VIDEO-PIPELINE] AI prompt enhancement failed: ${e.message}, using default`);

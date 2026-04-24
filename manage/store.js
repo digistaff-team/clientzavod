@@ -859,7 +859,7 @@ function clearInstagramReelsConfig(chatId) {
 
 // === Video Pipeline Settings ===
 
-const ALLOWED_VIDEO_MODELS = ['veo3.1', 'seedance-2', 'grok-imagine'];
+const ALLOWED_VIDEO_MODELS = ['veo3_lite', 'veo3_fast', 'veo3', 'veo3.1', 'seedance-2', 'grok-imagine'];
 
 function getVideoPipelineSettings(chatId) {
     return statesCache[chatId]?.videoPipelineSettings || { model: 'veo3.1' };
@@ -870,7 +870,7 @@ function setVideoPipelineSettings(chatId, patch = {}) {
     const current = statesCache[chatId].videoPipelineSettings || {};
     const next = { ...current };
     if (patch.model !== undefined) {
-        next.model = ALLOWED_VIDEO_MODELS.includes(patch.model) ? patch.model : 'veo3.1';
+        next.model = ALLOWED_VIDEO_MODELS.includes(patch.model) ? patch.model : 'veo3_lite';
     }
     statesCache[chatId].videoPipelineSettings = next;
     return persist(chatId);
