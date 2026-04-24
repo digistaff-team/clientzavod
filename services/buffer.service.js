@@ -25,7 +25,7 @@ const BUFFER_GRAPHQL_URL = 'https://api.buffer.com/graphql';
 const MAX_RETRIES = 3;
 const BACKOFF_MS = [15000, 30000, 60000];
 
-async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbnailUrl, boardServiceId, youtubeTitle, youtubeCategoryId, postType, instagramType }) {
+async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbnailUrl, boardServiceId, link, youtubeTitle, youtubeCategoryId, postType, instagramType }) {
   const query = `
     mutation CreatePost($input: CreatePostInput!) {
       createPost(input: $input) {
@@ -68,7 +68,7 @@ async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbna
   }
 
   if (boardServiceId) {
-    input.metadata = { pinterest: { boardServiceId } };
+    input.metadata = { ...(input.metadata || {}), pinterest: { boardServiceId } };
   }
 
   // YouTube metadata (title и categoryId обязательны)
@@ -89,7 +89,13 @@ async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbna
 
   // Instagram post type (post, story, reel)
   if (instagramType) {
-    input.metadata = { ...input.metadata, instagram: { type: instagramType, shouldShareToFeed: true } };
+    input.metadata = {
+      ...input.metadata,
+      instagram: {
+        type: instagramType,
+        shouldShareToFeed: instagramType !== 'story'
+      }
+    };
   }
 
   const variables = { input };
@@ -143,7 +149,7 @@ async function createPost(apiKey, channelId, { text, imageUrl, videoUrl, thumbna
     }
 
     if (result?.post?.status === 'error') {
-      throw new Error(`Buffer post created but failed to publish (status=error). Check Buffer dashboard for details.`);
+      throw new Error(`Buffer post created (id=${result.post.id}) but failed to publish (status=error). Check Buffer dashboard for details.`);
     }
 
     return { postId };
