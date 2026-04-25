@@ -430,21 +430,26 @@ async function publishYoutubePost(chatId, bot, jobId, correlationId) {
     throw new Error('video_url не задан для YouTube job');
   }
 
-  // Формируем текст (лимит Buffer ~500 символов)
-  let text = [job.video_title, '', job.video_description].filter(Boolean).join('\n');
-  if (job.tags && Array.isArray(job.tags)) {
-    const tagsStr = job.tags.map(t => `#${t}`).join(' ');
-    text += '\n\n' + tagsStr;
-  }
+  // Формируем текст (лимит Buffer ~500 символов).
+  // #Shorts обязателен: Buffer GraphQL API не имеет флага для Shorts,
+  // YouTube классифицирует ролик как Shorts по хештегу в title/description.
+  const tagList = Array.isArray(job.tags) ? job.tags.map(t => `#${t}`) : [];
+  const hashtagLine = ['#Shorts', ...tagList].join(' ');
+  let text = [job.video_title, '', job.video_description, '', hashtagLine].filter(Boolean).join('\n');
   if (text.length > 500) {
     text = text.slice(0, 497) + '...';
   }
+
+  const baseTitle = job.video_title || 'YouTube Short';
+  const youtubeTitle = baseTitle.toLowerCase().includes('#shorts')
+    ? baseTitle.slice(0, 100)
+    : `${baseTitle} #Shorts`.slice(0, 100);
 
   // Публикация через Buffer
   const bufferResult = await bufferService.createPost(ytBufferApiKey, cfg.buffer_channel_id, {
     text,
     videoUrl,
-    youtubeTitle: job.video_title || 'YouTube Short',
+    youtubeTitle,
     youtubeCategoryId: '24'
   });
 
