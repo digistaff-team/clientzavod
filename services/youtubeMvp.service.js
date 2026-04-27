@@ -496,12 +496,8 @@ async function publishYoutubePost(chatId, bot, jobId, correlationId) {
 
 async function sendYtToModerator(chatId, bot, draft) {
   const settings = getYoutubeSettings(chatId);
-  const globalSettings = manageStore.getContentSettings?.(chatId);
 
-  // Иерархия: модератор канала → глобальный модератор → chatId
-  const moderatorId = settings.moderatorUserId ||
-                      globalSettings?.moderatorUserId ||
-                      chatId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, settings);
 
   const tagsText = draft.tags?.length ? draft.tags.map(t => `#${t}`).join(' ') : '';
   const caption = [
