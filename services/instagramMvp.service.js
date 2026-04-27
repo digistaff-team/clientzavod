@@ -14,9 +14,10 @@ const sessionService = require('./session.service');
 const dockerService = require('./docker.service');
 const storageService = require('./storage.service');
 const bufferService = require('./buffer.service');
+const metaGraph = require('./metaGraph.service');
 const igRepo = require('./content/instagram.repository');
 const inputImageContext = require('./inputImageContext.service');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 const videoPipeline = require('./videoPipeline.service');
 
 const contentModules = require('./content/index');
@@ -385,12 +386,17 @@ async function publishIgPost(chatId, bot, jobId, correlationId) {
   const cfg = manageStore.getInstagramConfig(chatId);
   if (!cfg) throw new Error('Instagram не настроен');
 
+  const useMeta = cfg.meta_method === 'meta';
+
   const globalInt = manageStore.getIntegrationSettings(chatId) || {};
   const bufferApiKey = globalInt.buffer_api_key || cfg.buffer_api_key;
   const bufferChannelId = cfg.buffer_channel_id;
 
-  if (!bufferApiKey || !bufferChannelId) {
+  if (!useMeta && (!bufferApiKey || !bufferChannelId)) {
     throw new Error('Buffer API key или channel_id не настроены для Instagram');
+  }
+  if (useMeta && (!cfg.meta_page_access_token || !cfg.meta_ig_business_account_id)) {
+    throw new Error('Meta page_access_token или ig_business_account_id не настроены');
   }
 
   // Копируем изображение из контейнера на хост
@@ -413,26 +419,51 @@ async function publishIgPost(chatId, bot, jobId, correlationId) {
   await fs.writeFile(path.join(hostDir, hostFilename), jpegBuffer);
 
   const imageUrl = `${config.APP_URL}/api/files/public/${chatId}/${hostFilename}`;
-  console.log(`[IG-MVP] Publishing 1080x1080 JPEG via Buffer, size=${jpegBuffer.length} bytes`);
   let text = String(job.caption || '').slice(0, 2200);
 
-  const bufferResult = await bufferService.createPost(bufferApiKey, bufferChannelId, { text, imageUrl, instagramType: 'post' });
-  console.log(`[IG-MVP] Published via Buffer, postId=${bufferResult.postId}`);
+  let publishedId = null;
+  let publishMethod = 'buffer';
 
-  // Запись в лог
-  await igRepo.addPublishLog(chatId, {
-    jobId,
-    bufferPostId: bufferResult.postId,
-    method: 'buffer',
-    status: 'published',
-    correlationId: corrId
-  });
+  if (useMeta) {
+    console.log(`[IG-MVP] Publishing 1080x1080 JPEG via Meta Graph, size=${jpegBuffer.length} bytes`);
+    const result = await metaGraph.publishPhoto(
+      cfg.meta_page_access_token,
+      cfg.meta_ig_business_account_id,
+      { imageUrl, caption: text }
+    );
+    publishedId = result.mediaId;
+    publishMethod = 'meta';
+    console.log(`[IG-MVP] Published via Meta, mediaId=${publishedId}`);
 
-  // Обновить статус job
-  await igRepo.updateJob(chatId, jobId, {
-    status: 'published',
-    bufferPostId: bufferResult.postId
-  });
+    await igRepo.addPublishLog(chatId, {
+      jobId,
+      mediaId: publishedId,
+      method: 'meta',
+      status: 'published',
+      correlationId: corrId
+    });
+    await igRepo.updateJob(chatId, jobId, {
+      status: 'published',
+      mediaId: publishedId
+    });
+  } else {
+    console.log(`[IG-MVP] Publishing 1080x1080 JPEG via Buffer, size=${jpegBuffer.length} bytes`);
+    const bufferResult = await bufferService.createPost(bufferApiKey, bufferChannelId, { text, imageUrl, instagramType: 'post' });
+    publishedId = bufferResult.postId;
+    console.log(`[IG-MVP] Published via Buffer, postId=${publishedId}`);
+
+    await igRepo.addPublishLog(chatId, {
+      jobId,
+      bufferPostId: publishedId,
+      method: 'buffer',
+      status: 'published',
+      correlationId: corrId
+    });
+    await igRepo.updateJob(chatId, jobId, {
+      status: 'published',
+      bufferPostId: publishedId
+    });
+  }
 
   // Обновить статистику
   const stats = cfg.stats || {};
@@ -451,11 +482,12 @@ async function publishIgPost(chatId, bot, jobId, correlationId) {
 
   // Уведомление
   if (bot?.telegram) {
-    const msg = `📷 Instagram пост опубликован через Buffer!\n${text.slice(0, 100)}...`;
+    const via = publishMethod === 'meta' ? 'Meta API' : 'Buffer';
+    const msg = `📷 Instagram пост опубликован через ${via}!\n${text.slice(0, 100)}...`;
     await bot.telegram.sendMessage(chatId, msg).catch(() => {});
   }
 
-  return { postId: bufferResult.postId };
+  return { postId: publishedId, method: publishMethod };
 }
 
 // ============================================
@@ -464,16 +496,13 @@ async function publishIgPost(chatId, bot, jobId, correlationId) {
 
 async function sendIgToModerator(chatId, bot, draft) {
   const igSettings = getIgSettings(chatId);
-  const globalSettings = manageStore.getContentSettings?.(chatId);
 
-  // Иерархия: модератор канала → глобальный модератор → chatId
-  const moderatorId = igSettings?.moderator_user_id ||
-                      globalSettings?.moderatorUserId ||
-                      chatId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, igSettings);
   console.log(`[IG-MODERATION] Sending draft #${draft.jobId} to moderator ${moderatorId}, chatId=${chatId}`);
 
   const caption = [
     `📷 Черновик для Instagram #${draft.jobId}`,
+    formatDraftMeta(chatId),
     '',
     (draft.caption || '').slice(0, 800),
     '',
@@ -606,57 +635,12 @@ async function handleInstagramModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'reject') {
-    draft.rejectedCount = (draft.rejectedCount || 0) + 1;
-    await setDraft(chatId, String(jobId), draft);
-
-    if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
-      await igRepo.updateJob(chatId, jobId, { status: 'failed', errorText: `Rejected ${MAX_REJECT_ATTEMPTS} times` });
-      await removeDraft(chatId, String(jobId));
-      return { ok: true, message: `Instagram-пост отклонен ${MAX_REJECT_ATTEMPTS} раза. Задача закрыта.` };
+    if (draft.topic?.sheetRow) {
+      await repository.releaseTopic(chatId, draft.topic.sheetRow).catch(() => {});
     }
-
-    // Полная перегенерация
-    try {
-      const [materialsText, personaText] = await Promise.all([
-        loadMaterialsText(chatId, 12),
-        loadUserPersona(chatId)
-      ]);
-      const igText = await generateIgPostText(chatId, draft.topic, materialsText, personaText);
-
-      if (draft.isVideo) {
-        // For Reels drafts: only regen text, send video-style moderation message
-        draft.caption = igText.caption;
-        draft.imagePrompt = igText.imagePrompt;
-
-        await igRepo.updateJob(chatId, jobId, {
-          caption: igText.caption,
-          imagePrompt: igText.imagePrompt,
-          rejectedCount: draft.rejectedCount
-        });
-
-        await sendIgVideoToModerator(chatId, bot, draft);
-      } else {
-        // For photo posts: regen both image and text
-        const imageBuffer = await generateIgImage(chatId, draft.topic);
-        const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
-
-        draft.caption = igText.caption;
-        draft.imagePrompt = igText.imagePrompt;
-        draft.imagePath = imagePath;
-
-        await igRepo.updateJob(chatId, jobId, {
-          caption: igText.caption,
-          imagePrompt: igText.imagePrompt,
-          imagePath,
-          rejectedCount: draft.rejectedCount
-        });
-
-        await sendIgToModerator(chatId, bot, draft);
-      }
-      return { ok: true, message: `Instagram-пост перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
-    } catch (e) {
-      return { ok: false, message: `Ошибка перегенерации: ${e.message}` };
-    }
+    await igRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected by moderator' });
+    await removeDraft(chatId, String(jobId));
+    return { ok: true, message: 'Instagram-пост отклонен. Тема освобождена.' };
   }
 
   return { ok: false, message: 'Неизвестное действие.' };
@@ -768,13 +752,19 @@ async function publishIgVideoPost(chatId, bot, jobId, correlationId) {
   const job = await igRepo.getJobById(chatId, jobId);
   if (!job) throw new Error(`Instagram Reels job ${jobId} not found`);
 
+  const igCfg = manageStore.getInstagramConfig(chatId) || {};
+  const useMeta = igCfg.meta_method === 'meta';
+
   const reelsCfg = manageStore.getInstagramReelsConfig(chatId) || {};
   const globalInt = manageStore.getIntegrationSettings(chatId) || {};
   const bufferApiKey = globalInt.buffer_api_key || null;
   const bufferChannelId = reelsCfg.buffer_channel_id || null;
 
-  if (!bufferApiKey || !bufferChannelId) {
+  if (!useMeta && (!bufferApiKey || !bufferChannelId)) {
     throw new Error('Buffer API key или channel_id не настроены для Instagram Reels');
+  }
+  if (useMeta && (!igCfg.meta_page_access_token || !igCfg.meta_ig_business_account_id)) {
+    throw new Error('Meta page_access_token или ig_business_account_id не настроены');
   }
 
   // videoPath хранится в image_path — это путь к временному файлу видео-пайплайна
@@ -785,27 +775,52 @@ async function publishIgVideoPost(chatId, bot, jobId, correlationId) {
 
   const text = String(job.caption || '').slice(0, 2200);
 
-  const bufferResult = await bufferService.createPost(
-    bufferApiKey,
-    bufferChannelId,
-    { text, videoUrl }
-  );
-  console.log(`[IG-REELS-MVP] Published via Buffer, postId=${bufferResult.postId}`);
+  let publishedId = null;
+  let publishMethod = 'buffer';
 
-  // Запись в лог
-  await igRepo.addPublishLog(chatId, {
-    jobId,
-    bufferPostId: bufferResult.postId,
-    method: 'buffer',
-    status: 'published',
-    correlationId: corrId
-  });
+  if (useMeta) {
+    if (!videoUrl) throw new Error('videoUrl не сформирован для Reels');
+    const result = await metaGraph.publishReel(
+      igCfg.meta_page_access_token,
+      igCfg.meta_ig_business_account_id,
+      { videoUrl, caption: text }
+    );
+    publishedId = result.mediaId;
+    publishMethod = 'meta';
+    console.log(`[IG-REELS-MVP] Published via Meta, mediaId=${publishedId}`);
 
-  // Обновить статус job
-  await igRepo.updateJob(chatId, jobId, {
-    status: 'published',
-    bufferPostId: bufferResult.postId
-  });
+    await igRepo.addPublishLog(chatId, {
+      jobId,
+      mediaId: publishedId,
+      method: 'meta',
+      status: 'published',
+      correlationId: corrId
+    });
+    await igRepo.updateJob(chatId, jobId, {
+      status: 'published',
+      mediaId: publishedId
+    });
+  } else {
+    const bufferResult = await bufferService.createPost(
+      bufferApiKey,
+      bufferChannelId,
+      { text, videoUrl, instagramType: 'reel' }
+    );
+    publishedId = bufferResult.postId;
+    console.log(`[IG-REELS-MVP] Published via Buffer, postId=${publishedId}`);
+
+    await igRepo.addPublishLog(chatId, {
+      jobId,
+      bufferPostId: publishedId,
+      method: 'buffer',
+      status: 'published',
+      correlationId: corrId
+    });
+    await igRepo.updateJob(chatId, jobId, {
+      status: 'published',
+      bufferPostId: publishedId
+    });
+  }
 
   // Обновить статистику Reels
   const reelsSettings = getIgReelsSettings(chatId);
@@ -825,11 +840,12 @@ async function publishIgVideoPost(chatId, bot, jobId, correlationId) {
 
   // Уведомление
   if (bot?.telegram) {
-    const msg = `🎬 Instagram Reels опубликован через Buffer!\n${text.slice(0, 100)}...`;
+    const via = publishMethod === 'meta' ? 'Meta API' : 'Buffer';
+    const msg = `🎬 Instagram Reels опубликован через ${via}!\n${text.slice(0, 100)}...`;
     await bot.telegram.sendMessage(chatId, msg).catch(() => {});
   }
 
-  return { postId: bufferResult.postId };
+  return { postId: publishedId, method: publishMethod };
 }
 
 // ============================================
@@ -838,15 +854,12 @@ async function publishIgVideoPost(chatId, bot, jobId, correlationId) {
 
 async function sendIgVideoToModerator(chatId, bot, draft) {
   const igSettings = getIgReelsSettings(chatId);
-  const globalSettings = manageStore.getContentSettings?.(chatId);
 
-  // Иерархия: модератор Reels-канала → глобальный модератор → chatId
-  const moderatorId = igSettings?.moderator_user_id ||
-                      globalSettings?.moderatorUserId ||
-                      chatId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, igSettings);
 
   const caption = [
     `🎬 Черновик Instagram Reels #${draft.jobId}`,
+    formatDraftMeta(chatId),
     '',
     (draft.caption || '').slice(0, 800),
     '',
