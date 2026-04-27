@@ -19,7 +19,7 @@ const dockerService = require('./docker.service');
 const storageService = require('./storage.service');
 const inputImageContext = require('./inputImageContext.service');
 const channelSkills = require('./channelSkills');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 
 // Новые модули
 const contentModules = require('./content/index');
@@ -45,7 +45,6 @@ const videoPipelineRepo = require('./content/videoPipeline.repository');
 const SCHEDULE_TIME = process.env.CONTENT_MVP_TIME || '09:00';
 const SCHEDULE_TZ = process.env.CONTENT_MVP_TZ || 'Europe/Moscow';
 const CHANNEL_ID = process.env.CHANNEL_ID || null; // Должен быть указан в настройках пользователя
-const MODERATOR_USER_ID = process.env.CONTENT_MVP_MODERATOR_USER_ID || '128247430';
 const DAILY_LIMIT = parseInt(process.env.CONTENT_MVP_DAILY_LIMIT || '1', 10);
 const MAX_IMAGE_ATTEMPTS = parseInt(process.env.CONTENT_MVP_MAX_IMAGE_ATTEMPTS || '3', 10);
 
@@ -90,7 +89,7 @@ function getContentSettings(chatId) {
   const cfg = manageStore.getContentSettings ? manageStore.getContentSettings(chatId) : null;
   return {
     channelId: cfg?.channelId || CHANNEL_ID,
-    moderatorUserId: cfg?.moderatorUserId || MODERATOR_USER_ID,
+    moderatorUserId: cfg?.moderatorUserId || null,
     scheduleTime: cfg?.scheduleTime || SCHEDULE_TIME,
     scheduleTz: cfg?.scheduleTz || SCHEDULE_TZ,
     dailyLimit: Number.isFinite(cfg?.dailyLimit) ? cfg.dailyLimit : DAILY_LIMIT,
@@ -1161,6 +1160,7 @@ async function sendVideoDraftToModerator(chatId, bot, draft) {
   const settings = getContentSettings(chatId);
   const caption = [
     `🎬 Видео-черновик #${draft.jobId} для Telegram`,
+    formatDraftMeta(chatId),
     `Тема: ${draft.topic.topic}`,
     draft.correlationId ? `📋 ${draft.correlationId}` : '',
     '',
@@ -1182,7 +1182,7 @@ async function sendVideoDraftToModerator(chatId, bot, draft) {
   };
 
   // Для видео отправляем текстовое сообщение с кнопками
-  const moderatorId = settings.moderatorUserId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, { moderatorUserId: settings.moderatorUserId });
   const sent = await safeSendToModerator({
     sendFn: () => bot.telegram.sendMessage(moderatorId, caption, { reply_markup: kb, parse_mode: 'HTML' }),
     chatId,
@@ -1282,10 +1282,11 @@ async function routeDraft(chatId, bot, draft) {
 
 async function sendDraftToModerator(chatId, bot, draft) {
   const settings = getContentSettings(chatId);
-  const moderatorId = settings.moderatorUserId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, { moderatorUserId: settings.moderatorUserId });
   console.log(`[TG-MVP] sendDraftToModerator chatId=${chatId}, jobId=${draft.jobId}, moderatorId=${moderatorId}`);
   const caption = [
     `📝 Черновик #${draft.jobId} для Telegram`,
+    formatDraftMeta(chatId),
     `Тема: ${draft.topic.topic}`,
     draft.correlationId ? `📋 ${draft.correlationId}` : '',
     '',
@@ -1697,21 +1698,9 @@ async function handleModerationAction(chatId, bot, action, jobId) {
   }
   
   if (action === 'reject') {
-    draft.rejectedCount = (draft.rejectedCount || 0) + 1;
-    if (draft.rejectedCount >= 3) {
-      await repository.setSheetState(chatId, draft.topic.sheetRow, 'MANUAL_REWORK_REQUIRED', 'Rejected 3 times');
-      await setDraft(chatId, String(jobId), draft);
-      return { ok: true, message: 'Черновик отклонен 3 раза. Нужна ручная переработка.' };
-    }
-    const refreshed = await regenerateDraftPart(chatId, draft, 'text', correlationId);
-    await regenerateDraftPart(chatId, refreshed, draft.contentType === 'text+video' ? 'video' : 'image', correlationId);
-    if (draft.contentType === 'text+video') {
-      await sendVideoDraftToModerator(chatId, bot, refreshed);
-    } else {
-      await sendDraftToModerator(chatId, bot, refreshed);
-    }
-    await setDraft(chatId, String(jobId), draft);
-    return { ok: true, message: `Черновик отклонен. Автоперегенерация выполнена и отправлена на согласование (${draft.rejectedCount}/3).` };
+    await releaseTopic(chatId, draft.topic, 'rejected_by_moderator');
+    await removeDraft(chatId, String(jobId));
+    return { ok: true, message: 'Черновик отклонен. Тема освобождена.' };
   }
   
   return { ok: false, message: 'Неизвестное действие.' };
@@ -2052,6 +2041,11 @@ async function getMetrics(chatId) {
        WHERE status=$1 AND created_at >= NOW() - INTERVAL '7 days'`,
       [PUBLISH_LOG_STATUS.PUBLISHED]
     );
+    const published30dRes = await client.query(
+      `SELECT COUNT(*)::int AS c FROM publish_logs
+       WHERE status=$1 AND created_at >= NOW() - INTERVAL '30 days'`,
+      [PUBLISH_LOG_STATUS.PUBLISHED]
+    );
     const failed24hRes = await client.query(
       `SELECT COUNT(*)::int AS c FROM publish_logs
        WHERE status=$1 AND created_at >= NOW() - INTERVAL '24 hours'`,
@@ -2091,6 +2085,9 @@ async function getMetrics(chatId) {
         },
         last7d: {
           published: published7dRes.rows[0]?.c || 0
+        },
+        last30d: {
+          published: published30dRes.rows[0]?.c || 0
         }
       },
       latency_seconds: {
