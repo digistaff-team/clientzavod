@@ -522,6 +522,7 @@ async function handleWordPressGeneration(chatId, job, bot) {
     // 2. Создаём черновик поста в БД
     const postId = await wpRepo.createDraftPost(chatId, {
       jobId: null, // content_job_queue.id != content_jobs.id, FK references content_jobs
+      topicId: topicId || null,
       bodyHtml: article.bodyHtml,
       seoTitle: article.seoTitle,
       metaDesc: article.metaDesc,
@@ -613,11 +614,8 @@ async function handleWordPressGeneration(chatId, job, bot) {
 
     // [П2c] Алерт модератору с правильной сигнатурой sendAlertToModerator(bot, userId, alert)
     try {
-      const stateData = manageStore.getState(chatId);
       const wpConfig = manageStore.getWpConfig(chatId);
-      const moderatorId = wpConfig?.moderatorUserId
-        || process.env.CONTENT_MVP_MODERATOR_USER_ID
-        || stateData?.verifiedTelegramId;
+      const moderatorId = manageStore.getEffectiveModerator(chatId, wpConfig);
       if (bot && moderatorId) {
         await alerts.sendAlertToModerator(bot, moderatorId, {
           type: e.name === 'InsufficientBalanceError' ? 'kie_insufficient_balance'
@@ -655,17 +653,16 @@ async function sendBlogModerationRequest(chatId, postId, bot) {
     }
 
     // Получаем конфигурацию канала
-    const data = manageStore.getState(chatId);
-    const moderatorId = process.env.CONTENT_MVP_MODERATOR_USER_ID || data?.verifiedTelegramId || null;
-
-    if (!moderatorId) {
-      console.warn('[CONTENT-WORKER-BLOG] No moderator ID configured, skipping moderation');
-      await wpRepo.markApproved(chatId, postId);
-      return;
-    }
+    const wpConfig = manageStore.getWpConfig(chatId);
+    const moderatorId = manageStore.getEffectiveModerator(chatId, wpConfig);
 
     // Формируем сообщение
+    const _now = new Date();
+    const _msk = new Date(_now.getTime() + (3 * 60 + _now.getTimezoneOffset()) * 60000);
+    const _pad = n => String(n).padStart(2, '0');
+    const _draftMeta = `👤 ${chatId} · 🕐 ${_pad(_msk.getDate())}.${_pad(_msk.getMonth() + 1)}.${_msk.getFullYear()} ${_pad(_msk.getHours())}:${_pad(_msk.getMinutes())} МСК`;
     const message = `📝 Новая статья для блога
+${_draftMeta}
 Заголовок: ${post.seo_title || 'Без заголовка'}
 Темы: ${post.meta_desc || 'без описания'}
 
