@@ -99,5 +99,40 @@ test('unknown value returns null', () => {
   assert.strictEqual(normalizeChannel('all'), null);
 });
 
+async function testGetEffectiveModerator() {
+  console.log('Test: getEffectiveModerator returns channel config moderator first');
+
+  const store = require('../manage/store');
+
+  const origGetState = store.getState;
+  store.getState = (chatId) => ({
+    verifiedTelegramId: '111111',
+    chatId
+  });
+
+  const result1 = store.getEffectiveModerator('999', { moderatorUserId: '777777' });
+  assert.strictEqual(result1, '777777', 'должен вернуть moderatorUserId из channelConfig');
+
+  const result2 = store.getEffectiveModerator('999', { moderator_user_id: '888888' });
+  assert.strictEqual(result2, '888888', 'должен вернуть moderator_user_id из channelConfig');
+
+  const result3 = store.getEffectiveModerator('999', {});
+  assert.strictEqual(result3, '111111', 'без channelConfig — возвращает verifiedTelegramId');
+
+  const result4 = store.getEffectiveModerator('999', null);
+  assert.strictEqual(result4, '111111', 'null channelConfig — возвращает verifiedTelegramId');
+
+  store.getState = (chatId) => ({ verifiedTelegramId: null, chatId });
+  const result5 = store.getEffectiveModerator('999', null);
+  assert.strictEqual(result5, '999', 'нет verifiedTelegramId — возвращает chatId');
+
+  store.getState = origGetState;
+  console.log('✅ getEffectiveModerator: all assertions passed');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
+
+(async () => {
+  await testGetEffectiveModerator();
+})().catch(e => { console.error(e); process.exit(1); });

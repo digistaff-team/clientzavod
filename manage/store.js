@@ -662,6 +662,10 @@ function setInstagramConfig(chatId, patch = {}) {
     if (patch.moderator_user_id !== undefined) next.moderator_user_id = String(patch.moderator_user_id || '').trim() || null;
     if (patch.stats !== undefined) next.stats = { ...(next.stats || {}), ...patch.stats };
 
+    if (patch.meta_method !== undefined) next.meta_method = patch.meta_method === 'meta' ? 'meta' : 'buffer';
+    if (patch.meta_page_access_token !== undefined) next.meta_page_access_token = patch.meta_page_access_token || null;
+    if (patch.meta_ig_business_account_id !== undefined) next.meta_ig_business_account_id = String(patch.meta_ig_business_account_id || '').trim() || null;
+
     statesCache[chatId].instagramConfig = next;
     return persist(chatId);
 }
@@ -862,7 +866,7 @@ function clearInstagramReelsConfig(chatId) {
 const ALLOWED_VIDEO_MODELS = ['veo3_lite', 'veo3_fast', 'veo3', 'veo3.1', 'seedance-2', 'grok-imagine'];
 
 function getVideoPipelineSettings(chatId) {
-    return statesCache[chatId]?.videoPipelineSettings || { model: 'veo3.1' };
+    return statesCache[chatId]?.videoPipelineSettings || { model: 'veo3.1', useVideoRef: false };
 }
 
 function setVideoPipelineSettings(chatId, patch = {}) {
@@ -872,13 +876,16 @@ function setVideoPipelineSettings(chatId, patch = {}) {
     if (patch.model !== undefined) {
         next.model = ALLOWED_VIDEO_MODELS.includes(patch.model) ? patch.model : 'veo3_lite';
     }
+    if (patch.useVideoRef !== undefined) {
+        next.useVideoRef = Boolean(patch.useVideoRef);
+    }
     statesCache[chatId].videoPipelineSettings = next;
     return persist(chatId);
 }
 
 // === Image Gen Settings ===
 
-const ALLOWED_IMAGE_MODELS = ['nano-banana-2', 'seedream/4.5-edit', 'flux-2/pro-image-to-image'];
+const ALLOWED_IMAGE_MODELS = ['nano-banana-2', 'seedream/4.5-edit', 'flux-2/pro-image-to-image', 'gpt-image-2-image-to-image'];
 const DEFAULT_IMAGE_MODEL = 'nano-banana-2';
 
 function getImageGenSettings(chatId) {
@@ -1530,5 +1537,15 @@ module.exports = {
             delete statesCache[chatId].wordpressConfig;
             return persist(chatId);
         }
-    }
+    },
+
+    getEffectiveModerator(chatId, channelConfig) {
+        const state = module.exports.getState(chatId);
+        return String(
+            channelConfig?.moderatorUserId ||
+            channelConfig?.moderator_user_id ||
+            state?.verifiedTelegramId ||
+            chatId
+        );
+    },
 };
