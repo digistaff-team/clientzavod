@@ -13,6 +13,7 @@ const telegramMvp = require('../../services/telegramMvp.service');
 const contentLimits = require('./limits');
 const manageStore = require('../../manage/store');
 const alerts = require('./alerts');
+const { formatDraftMeta } = require('../../services/telegram.utils');
 
 function getNowInTz(tz) {
   const p = new Intl.DateTimeFormat('sv-SE', {
@@ -657,10 +658,7 @@ async function sendBlogModerationRequest(chatId, postId, bot) {
     const moderatorId = manageStore.getEffectiveModerator(chatId, wpConfig);
 
     // Формируем сообщение
-    const _now = new Date();
-    const _msk = new Date(_now.getTime() + (3 * 60 + _now.getTimezoneOffset()) * 60000);
-    const _pad = n => String(n).padStart(2, '0');
-    const _draftMeta = `👤 ${chatId} · 🕐 ${_pad(_msk.getDate())}.${_pad(_msk.getMonth() + 1)}.${_msk.getFullYear()} ${_pad(_msk.getHours())}:${_pad(_msk.getMinutes())} МСК`;
+    const _draftMeta = formatDraftMeta(chatId);
     const message = `📝 Новая статья для блога
 ${_draftMeta}
 Заголовок: ${post.seo_title || 'Без заголовка'}
