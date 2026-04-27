@@ -17,7 +17,7 @@ const vkRepo = require('./content/vk.repository');
 const { databaseExists } = require('./postgres.service');
 const inputImageContext = require('./inputImageContext.service');
 const channelSkills = require('./channelSkills');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 
 const contentModules = require('./content/index');
 const {
@@ -391,10 +391,11 @@ async function publishVkPost(chatId, bot, jobId, correlationId) {
   if (!cfg) throw new Error('VK не настроен');
 
   const groupId = job.group_id || cfg.group_id;
+  const userId = cfg.user_id || null;
   const serviceKey = cfg.service_key;
 
-  if (!groupId || !serviceKey) {
-    throw new Error('VK group_id или service_key не настроен');
+  if ((!groupId && !userId) || !serviceKey) {
+    throw new Error('VK group_id/user_id или service_key не настроен');
   }
 
   // Копируем изображение из контейнера
@@ -409,10 +410,11 @@ async function publishVkPost(chatId, bot, jobId, correlationId) {
   }
 
   // Публикация через VK API
-  console.log(`[VK-MVP] Calling VK API publishPhotoPost, groupId=${groupId}, hasImage=${!!imageBuffer}`);
+  console.log(`[VK-MVP] Calling VK API publishPhotoPost, ${userId ? `userId=${userId}` : `groupId=${groupId}`}, hasImage=${!!imageBuffer}`);
   const result = await vkService.publishPhotoPost({
     serviceKey,
     groupId,
+    userId,
     text: job.post_text || '',
     imageBuffer,
     params: {}
@@ -469,19 +471,13 @@ async function publishVkPost(chatId, bot, jobId, correlationId) {
 
 async function sendVkToModerator(chatId, bot, draft) {
   const vkSettings = getVkSettings(chatId);
-  const globalSettings = manageStore.getContentSettings?.(chatId);
 
   console.log(`[VK-MODERATION] DEBUG: chatId=${chatId}`);
   console.log(`[VK-MODERATION] DEBUG: vkSettings=${JSON.stringify(vkSettings)}`);
-  console.log(`[VK-MODERATION] DEBUG: globalSettings=${JSON.stringify(globalSettings)}`);
 
-  // Иерархия: модератор канала → глобальный модератор → chatId
-  const moderatorId = vkSettings?.moderatorUserId ||
-                      globalSettings?.moderatorUserId ||
-                      chatId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, vkSettings);
 
   console.log(`[VK-MODERATION] Sending draft to moderator ${moderatorId}, jobId=${draft.jobId}, corr=${draft.correlationId || 'n/a'}`);
-  console.log(`[VK-MODERATION] vkSettings.moderatorUserId=${vkSettings?.moderatorUserId}, globalSettings.moderatorUserId=${globalSettings?.moderatorUserId}`);
   
   // Логирование выбора бота
   let selectedBotName = 'unknown';
@@ -501,6 +497,7 @@ async function sendVkToModerator(chatId, bot, draft) {
 
   const caption = [
     `📢 Черновик для ВКонтакте #${draft.jobId}`,
+    formatDraftMeta(chatId),
     `Группа: ${draft.groupId || '?'}`,
     '',
     `🪝 Хук: ${draft.hookText || '—'}`,
@@ -648,44 +645,12 @@ async function handleVkModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'reject') {
-    draft.rejectedCount = (draft.rejectedCount || 0) + 1;
-    console.log(`[VK-MODERATION-ACTION] Rejected jobId=${jobId}, count=${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}`);
-    await setDraft(chatId, String(jobId), draft);
-
-    if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
-      await vkRepo.updateJob(chatId, jobId, { status: 'failed', errorText: `Rejected ${MAX_REJECT_ATTEMPTS} times` });
-      await removeDraft(chatId, String(jobId));
-      return { ok: true, message: `VK-пост отклонен ${MAX_REJECT_ATTEMPTS} раза. Задача закрыта.` };
+    if (draft.topic?.sheetRow) {
+      await repository.releaseTopic(chatId, draft.topic.sheetRow).catch(() => {});
     }
-
-    // Полная перегенерация
-    try {
-      const [materialsText, personaText] = await Promise.all([
-        loadMaterialsText(chatId, 12),
-        loadUserPersona(chatId)
-      ]);
-      const vkText = await generateVkPostText(chatId, draft.topic, materialsText, personaText);
-      const imageBuffer = await generateVkImage(chatId, draft.topic);
-      const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
-
-      draft.postText = vkText.postText;
-      draft.hookText = vkText.hookText;
-      draft.imagePrompt = vkText.imagePrompt;
-      draft.imagePath = imagePath;
-
-      await vkRepo.updateJob(chatId, jobId, {
-        postText: vkText.postText,
-        hookText: vkText.hookText,
-        imagePrompt: vkText.imagePrompt,
-        imagePath,
-        rejectedCount: draft.rejectedCount
-      });
-
-      await sendVkToModerator(chatId, bot, draft);
-      return { ok: true, message: `VK-пост перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
-    } catch (e) {
-      return { ok: false, message: `Ошибка перегенерации: ${e.message}` };
-    }
+    await vkRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected by moderator' });
+    await removeDraft(chatId, String(jobId));
+    return { ok: true, message: 'VK-пост отклонен. Тема освобождена.' };
   }
 
   return { ok: false, message: 'Неизвестное действие.' };
