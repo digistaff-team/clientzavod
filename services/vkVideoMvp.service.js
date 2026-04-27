@@ -454,14 +454,7 @@ async function sendVkVideoToModerator(chatId, bot, draft) {
   }
 
   const settings = getVkVideoSettings(chatId);
-  const moderatorId = settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID;
-
-  if (!moderatorId) {
-    console.warn('[VK-VIDEO-MVP] Модератор не настроен, публикуем автоматически');
-    await setVkVideoDraft(chatId, String(draft.jobId), draft);
-    await publishVkVideoPost(chatId, bot, draft.jobId);
-    return;
-  }
+  const moderatorId = manageStore.getEffectiveModerator(chatId, settings);
 
   const caption = [
     `🎬 VK Видео — черновик для модерации`,
