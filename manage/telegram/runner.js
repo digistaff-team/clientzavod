@@ -18,7 +18,7 @@ const instagramMvpService = require('../../services/instagramMvp.service');
 const wordpressMvpService = require('../../services/wordpressMvp.service');
 const blogGenerator = require('../../services/blogGenerator.service');
 const wpRepo = require('../../services/content/wordpress.repository');
-const { getEnabledChannels } = require('../../services/content/repository');
+const { getEnabledChannels, releaseTopic: releaseContentTopic } = require('../../services/content/repository');
 
 const bots = new Map(); // chatId -> { bot, token }
 const LOGIN_LINK_MESSAGE_TTL_MS = 10 * 60 * 1000;
@@ -896,7 +896,7 @@ function startBot(chatId, token) {
             // Проверяем доступ: владелец или модератор
             const ownerTgId = String(data.verifiedTelegramId || '');
             const contentSettings = data.contentSettings || {};
-            const moderatorId = String(contentSettings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+            const moderatorId = String(contentSettings.moderatorUserId || data.verifiedTelegramId || '');
             const allowedIds = new Set([ownerTgId, moderatorId].filter(Boolean));
             if (allowedIds.has(fromId)) {
                 resolvedChatId = cid;
@@ -912,11 +912,11 @@ function startBot(chatId, token) {
             // Fallback: используем chatId из замыкания
             resolvedChatId = chatId;
         }
-        
+
         const settings = telegramMvpService.getContentSettings
             ? telegramMvpService.getContentSettings(resolvedChatId)
             : {};
-        const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+        const moderatorId = String(settings.moderatorUserId || '');
         const data = manageStore.getState(resolvedChatId);
         const verifiedTgId = data?.verifiedTelegramId ? String(data.verifiedTelegramId) : null;
         const allowedIds = new Set([String(resolvedChatId), moderatorId, tgChatId, verifiedTgId].filter(Boolean));
@@ -966,9 +966,9 @@ function startBot(chatId, token) {
             // Проверяем доступ через модератора Pinterest канала
             const pinSettings = manageStore.getPinterestConfig?.(cid) || {};
             const globalSettings = data.contentSettings || {};
-            const channelModeratorId = pinSettings.moderator_user_id || 
-                                       globalSettings.moderatorUserId || 
-                                       process.env.CONTENT_MVP_MODERATOR_USER_ID;
+            const channelModeratorId = pinSettings.moderator_user_id ||
+                                       globalSettings.moderatorUserId ||
+                                       data.verifiedTelegramId;
             
             const ownerTgId = String(data.verifiedTelegramId || '');
             const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
@@ -988,7 +988,7 @@ function startBot(chatId, token) {
         const settings = telegramMvpService.getContentSettings
             ? telegramMvpService.getContentSettings(resolvedChatId)
             : {};
-        const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+        const moderatorId = String(settings.moderatorUserId || '');
         const data = manageStore.getState(resolvedChatId);
         const verifiedTgId = data?.verifiedTelegramId ? String(data.verifiedTelegramId) : null;
         const allowedIds = new Set([String(resolvedChatId), moderatorId, tgChatId, verifiedTgId].filter(Boolean));
@@ -1035,7 +1035,7 @@ function startBot(chatId, token) {
             const globalSettings = data.contentSettings || {};
             const channelModeratorId = vkSettings.moderatorUserId ||
                                        globalSettings.moderatorUserId ||
-                                       process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                       data.verifiedTelegramId;
 
             const ownerTgId = String(data.verifiedTelegramId || '');
             const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
@@ -1055,7 +1055,7 @@ function startBot(chatId, token) {
         const settings = telegramMvpService.getContentSettings
             ? telegramMvpService.getContentSettings(resolvedChatId)
             : {};
-        const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+        const moderatorId = String(settings.moderatorUserId || '');
         const data = manageStore.getState(resolvedChatId);
         const verifiedTgId = data?.verifiedTelegramId ? String(data.verifiedTelegramId) : null;
         const allowedIds = new Set([String(resolvedChatId), moderatorId, tgChatId, verifiedTgId].filter(Boolean));
@@ -1096,9 +1096,9 @@ function startBot(chatId, token) {
             // Проверяем доступ через модератора OK канала
             const okSettings = manageStore.getOkSettings?.(cid) || {};
             const globalSettings = data.contentSettings || {};
-            const channelModeratorId = okSettings.moderatorUserId || 
-                                       globalSettings.moderatorUserId || 
-                                       process.env.CONTENT_MVP_MODERATOR_USER_ID;
+            const channelModeratorId = okSettings.moderatorUserId ||
+                                       globalSettings.moderatorUserId ||
+                                       data.verifiedTelegramId;
             
             const ownerTgId = String(data.verifiedTelegramId || '');
             const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
@@ -1116,7 +1116,7 @@ function startBot(chatId, token) {
             ? telegramMvpService.getContentSettings(resolvedChatId)
             : {};
         const okSettings = manageStore.getOkSettings?.(resolvedChatId) || {};
-        const moderatorId = String(okSettings.moderatorUserId || settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+        const moderatorId = String(okSettings.moderatorUserId || settings.moderatorUserId || '');
         const allowedIds = new Set([String(resolvedChatId), moderatorId, tgChatId].filter(Boolean));
         if (!allowedIds.has(fromId)) {
             console.log(`[OK-MOD] Access denied: fromId=${fromId}, resolvedChatId=${resolvedChatId}, moderatorId=${moderatorId}`);
@@ -1155,9 +1155,9 @@ function startBot(chatId, token) {
             // Проверяем доступ через модератора Instagram канала
             const igSettings = manageStore.getIgSettings?.(cid) || {};
             const globalSettings = data.contentSettings || {};
-            const channelModeratorId = igSettings.moderator_user_id || 
-                                       globalSettings.moderatorUserId || 
-                                       process.env.CONTENT_MVP_MODERATOR_USER_ID;
+            const channelModeratorId = igSettings.moderator_user_id ||
+                                       globalSettings.moderatorUserId ||
+                                       data.verifiedTelegramId;
             
             const ownerTgId = String(data.verifiedTelegramId || '');
             const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
@@ -1174,7 +1174,7 @@ function startBot(chatId, token) {
         const settings = telegramMvpService.getContentSettings
             ? telegramMvpService.getContentSettings(resolvedChatId)
             : {};
-        const moderatorId = String(settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+        const moderatorId = String(settings.moderatorUserId || '');
         const data = manageStore.getState(resolvedChatId);
         const verifiedTgId = data?.verifiedTelegramId ? String(data.verifiedTelegramId) : null;
         const allowedIds = new Set([String(resolvedChatId), moderatorId, tgChatId, verifiedTgId].filter(Boolean));
@@ -1231,7 +1231,7 @@ function startBot(chatId, token) {
         const wpConfig = manageStore.getWpConfig(resolvedChatId) || {};
         const data = manageStore.getState(resolvedChatId);
         const ownerTgId = String(data?.verifiedTelegramId || '');
-        const moderatorId = process.env.CONTENT_MVP_MODERATOR_USER_ID || '';
+        const moderatorId = wpConfig?.moderatorUserId || '';
         const allowedIds = new Set([ownerTgId, moderatorId].filter(Boolean));
 
         if (!allowedIds.has(fromId)) {
@@ -1290,8 +1290,11 @@ function startBot(chatId, token) {
                 if (post && post.wp_post_id) {
                     await wordpressMvpService.deletePost(resolvedChatId, post.wp_post_id);
                 }
+                if (post?.topic_id) {
+                    await releaseContentTopic(resolvedChatId, post.topic_id).catch(() => {});
+                }
                 await wpRepo.markRejected(resolvedChatId, postId);
-                await ctx.reply(`❌ Статья #${postId} отклонена и удалена из WordPress.`);
+                await ctx.reply(`❌ Статья #${postId} отклонена и удалена из WordPress. Тема освобождена.`);
             }
         } catch (e) {
             console.error('[WP-MOD] Error:', e);
