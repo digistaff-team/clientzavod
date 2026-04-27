@@ -729,9 +729,7 @@ async function handleWordPressPublish(chatId, job, bot) {
     try {
       if (bot && bot.telegram) {
         const wpConfig = manageStore.getWpConfig(chatId);
-        const notifyId = wpConfig?.moderatorUserId
-          || process.env.CONTENT_MVP_MODERATOR_USER_ID
-          || chatId;
+        const notifyId = manageStore.getEffectiveModerator(chatId, wpConfig);
         await bot.telegram.sendMessage(
           notifyId,
           `✅ Статья опубликована!\n\n📝 ${post.seo_title || 'Без заголовка'}\n\n🔗 ${published.link}`
