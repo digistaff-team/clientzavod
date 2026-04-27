@@ -1375,6 +1375,16 @@ function getAIRouterStats(chatId) {
     };
 }
 
+function getEffectiveModerator(chatId, channelConfig) {
+    const state = getState(chatId);
+    return String(
+        channelConfig?.moderatorUserId ||
+        channelConfig?.moderator_user_id ||
+        state?.verifiedTelegramId ||
+        chatId
+    );
+}
+
 module.exports = {
     getState,
     getByToken,
@@ -1539,13 +1549,5 @@ module.exports = {
         }
     },
 
-    getEffectiveModerator(chatId, channelConfig) {
-        const state = module.exports.getState(chatId);
-        return String(
-            channelConfig?.moderatorUserId ||
-            channelConfig?.moderator_user_id ||
-            state?.verifiedTelegramId ||
-            chatId
-        );
-    },
+    getEffectiveModerator,
 };
