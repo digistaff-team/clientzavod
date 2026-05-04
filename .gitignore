@@ -36,6 +36,7 @@ Expected Output:
     #Dependencies
     .venv/
     venv/
+    venv*
     node_modules/
     #Logs and temp files
     *.log
@@ -61,3 +62,5 @@ Final reminder: Output ONLY the .gitignore content. If nothing should be ignored
 .env.local
 .env.*
 .claude/settings.local.json
+.aider*
+.claude/
