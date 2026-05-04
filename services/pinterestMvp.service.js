@@ -15,7 +15,7 @@ const storageService = require('./storage.service');
 const pinterestRepo = require('./content/pinterest.repository');
 const bufferService = require('./buffer.service');
 const inputImageContext = require('./inputImageContext.service');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 
 const contentModules = require('./content/index');
 const channelSkills = require('./channelSkills');
@@ -234,13 +234,11 @@ ${materialsText ? `--- МАТЕРИАЛЫ ---\n${materialsText}\n---` : ''}
   };
 }
 
-async function generatePinImage(chatId, topic, pinTitle) {
-  const imageModel = manageStore.getImageGenSettings(chatId).model;
-  const fallbackPrompt = `Topic: ${topic.topic}${pinTitle ? `. Title: ${pinTitle}` : ''}`;
+async function generatePinImage(chatId, topic) {
   return inputImageContext.generateImageWithFullContext(
     chatId,
     topic,
-    fallbackPrompt,  // fallback если нет файлов в /input/
+    topic.topic,  // fallback если нет файлов в /input/
     '2:3',  // Pinterest требует портретное изображение
     'pinterest'
   );
@@ -301,8 +299,22 @@ async function handlePinterestGenerateJob(chatId, queueJob, bot, correlationId) 
     return { success: false, error: `Дневной лимит пинов исчерпан (${publishedToday}/${DAILY_PIN_LIMIT})`, retry: false };
   }
 
-  // Выбор доски
-  const board = await selectNextBoard(chatId);
+  // Выбор доски: если передан boardId в payload — использовать его, иначе авто-выбор
+  const payloadBoardId = queueJob?.payload?.boardId || null;
+  let board;
+  if (payloadBoardId) {
+    const dbBoards = await pinterestRepo.getBoards(chatId).catch(() => []);
+    const found = dbBoards.find(b => b.board_id === payloadBoardId);
+    if (found) {
+      board = { board_id: found.board_id, board_name: found.board_name, service_id: found.service_id, idea: found.idea, focus: found.focus, purpose: found.purpose, keywords: found.keywords, link: found.link };
+    } else {
+      const cfg = manageStore.getPinterestConfig(chatId);
+      if (cfg?.board_id === payloadBoardId) {
+        board = { board_id: cfg.board_id, board_name: cfg.board_name || '', keywords: '', link: cfg.website_url || '' };
+      }
+    }
+  }
+  if (!board) board = await selectNextBoard(chatId);
   if (!board) {
     return { success: false, error: 'Нет настроенных досок Pinterest', retry: false };
   }
@@ -342,7 +354,7 @@ async function handlePinterestGenerateJob(chatId, queueJob, bot, correlationId) 
   for (let i = 1; i <= MAX_IMAGE_ATTEMPTS; i++) {
     try {
       imageAttempts = i;
-      const imageBuffer = await generatePinImage(chatId, topic, pinText.pinTitle);
+      const imageBuffer = await generatePinImage(chatId, topic);
       // Создаём временный job id для сохранения
       const tempId = `${topic.sheetRow}_${Date.now()}`;
       imagePath = await saveImageToContainer(chatId, imageBuffer, tempId);
@@ -444,7 +456,7 @@ async function publishPin(chatId, bot, jobId, correlationId) {
     boardServiceId = board?.service_id || null;
   }
 
-  const bufferResult = await bufferService.createPost(bufferApiKey, cfg.buffer_channel_id, { text, imageUrl, boardServiceId });
+  const bufferResult = await bufferService.createPost(bufferApiKey, cfg.buffer_channel_id, { text, imageUrl, boardServiceId, link: job.link || '' });
   const result = { id: bufferResult.postId };
   console.log(`[PINTEREST-MVP] Published via Buffer, postId=${bufferResult.postId}`);
 
@@ -491,15 +503,12 @@ async function publishPin(chatId, bot, jobId, correlationId) {
 
 async function sendPinToModerator(chatId, bot, draft) {
   const settings = getPinterestSettings(chatId);
-  const globalSettings = manageStore.getContentSettings?.(chatId);
-  
-  // Иерархия: модератор канала → глобальный модератор → chatId
-  const moderatorId = settings.moderatorUserId || 
-                      globalSettings?.moderatorUserId || 
-                      chatId;
+
+  const moderatorId = manageStore.getEffectiveModerator(chatId, settings);
 
   const caption = [
     `📌 Черновик для Pinterest #${draft.jobId}`,
+    formatDraftMeta(chatId),
     `Доска: ${draft.board?.board_name || 'Board'}`,
     '',
     `Заголовок: ${draft.pinTitle}`,
@@ -586,7 +595,7 @@ async function handlePinModerationAction(chatId, bot, jobId, action) {
 
   if (action === 'regen_image') {
     try {
-      const imageBuffer = await generatePinImage(chatId, draft.topic, draft.pinTitle);
+      const imageBuffer = await generatePinImage(chatId, draft.topic);
       const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_regen_${Date.now()}`);
       draft.imagePath = imagePath;
       await pinterestRepo.updateJob(chatId, jobId, { imagePath });
@@ -598,43 +607,12 @@ async function handlePinModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'reject') {
-    draft.rejectedCount = (draft.rejectedCount || 0) + 1;
-    await setDraft(chatId, String(jobId), draft);
-
-    if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
-      await pinterestRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected 3 times' });
-      await removeDraft(chatId, String(jobId));
-      return { ok: true, message: `Пин отклонен ${MAX_REJECT_ATTEMPTS} раза. Задача закрыта.` };
+    if (draft.topic?.sheetRow) {
+      await repository.releaseTopic(chatId, draft.topic.sheetRow).catch(() => {});
     }
-
-    // Полная перегенерация
-    try {
-      const [materialsText, personaText] = await Promise.all([
-        loadMaterialsText(chatId, 12),
-        loadUserPersona(chatId)
-      ]);
-      const pinText = await generatePinText(chatId, draft.topic, draft.board, materialsText, personaText);
-      const imageBuffer = await generatePinImage(chatId, draft.topic, pinText.pinTitle);
-      const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
-
-      draft.pinTitle = pinText.pinTitle;
-      draft.pinDescription = pinText.pinDescription;
-      draft.seoKeywords = pinText.seoKeywords;
-      draft.imagePath = imagePath;
-
-      await pinterestRepo.updateJob(chatId, jobId, {
-        pinTitle: pinText.pinTitle,
-        pinDescription: pinText.pinDescription,
-        seoKeywords: JSON.stringify(pinText.seoKeywords),
-        imagePath,
-        rejectedCount: draft.rejectedCount
-      });
-
-      await sendPinToModerator(chatId, bot, draft);
-      return { ok: true, message: `Пин перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
-    } catch (e) {
-      return { ok: false, message: `Ошибка перегенерации: ${e.message}` };
-    }
+    await pinterestRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected by moderator' });
+    await removeDraft(chatId, String(jobId));
+    return { ok: true, message: 'Пин отклонен. Тема освобождена.' };
   }
 
   return { ok: false, message: 'Неизвестное действие.' };
@@ -770,7 +748,7 @@ async function tickPinterestSchedule(chatId, bot) {
   });
 }
 
-async function runNow(chatId, bot, reason = 'manual') {
+async function runNow(chatId, bot, reason = 'manual', boardId = null) {
   await repository.ensureSchema(chatId);
 
   const settings = getPinterestSettings(chatId);
@@ -781,27 +759,11 @@ async function runNow(chatId, bot, reason = 'manual') {
 
   const correlationId = generateCorrelationId();
 
-  if (reason !== 'schedule') {
-    try {
-      const result = await handlePinterestGenerateJob(chatId, {
-        payload: { reason },
-        correlation_id: correlationId
-      }, bot, correlationId);
-      if (result.success) {
-        return { ok: true, message: 'Пин сгенерирован.', correlationId };
-      } else {
-        return { ok: false, message: result.error || 'Генерация не удалась.', correlationId };
-      }
-    } catch (e) {
-      return { ok: false, message: `Ошибка: ${e.message}`, correlationId };
-    }
-  }
-
   await queueRepo.ensureQueueSchema(chatId);
   const queueJobId = await queueRepo.enqueue(chatId, {
     jobType: 'pinterest_generate',
     priority: 0,
-    payload: { reason },
+    payload: { reason, boardId: boardId || null },
     correlationId
   });
 

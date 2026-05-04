@@ -20,7 +20,7 @@ const videoService = require('./content/video.service');
 const videoPipeline = require('./videoPipeline.service');
 const youtubeRepo = require('./content/youtube.repository');
 const bufferService = require('./buffer.service');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 
 const contentModules = require('./content/index');
 const channelSkills = require('./channelSkills');
@@ -338,6 +338,9 @@ async function handleYoutubeGenerateJob(chatId, queueJob, bot, correlationId) {
     if (claimResult.success) {
       // Нашли готовое видео — используем его
       videoPath = claimResult.videoPath;
+      if (videoPath && !path.isAbsolute(videoPath)) {
+        videoPath = path.join(videoPipeline.VIDEO_TEMP_ROOT, String(chatId), videoPath);
+      }
       console.log(`[YOUTUBE-MVP] Using shared video: videoId=${claimResult.videoId}, path=${videoPath}`);
 
       // Если это первое использование (все каналы ещё не использовали) — видео готово
@@ -353,6 +356,9 @@ async function handleYoutubeGenerateJob(chatId, queueJob, bot, correlationId) {
       }
 
       videoPath = genResult.videoPath;
+      if (videoPath && !path.isAbsolute(videoPath)) {
+        videoPath = path.join(videoPipeline.VIDEO_TEMP_ROOT, String(chatId), videoPath);
+      }
       console.log(`[YOUTUBE-MVP] New video generated: videoId=${genResult.videoId}, path=${videoPath}`);
     }
   } catch (e) {
@@ -417,28 +423,33 @@ async function publishYoutubePost(chatId, bot, jobId, correlationId) {
 
   // Формируем публичные URL
   const videoUrl = job.video_path
-    ? `${config.APP_URL}/api/files/public/${chatId}/${job.video_path}`
+    ? `${config.APP_URL}/api/video/temp/${chatId}/${path.basename(job.video_path)}`
     : null;
 
   if (!videoUrl) {
     throw new Error('video_url не задан для YouTube job');
   }
 
-  // Формируем текст (лимит Buffer ~500 символов)
-  let text = [job.video_title, '', job.video_description].filter(Boolean).join('\n');
-  if (job.tags && Array.isArray(job.tags)) {
-    const tagsStr = job.tags.map(t => `#${t}`).join(' ');
-    text += '\n\n' + tagsStr;
-  }
+  // Формируем текст (лимит Buffer ~500 символов).
+  // #Shorts обязателен: Buffer GraphQL API не имеет флага для Shorts,
+  // YouTube классифицирует ролик как Shorts по хештегу в title/description.
+  const tagList = Array.isArray(job.tags) ? job.tags.map(t => `#${t}`) : [];
+  const hashtagLine = ['#Shorts', ...tagList].join(' ');
+  let text = [job.video_title, '', job.video_description, '', hashtagLine].filter(Boolean).join('\n');
   if (text.length > 500) {
     text = text.slice(0, 497) + '...';
   }
+
+  const baseTitle = job.video_title || 'YouTube Short';
+  const youtubeTitle = baseTitle.toLowerCase().includes('#shorts')
+    ? baseTitle.slice(0, 100)
+    : `${baseTitle} #Shorts`.slice(0, 100);
 
   // Публикация через Buffer
   const bufferResult = await bufferService.createPost(ytBufferApiKey, cfg.buffer_channel_id, {
     text,
     videoUrl,
-    youtubeTitle: job.video_title || 'YouTube Short',
+    youtubeTitle,
     youtubeCategoryId: '24'
   });
 
@@ -485,16 +496,13 @@ async function publishYoutubePost(chatId, bot, jobId, correlationId) {
 
 async function sendYtToModerator(chatId, bot, draft) {
   const settings = getYoutubeSettings(chatId);
-  const globalSettings = manageStore.getContentSettings?.(chatId);
 
-  // Иерархия: модератор канала → глобальный модератор → chatId
-  const moderatorId = settings.moderatorUserId ||
-                      globalSettings?.moderatorUserId ||
-                      chatId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, settings);
 
   const tagsText = draft.tags?.length ? draft.tags.map(t => `#${t}`).join(' ') : '';
   const caption = [
     `📹 Черновик для YouTube Shorts #${draft.jobId}`,
+    formatDraftMeta(chatId),
     '',
     `Название: ${draft.videoTitle}`,
     '',
@@ -517,7 +525,9 @@ async function sendYtToModerator(chatId, bot, draft) {
   };
 
   // Отправляем видео модератору
-  const videoLocalPath = path.join(storageService.getDataDir(chatId), 'output', 'content', draft.videoPath);
+  const videoLocalPath = path.isAbsolute(draft.videoPath)
+    ? draft.videoPath
+    : path.join(videoPipeline.VIDEO_TEMP_ROOT, String(chatId), draft.videoPath);
 
   const moderatorBot = cwBot && cwBot.token !== bot?.token ? cwBot : bot;
 
@@ -594,39 +604,12 @@ async function handleYtModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'reject') {
-    draft.rejectedCount = (draft.rejectedCount || 0) + 1;
-    await setYtDraft(chatId, String(jobId), draft);
-
-    if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
-      await youtubeRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected 3 times' });
-      await removeYtDraft(chatId, String(jobId));
-      return { ok: true, message: `YouTube отклонен ${MAX_REJECT_ATTEMPTS} раза. Задача закрыта.` };
+    if (draft.topic?.sheetRow) {
+      await repository.releaseTopic(chatId, draft.topic.sheetRow).catch(() => {});
     }
-
-    // Полная перегенерация
-    try {
-      const [materialsText, personaText] = await Promise.all([
-        loadMaterialsText(chatId, 12),
-        loadUserPersona(chatId)
-      ]);
-      const content = await generateYoutubeContent(chatId, draft.topic, materialsText, personaText);
-
-      draft.videoTitle = content.videoTitle;
-      draft.videoDescription = content.videoDescription;
-      draft.tags = content.tags;
-
-      await youtubeRepo.updateJob(chatId, jobId, {
-        videoTitle: content.videoTitle,
-        videoDescription: content.videoDescription,
-        tags: content.tags,
-        rejectedCount: draft.rejectedCount
-      });
-
-      await sendYtToModerator(chatId, bot, draft);
-      return { ok: true, message: `YouTube перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
-    } catch (e) {
-      return { ok: false, message: `Ошибка перегенерации: ${e.message}` };
-    }
+    await youtubeRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected by moderator' });
+    await removeYtDraft(chatId, String(jobId));
+    return { ok: true, message: 'YouTube-пост отклонен. Тема освобождена.' };
   }
 
   return { ok: false, message: 'Неизвестное действие.' };

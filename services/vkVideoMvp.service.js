@@ -14,7 +14,7 @@ const manageStore = require('../manage/store');
 const storageService = require('./storage.service');
 const videoPipeline = require('./videoPipeline.service');
 const repository = require('./content/repository');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 const channelSkills = require('./channelSkills');
 
 let cwBot = null;
@@ -285,8 +285,10 @@ async function handleVkVideoGenerateJob(chatId, queueJob, bot, correlationId) {
 
   // Проверяем VK credentials
   const vkConfig = manageStore.getVkConfig?.(chatId);
-  if (!vkConfig?.service_key || !vkConfig?.group_id) {
-    return { success: false, error: 'VK не настроен: отсутствует service_key или group_id', retry: false };
+  const hasVkToken = !!(vkConfig?.service_key || vkConfig?.access_token);
+  const hasVkTarget = !!(vkConfig?.group_id || vkConfig?.user_id);
+  if (!hasVkToken || !hasVkTarget) {
+    return { success: false, error: 'VK не настроен: отсутствует токен или group_id/user_id', retry: false };
   }
 
   // Получаем видео из общего пула или генерируем
@@ -329,6 +331,7 @@ async function handleVkVideoGenerateJob(chatId, queueJob, bot, correlationId) {
   const jobId = Date.now();
   const draft = {
     jobId,
+    topicId: queueJob?.topic?.id || null,
     videoId,
     videoPath,
     title: vkContent.title,
@@ -359,22 +362,27 @@ async function publishVkVideoPost(chatId, bot, jobId) {
   if (!draft) throw new Error(`VK Video draft ${jobId} not found`);
 
   const vkConfig = manageStore.getVkConfig?.(chatId);
-  if (!vkConfig?.service_key || !vkConfig?.group_id) {
-    throw new Error('VK не настроен: service_key или group_id отсутствует');
+  const hasToken = !!(vkConfig?.service_key || vkConfig?.access_token);
+  const hasTarget = !!(vkConfig?.group_id || vkConfig?.user_id);
+  if (!hasToken || !hasTarget) {
+    throw new Error('VK не настроен: отсутствует токен или group_id/user_id');
   }
 
-  const accessToken = vkConfig.service_key;
-  const groupId = vkConfig.group_id;
-  const ownerId = `-${groupId}`;
+  const accessToken = vkConfig.access_token || vkConfig.service_key;
+  const isPersonal = !!vkConfig.user_id && !vkConfig.group_id;
+  const groupId = isPersonal ? null : String(vkConfig.group_id);
+  const ownerId = isPersonal ? String(vkConfig.user_id) : `-${groupId}`;
 
   // Шаг 1: video.save
-  const saveResp = await vkApiCall('video.save', {
+  const saveParams = {
     access_token: accessToken,
     name: draft.title,
     description: draft.description,
-    group_id: groupId,
     wallpost: 0
-  });
+  };
+  if (!isPersonal) saveParams.group_id = groupId;
+
+  const saveResp = await vkApiCall('video.save', saveParams);
 
   const uploadUrl = saveResp.upload_url;
   const videoVkId = saveResp.video_id;
@@ -446,17 +454,11 @@ async function sendVkVideoToModerator(chatId, bot, draft) {
   }
 
   const settings = getVkVideoSettings(chatId);
-  const moderatorId = settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID;
-
-  if (!moderatorId) {
-    console.warn('[VK-VIDEO-MVP] Модератор не настроен, публикуем автоматически');
-    await setVkVideoDraft(chatId, String(draft.jobId), draft);
-    await publishVkVideoPost(chatId, bot, draft.jobId);
-    return;
-  }
+  const moderatorId = manageStore.getEffectiveModerator(chatId, settings);
 
   const caption = [
     `🎬 VK Видео — черновик для модерации`,
+    formatDraftMeta(chatId),
     ``,
     `📹 ${draft.title}`,
     `📝 ${draft.description}`,
@@ -532,8 +534,11 @@ async function handleVkVideoModerationAction(chatId, bot, jobId, action) {
       }
 
     case 'reject':
+      if (draft.topicId) {
+        await repository.releaseTopic(chatId, draft.topicId).catch(() => {});
+      }
       await removeVkVideoDraft(chatId, String(jobId));
-      return { ok: true, message: '❌ Отклонено' };
+      return { ok: true, message: 'VK Video отклонено. Тема освобождена.' };
 
     case 'regen_text':
       try {

@@ -13,6 +13,7 @@ const telegramMvp = require('../../services/telegramMvp.service');
 const contentLimits = require('./limits');
 const manageStore = require('../../manage/store');
 const alerts = require('./alerts');
+const { formatDraftMeta } = require('../../services/telegram.utils');
 
 function getNowInTz(tz) {
   const p = new Intl.DateTimeFormat('sv-SE', {
@@ -522,6 +523,7 @@ async function handleWordPressGeneration(chatId, job, bot) {
     // 2. Создаём черновик поста в БД
     const postId = await wpRepo.createDraftPost(chatId, {
       jobId: null, // content_job_queue.id != content_jobs.id, FK references content_jobs
+      topicId: topicId || null,
       bodyHtml: article.bodyHtml,
       seoTitle: article.seoTitle,
       metaDesc: article.metaDesc,
@@ -613,11 +615,8 @@ async function handleWordPressGeneration(chatId, job, bot) {
 
     // [П2c] Алерт модератору с правильной сигнатурой sendAlertToModerator(bot, userId, alert)
     try {
-      const stateData = manageStore.getState(chatId);
       const wpConfig = manageStore.getWpConfig(chatId);
-      const moderatorId = wpConfig?.moderatorUserId
-        || process.env.CONTENT_MVP_MODERATOR_USER_ID
-        || stateData?.verifiedTelegramId;
+      const moderatorId = manageStore.getEffectiveModerator(chatId, wpConfig);
       if (bot && moderatorId) {
         await alerts.sendAlertToModerator(bot, moderatorId, {
           type: e.name === 'InsufficientBalanceError' ? 'kie_insufficient_balance'
@@ -655,17 +654,13 @@ async function sendBlogModerationRequest(chatId, postId, bot) {
     }
 
     // Получаем конфигурацию канала
-    const data = manageStore.getState(chatId);
-    const moderatorId = process.env.CONTENT_MVP_MODERATOR_USER_ID || data?.verifiedTelegramId || null;
-
-    if (!moderatorId) {
-      console.warn('[CONTENT-WORKER-BLOG] No moderator ID configured, skipping moderation');
-      await wpRepo.markApproved(chatId, postId);
-      return;
-    }
+    const wpConfig = manageStore.getWpConfig(chatId);
+    const moderatorId = manageStore.getEffectiveModerator(chatId, wpConfig);
 
     // Формируем сообщение
+    const _draftMeta = formatDraftMeta(chatId);
     const message = `📝 Новая статья для блога
+${_draftMeta}
 Заголовок: ${post.seo_title || 'Без заголовка'}
 Темы: ${post.meta_desc || 'без описания'}
 
@@ -684,9 +679,14 @@ async function sendBlogModerationRequest(chatId, postId, bot) {
     const cwBot = new Telegraf(cwBotToken);
 
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('✅ Опубликовать', `wp_mod:approve:${postId}`)],
-      [Markup.button.callback('🔁 Переписать', `wp_mod:rewrite:${postId}`)],
-      [Markup.button.callback('❌ Отклонить', `wp_mod:reject:${postId}`)]
+      [
+        Markup.button.callback('✅ Одобрить', `wp_mod:approve:${postId}`),
+        Markup.button.callback('❌ Отклонить', `wp_mod:reject:${postId}`)
+      ],
+      [
+        Markup.button.callback('🔁 Текст', `wp_mod:rewrite:${postId}`),
+        Markup.button.callback('🖼 Фото', `wp_mod:regen_image:${postId}`)
+      ]
     ]);
 
     await cwBot.telegram.sendMessage(moderatorId, message, {
@@ -723,16 +723,18 @@ async function handleWordPressPublish(chatId, job, bot) {
     // Обновляем статус
     await wpRepo.markPublished(chatId, postId, published.link);
 
-    // Уведомляем владельца об успешной публикации
+    // Уведомляем модератора об успешной публикации
     try {
       if (bot && bot.telegram) {
+        const wpConfig = manageStore.getWpConfig(chatId);
+        const notifyId = manageStore.getEffectiveModerator(chatId, wpConfig);
         await bot.telegram.sendMessage(
-          chatId,
+          notifyId,
           `✅ Статья опубликована!\n\n📝 ${post.seo_title || 'Без заголовка'}\n\n🔗 ${published.link}`
         );
       }
     } catch (notifyErr) {
-      console.warn('[CONTENT-WORKER-BLOG] Failed to notify owner:', notifyErr.message);
+      console.warn('[CONTENT-WORKER-BLOG] Failed to notify moderator:', notifyErr.message);
     }
 
     // Публикуем анонс в Telegram канале пользователя

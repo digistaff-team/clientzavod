@@ -38,7 +38,7 @@ function isOkChannelActive(chatId) {
  */
 function isVkChannelActive(chatId) {
     const vkConfig = manageStore.getVkConfig(chatId);
-    return !!(vkConfig?.is_active && vkConfig?.group_id && vkConfig?.access_token);
+    return !!(vkConfig?.is_active && vkConfig?.group_id && (vkConfig?.access_token || vkConfig?.service_key));
 }
 
 /**
@@ -124,7 +124,7 @@ function isFacebookChannelActive(chatId) {
 
 function isPinterestChannelActive(chatId) {
     const cfg = manageStore.getPinterestConfig ? manageStore.getPinterestConfig(chatId) : null;
-    return !!(cfg?.buffer_channel_id);
+    return !!(cfg?.is_active && cfg?.buffer_channel_id);
 }
 
 function isTiktokChannelActive(chatId) {
@@ -139,7 +139,7 @@ function isVkVideoChannelActive(chatId) {
 
 function isBlogChannelActive(chatId) {
     const cfg = manageStore.getWpConfig ? manageStore.getWpConfig(chatId) : null;
-    return !!(cfg?.base_url && cfg?.is_active);
+    return !!(cfg?.baseUrl && cfg?.enabled);
 }
 
 /**

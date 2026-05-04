@@ -16,7 +16,7 @@ const storageService = require('./storage.service');
 const bufferService = require('./buffer.service');
 const fbRepo = require('./content/facebook.repository');
 const inputImageContext = require('./inputImageContext.service');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 
 const contentModules = require('./content/index');
 const channelSkills = require('./channelSkills');
@@ -437,7 +437,7 @@ async function sendFbToModerator(chatId, bot, draft) {
   console.log(`[FB] sendFbToModerator for ${chatId}, job ${draft.jobId}`);
 
   const settings = getFacebookSettings(chatId);
-  const moderatorId = settings.moderatorUserId || chatId;
+  const moderatorId = manageStore.getEffectiveModerator(chatId, settings);
 
   const callbackBase = `fb_mod:${draft.jobId}`;
   const keyboard = {
@@ -453,7 +453,7 @@ async function sendFbToModerator(chatId, bot, draft) {
     ]
   };
 
-  const header = `📘 Facebook пост на модерацию\n\n📝 Тема: ${draft.topic}${draft.focus ? `\n🎯 Фокус: ${draft.focus}` : ''}\n\n📄 Текст:\n`;
+  const header = `📘 Facebook пост на модерацию\n${formatDraftMeta(chatId)}\n\n📝 Тема: ${draft.topic}${draft.focus ? `\n🎯 Фокус: ${draft.focus}` : ''}\n\n📄 Текст:\n`;
   const caption = (header + (draft.postText || '')).slice(0, 1024);
 
   const moderatorBot = cwBot && cwBot.telegram ? cwBot : bot;
@@ -580,39 +580,11 @@ async function handleFacebookModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'reject') {
-    const rejectedCount = (job.rejected_count || 0) + 1;
-
-    // Освобождаем тему в любом случае
     if (job.topic_id) {
       await repository.releaseTopic(chatId, job.topic_id).catch(() => {});
     }
-
-    if (rejectedCount >= MAX_REJECT_ATTEMPTS) {
-      await fbRepo.updateJob(chatId, jobId, {
-        status: 'failed',
-        errorText: 'Maximum rejection attempts reached',
-        rejectedCount
-      });
-      return { ok: false, message: 'Задача отклонена окончательно' };
-    }
-
-    // Полная перегенерация
-    await fbRepo.updateJob(chatId, jobId, {
-      status: 'draft',
-      rejectedCount,
-      postText: null,
-      imagePath: null,
-      imagePrompt: null
-    });
-
-    // Повторная постановка в очередь
-    await queueRepo.enqueue(chatId, {
-      jobType: 'facebook_generate',
-      priority: 0,
-      payload: { reason: 'regenerate_after_reject', rejectedCount }
-    });
-
-    return { ok: true, message: 'Задача отправлена на полную перегенерацию' };
+    await fbRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected by moderator' });
+    return { ok: true, message: 'Facebook-пост отклонен. Тема освобождена.' };
   }
 
   return { ok: false, message: 'Неизвестное действие' };

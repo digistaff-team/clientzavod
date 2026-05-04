@@ -226,7 +226,7 @@ async function saveBoards(chatId, boards) {
         b.focus || null,
         b.purpose || null,
         b.keywords || null,
-        b.link || b.url || null
+        b.link || null
       ]);
       if (res.rows[0]) rows.push(res.rows[0]);
     }

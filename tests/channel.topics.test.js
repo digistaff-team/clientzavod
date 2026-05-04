@@ -99,5 +99,54 @@ test('unknown value returns null', () => {
   assert.strictEqual(normalizeChannel('all'), null);
 });
 
+console.log('\ngetEffectiveModerator');
+
+test('getEffectiveModerator — channel config moderator first', () => {
+  const store = require('../manage/store');
+
+  // Populate real statesCache via store internals so the standalone function
+  // (which calls getState directly) sees the correct state.
+  store.persist = () => Promise.resolve(); // suppress file I/O
+  store.setToken('999', 'test-token');
+  // setToken zeroes verifiedTelegramId; set it manually via a setPending+verify-style
+  // shortcut: just write through setVkSettings which doesn't touch verifiedTelegramId,
+  // so instead use the exported loadChatState mock by directly invoking setToken then
+  // overwriting via a roundtrip through the in-memory cache exposed by getState.
+
+  // Since statesCache is private, use store.setToken to init then getState to verify.
+  // To set verifiedTelegramId we leverage that verify() sets it — but that needs pending.
+  // Simplest: patch getEffectiveModerator itself for the state-dependent assertions,
+  // keeping full coverage of the channelConfig priority logic with a null state.
+
+  // Test channelConfig priority (state not needed — channelConfig wins):
+  assert.strictEqual(
+    store.getEffectiveModerator('999', { moderatorUserId: '777777' }),
+    '777777', 'должен вернуть moderatorUserId из channelConfig'
+  );
+  assert.strictEqual(
+    store.getEffectiveModerator('999', { moderator_user_id: '888888' }),
+    '888888', 'должен вернуть moderator_user_id из channelConfig'
+  );
+
+  // For state-dependent cases, set verifiedTelegramId via setPending+verify:
+  store.setPending('888', '123456', '111111', 'testuser');
+  store.verify('888', '123456'); // sets verifiedTelegramId = '111111'
+
+  assert.strictEqual(
+    store.getEffectiveModerator('888', {}),
+    '111111', 'пустой channelConfig — возвращает verifiedTelegramId'
+  );
+  assert.strictEqual(
+    store.getEffectiveModerator('888', null),
+    '111111', 'null channelConfig — возвращает verifiedTelegramId'
+  );
+
+  // chatId '777' has no state → falls back to chatId itself
+  assert.strictEqual(
+    store.getEffectiveModerator('777', null),
+    '777', 'нет verifiedTelegramId — возвращает chatId'
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

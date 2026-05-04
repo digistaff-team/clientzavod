@@ -3,6 +3,7 @@ const router = express.Router();
 const sessionService = require('../services/session.service');
 const dockerService = require('../services/docker.service');
 const manageStore = require('../manage/store');
+const requireVerifiedChatId = require('../middleware/requireVerifiedChatId');
 
 // ─── Вспомогательная функция: детерминированный порт (совпадает с toolHandlers) ──
 function calcAppPort(chatId, appName) {
@@ -138,7 +139,7 @@ router.get('/:chat_id/port/:app_name', async (req, res) => {
  * Нужно для приложений, созданных до рефакторинга (старый формат "скрипт с argv").
  * POST /api/apps/:chat_id/fix/:app_name
  */
-router.post('/:chat_id/fix/:app_name', async (req, res) => {
+router.post('/:chat_id/fix/:app_name', requireVerifiedChatId(req => req.params.chat_id), async (req, res) => {
     const { chat_id, app_name } = req.params;
 
     let session;
@@ -221,7 +222,7 @@ app.listen(port, '0.0.0.0', () => {
  * POST /api/apps/:chat_id/:action
  * body: { name: "app-name" }  или  { id: 0 }
  */
-router.post('/:chat_id/:action', async (req, res) => {
+router.post('/:chat_id/:action', requireVerifiedChatId(req => req.params.chat_id), async (req, res) => {
     const { chat_id, action } = req.params;
     const { name, id } = req.body;
 

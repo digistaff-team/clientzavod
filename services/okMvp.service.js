@@ -16,7 +16,7 @@ const okService = require('./ok.service');
 const okRepo = require('./content/ok.repository');
 const { databaseExists } = require('./postgres.service');
 const inputImageContext = require('./inputImageContext.service');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 const channelSkills = require('./channelSkills');
 
 const contentModules = require('./content/index');
@@ -522,17 +522,14 @@ async function publishOkPost(chatId, bot, jobId, correlationId) {
  */
 async function sendOkToModerator(chatId, bot, draft) {
   const okSettings = getOkSettings(chatId);
-  const globalSettings = manageStore.getContentSettings?.(chatId);
-  
-  // Иерархия: модератор канала → глобальный модератор → chatId
-  const moderatorId = okSettings?.moderatorUserId || 
-                      globalSettings?.moderatorUserId || 
-                      chatId;
+
+  const moderatorId = manageStore.getEffectiveModerator(chatId, okSettings);
 
   console.log(`[OK-MODERATION] Sending draft to moderator ${moderatorId}, jobId=${draft.jobId}, corr=${draft.correlationId || 'n/a'}`);
 
   const caption = [
     `📢 Черновик для Одноклассников #${draft.jobId}`,
+    formatDraftMeta(chatId),
     `Группа: ${draft.communityId || '?'}`,
     '',
     `🪝 Хук: ${draft.hookText || '—'}`,
@@ -669,46 +666,12 @@ async function handleOkModerationAction(chatId, bot, jobId, action) {
   }
 
   if (action === 'reject') {
-    draft.rejectedCount = (draft.rejectedCount || 0) + 1;
-    console.log(`[OK-MODERATION-ACTION] Rejected jobId=${jobId}, count=${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}`);
-    await setDraft(chatId, String(jobId), draft);
-
-    if (draft.rejectedCount >= MAX_REJECT_ATTEMPTS) {
-      await okRepo.updateJob(chatId, jobId, { status: 'failed', errorText: `Rejected ${MAX_REJECT_ATTEMPTS} times` });
-      await removeDraft(chatId, String(jobId));
-      return { ok: true, message: `ОК-пост отклонен ${MAX_REJECT_ATTEMPTS} раза. Задача закрыта.` };
+    if (draft.topic?.sheetRow) {
+      await repository.releaseTopic(chatId, draft.topic.sheetRow).catch(() => {});
     }
-
-    // Полная перегенерация
-    try {
-      const [materialsText, personaText] = await Promise.all([
-        loadMaterialsText(chatId, 12),
-        loadUserPersona(chatId)
-      ]);
-      const okText = await generateOkPostText(chatId, draft.topic, materialsText, personaText);
-      const imageBuffer = await generateOkImage(chatId, draft.topic);
-      const imagePath = await saveImageToContainer(chatId, imageBuffer, `${jobId}_reject_${Date.now()}`);
-
-      draft.postText = okText.postText;
-      draft.hookText = okText.hookText;
-      draft.imagePrompt = okText.imagePrompt;
-      draft.imagePath = imagePath;
-
-      await okRepo.updateJob(chatId, jobId, {
-        postText: okText.postText,
-        hookText: okText.hookText,
-        imagePrompt: okText.imagePrompt,
-        imagePath,
-        rejectedCount: draft.rejectedCount
-      });
-
-      await sendOkToModerator(chatId, bot, draft);
-      console.log(`[OK-MODERATION-ACTION] Full regen done for jobId=${jobId} (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS})`);
-      return { ok: true, message: `ОК-пост перегенерирован (${draft.rejectedCount}/${MAX_REJECT_ATTEMPTS}).` };
-    } catch (e) {
-      console.error(`[OK-MODERATION-ACTION] reject regen failed for jobId=${jobId}:`, e.message);
-      return { ok: false, message: `Ошибка перегенерации: ${e.message}` };
-    }
+    await okRepo.updateJob(chatId, jobId, { status: 'failed', errorText: 'Rejected by moderator' });
+    await removeDraft(chatId, String(jobId));
+    return { ok: true, message: 'ОК-пост отклонен. Тема освобождена.' };
   }
 
   return { ok: false, message: 'Неизвестное действие.' };

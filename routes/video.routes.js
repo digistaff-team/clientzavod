@@ -5,7 +5,7 @@ const fs = require('fs');
 const videoPipeline = require('../services/videoPipeline.service');
 const manageStore = require('../manage/store');
 
-const ALLOWED_VIDEO_MODELS = ['veo3.1', 'seedance-2', 'grok-imagine'];
+const ALLOWED_VIDEO_MODELS = ['veo3_lite', 'veo3_fast', 'veo3', 'veo3.1', 'seedance-2', 'grok-imagine'];
 
 function normalizeChatId(chatId) {
   return String(chatId || '').trim();
@@ -495,10 +495,12 @@ router.get('/settings', (req, res) => {
   return res.json({
     success: true,
     settings: {
-      model: settings.model || (process.env.VIDEO_MODEL || 'veo3.1'),
+      model: settings.model || (process.env.VIDEO_MODEL || 'veo3_lite'),
     },
     availableModels: [
-      { id: 'veo3.1',       name: 'Veo 3.1',       provider: 'Google / KIE.ai',    available: true },
+      { id: 'veo3_lite',    name: 'Veo 3.1 Lite',   provider: 'Google / KIE.ai',    available: true },
+      { id: 'veo3_fast',    name: 'Veo 3.1 Fast',   provider: 'Google / KIE.ai',    available: true },
+      { id: 'veo3',         name: 'Veo 3.1 Quality', provider: 'Google / KIE.ai',    available: true },
       { id: 'seedance-2',   name: 'Seedance 2.0',   provider: 'ByteDance / KIE.ai', available: true },
       { id: 'grok-imagine', name: 'Grok Imagine',   provider: 'xAI / KIE.ai',       available: true },
     ]

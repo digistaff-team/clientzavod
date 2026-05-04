@@ -31,7 +31,7 @@ const vpRepo = require('./content/videoPipeline.repository');
 // ============================================
 
 const VIDEO_TEMP_ROOT = process.env.VIDEO_TEMP_ROOT || path.join(config.DATA_ROOT, '.video-temp');
-const VIDEO_MODEL = process.env.VIDEO_MODEL || 'veo3.1';
+const VIDEO_MODEL = process.env.VIDEO_MODEL || 'veo3_lite';
 const VIDEO_ASPECT_RATIO = process.env.VIDEO_ASPECT_RATIO || '9:16';
 const VIDEO_POLL_INTERVAL_SEC = parseInt(process.env.VIDEO_POLL_INTERVAL_SEC || '25', 10);
 const VIDEO_TIMEOUT_SEC = parseInt(process.env.VIDEO_TIMEOUT_SEC || '600', 10);
@@ -79,7 +79,7 @@ async function getInputImages(chatId) {
     for (const entry of entries) {
       const fullPath = path.join(inputDir, entry);
       const stat = await fs.stat(fullPath);
-      if (stat.isFile() && /\.(jpg|jpeg|png|webp)$/i.test(entry)) {
+      if (stat.isFile() && /\.(jpg|jpeg|png|webp)$/i.test(entry) && !/^video\d+\./i.test(entry)) {
         files.push({
           filename: entry,
           filepath: fullPath,
@@ -102,6 +102,85 @@ async function getRandomProductImage(chatId) {
   const images = await getInputImages(chatId);
   if (images.length === 0) return null;
   return images[Math.floor(Math.random() * images.length)];
+}
+
+/**
+ * Прочитать промпт для референсного видео.
+ * По имени videoXX.ext ищет videopromptXX.txt в той же папке input/.
+ * Возвращает текст промпта или null.
+ */
+async function getVideoReferencePrompt(chatId, videoFilename) {
+  const match = videoFilename.match(/^video(\d+)\./i);
+  if (!match) return null;
+  const session = await sessionService.getOrCreateSession(chatId);
+  const promptPath = path.join(session.dataDir, 'input', `videoprompt${match[1]}.txt`);
+  try {
+    const text = await fs.readFile(promptPath, 'utf8');
+    return text.trim().slice(0, 1000) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Получить список референсных изображений для прямой генерации видео.
+ * Ищет файлы с именем вида videoXX (video01, video02, ...) в /workspace/input.
+ */
+async function getVideoReferenceImages(chatId) {
+  const session = await sessionService.getOrCreateSession(chatId);
+  const inputDir = path.join(session.dataDir, 'input');
+  try {
+    const entries = await fs.readdir(inputDir);
+    const files = [];
+    for (const entry of entries) {
+      if (!/^video\d+\.(jpg|jpeg|png|webp)$/i.test(entry)) continue;
+      const fullPath = path.join(inputDir, entry);
+      const stat = await fs.stat(fullPath);
+      if (stat.isFile()) files.push({ filename: entry, filepath: fullPath });
+    }
+    files.sort((a, b) => a.filename.localeCompare(b.filename));
+    return files;
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    throw e;
+  }
+}
+
+/**
+ * После успешной генерации переименовать референс videoNN.<ext> → used4videoNN.<ext>
+ * и парный videopromptNN.txt → used4videopromptNN.txt, чтобы файл больше не выпадал
+ * в getVideoReferenceImages (фильтр требует префикс ровно `video`).
+ * Не бросает: сбой переименования не должен ломать успешный результат.
+ */
+async function markVideoReferenceAsUsed(chatId, videoFilename) {
+  const match = videoFilename.match(/^video(\d+)\.(jpg|jpeg|png|webp)$/i);
+  if (!match) return;
+  const num = match[1];
+  const ext = match[2];
+  const session = await sessionService.getOrCreateSession(chatId);
+  const inputDir = path.join(session.dataDir, 'input');
+
+  try {
+    await fs.rename(
+      path.join(inputDir, videoFilename),
+      path.join(inputDir, `used4video${num}.${ext}`)
+    );
+    console.log(`[VIDEO-PIPELINE] Reference retired: ${videoFilename} → used4video${num}.${ext}`);
+  } catch (e) {
+    console.warn(`[VIDEO-PIPELINE] Failed to rename ${videoFilename}: ${e.message}`);
+  }
+
+  try {
+    await fs.rename(
+      path.join(inputDir, `videoprompt${num}.txt`),
+      path.join(inputDir, `used4videoprompt${num}.txt`)
+    );
+    console.log(`[VIDEO-PIPELINE] Prompt retired: videoprompt${num}.txt → used4videoprompt${num}.txt`);
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      console.warn(`[VIDEO-PIPELINE] Failed to rename videoprompt${num}.txt: ${e.message}`);
+    }
+  }
 }
 
 // ============================================
@@ -161,24 +240,32 @@ async function generateScene(chatId, productImage, interior, correlationId) {
   // Используем AI для создания промпта сцены
   let enhancedPrompt = prompt;
   try {
-    const aiResponse = await aiRouterService.chatCompletion(
-      chatId,
-      [
-        {
-          role: 'system',
-          content: 'You are a professional product photography director. Given a product filename and interior description, create a detailed image generation prompt for placing the product in the interior.'
-        },
-        {
-          role: 'user',
-          content: `Product: ${productImage.filename}\nInterior: ${description}\nStyle: ${style}\n\nCreate a detailed image generation prompt (max 200 chars) for placing this product in the described interior. Focus on composition, lighting, and mood. No text, no logos.`
-        }
-      ],
-      { temperature: 0.7, max_tokens: 200 }
-    );
-
-    if (aiResponse?.content) {
-      enhancedPrompt = aiResponse.content.trim().slice(0, 500);
-      console.log(`[VIDEO-PIPELINE] Enhanced prompt: ${enhancedPrompt}`);
+    // videopromptXX.txt (по имени файла video01.jpg → videoprompt01.txt), иначе AI
+    const videoPrompt = await getVideoReferencePrompt(chatId, productImage.filename);
+    if (videoPrompt && videoPrompt.trim()) {
+      enhancedPrompt = videoPrompt.trim().slice(0, 500);
+      const num = productImage.filename.match(/^video(\d+)\./i)?.[1];
+      console.log(`[VIDEO-PIPELINE] Using videoprompt${num}.txt: ${enhancedPrompt}`);
+    } else {
+      const aiResponse = await aiRouterService.callAI(
+        chatId, null, null,
+        [
+          {
+            role: 'system',
+            content: 'You are a professional product photography director. Given a product filename and interior description, create a detailed image generation prompt for placing the product in the interior.'
+          },
+          {
+            role: 'user',
+            content: `Product: ${productImage.filename}\nInterior: ${description}\nStyle: ${style}\n\nCreate a detailed image generation prompt (max 200 chars) for placing this product in the described interior. Focus on composition, lighting, and mood. No text, no logos.`
+          }
+        ],
+        null, null
+      );
+      const enhancedContent = aiResponse?.choices?.[0]?.message?.content;
+      if (enhancedContent) {
+        enhancedPrompt = enhancedContent.trim().slice(0, 500);
+        console.log(`[VIDEO-PIPELINE] Enhanced prompt: ${enhancedPrompt}`);
+      }
     }
   } catch (e) {
     console.warn(`[VIDEO-PIPELINE] AI prompt enhancement failed: ${e.message}, using default`);
@@ -314,30 +401,30 @@ async function generateImageViaKIE(chatId, prompt, productImageUrl, correlationI
  * @param {string} model       - 'veo3.1' | 'seedance-2' | 'grok-imagine'
  * @returns {Promise<{ videoBuffer, duration }>}
  */
-async function generateVideoFromScene(chatId, videoId, sceneImagePath, correlationId, model) {
+async function generateVideoFromScene(chatId, videoId, sceneImagePath, correlationId, model, prompt = null) {
   const apiKey = process.env.KIE_API_KEY;
   if (!apiKey) throw new Error('KIE_API_KEY is not set');
 
   const sceneFilename = path.basename(sceneImagePath);
   const scenePublicUrl = `${config.APP_URL}/api/video/temp/${chatId}/${sceneFilename}`;
-  console.log(`[VIDEO-PIPELINE] Scene public URL: ${scenePublicUrl}, model=${model}`);
+  console.log(`[VIDEO-PIPELINE] Scene public URL: ${scenePublicUrl}, model=${model}${prompt ? ', custom prompt' : ''}`);
 
   if (model === 'seedance-2') {
-    return generateVideoSeedance(chatId, videoId, scenePublicUrl, apiKey);
+    return generateVideoSeedance(chatId, videoId, scenePublicUrl, apiKey, prompt);
   }
   if (model === 'grok-imagine') {
-    return generateVideoGrok(chatId, videoId, scenePublicUrl, apiKey);
+    return generateVideoGrok(chatId, videoId, scenePublicUrl, apiKey, prompt);
   }
 
   // Дефолт: Veo 3.1 (polling)
-  return generateVideoVeo(chatId, scenePublicUrl, correlationId, apiKey);
+  return generateVideoVeo(chatId, scenePublicUrl, correlationId, apiKey, prompt);
 }
 
 /**
  * Veo 3.1 — image-to-video через polling.
  */
-async function generateVideoVeo(chatId, scenePublicUrl, correlationId, apiKey) {
-  const prompt = `Smooth cinematic pan, slow motion product showcase, professional commercial quality, ` +
+async function generateVideoVeo(chatId, scenePublicUrl, correlationId, apiKey, prompt = null) {
+  prompt = prompt || `Smooth cinematic pan, slow motion product showcase, professional commercial quality, ` +
     `vertical format, elegant camera movement, natural lighting transitions, 8 seconds duration.`;
 
   console.log(`[VIDEO-PIPELINE][VEO] Starting, corr=${correlationId}`);
@@ -417,10 +504,18 @@ async function generateVideoVeo(chatId, scenePublicUrl, correlationId, apiKey) {
 /**
  * Seedance 2.0 — image-to-video через webhook (callBackUrl).
  */
-async function generateVideoSeedance(chatId, videoId, scenePublicUrl, apiKey) {
+async function generateVideoSeedance(chatId, videoId, scenePublicUrl, apiKey, prompt = null) {
   const callBackUrl = `${config.APP_URL}/api/video/callback/${chatId}/${videoId}`;
 
   console.log(`[VIDEO-PIPELINE][SEEDANCE] Starting videoId=${videoId}, callBackUrl=${callBackUrl}`);
+
+  const seedanceInput = {
+    first_frame_url: scenePublicUrl,
+    web_search: false,
+    aspect_ratio: '9:16',
+    duration: 8
+  };
+  if (prompt) seedanceInput.prompt = prompt;
 
   const createResp = await fetch('https://api.kie.ai/api/v1/jobs/createTask', {
     method: 'POST',
@@ -431,12 +526,7 @@ async function generateVideoSeedance(chatId, videoId, scenePublicUrl, apiKey) {
     body: JSON.stringify({
       model: 'bytedance/seedance-2',
       callBackUrl,
-      input: {
-        first_frame_url: scenePublicUrl,
-        web_search: false,
-        aspect_ratio: '9:16',
-        duration: 8
-      }
+      input: seedanceInput
     }),
     timeout: 30000
   });
@@ -476,10 +566,18 @@ async function generateVideoSeedance(chatId, videoId, scenePublicUrl, apiKey) {
 /**
  * Grok Imagine — image-to-video через webhook (callBackUrl).
  */
-async function generateVideoGrok(chatId, videoId, scenePublicUrl, apiKey) {
+async function generateVideoGrok(chatId, videoId, scenePublicUrl, apiKey, prompt = null) {
   const callBackUrl = `${config.APP_URL}/api/video/callback/${chatId}/${videoId}`;
 
   console.log(`[VIDEO-PIPELINE][GROK] Starting videoId=${videoId}, callBackUrl=${callBackUrl}`);
+
+  const grokInput = {
+    image_urls: [scenePublicUrl],
+    duration: '8',
+    mode: 'normal',
+    aspect_ratio: '9:16'
+  };
+  if (prompt) grokInput.prompt = prompt;
 
   const createResp = await fetch('https://api.kie.ai/api/v1/jobs/createTask', {
     method: 'POST',
@@ -490,12 +588,7 @@ async function generateVideoGrok(chatId, videoId, scenePublicUrl, apiKey) {
     body: JSON.stringify({
       model: 'grok-imagine/image-to-video',
       callBackUrl,
-      input: {
-        image_urls: [scenePublicUrl],
-        duration: '8',
-        mode: 'normal',
-        aspect_ratio: '9:16'
-      }
+      input: grokInput
     }),
     timeout: 30000
   });
@@ -629,70 +722,95 @@ async function generateVideo(chatId, initiatingChannel, correlationId) {
 
   console.log(`[VIDEO-PIPELINE] Starting generation: chatId=${chatId}, channel=${initiatingChannel}, corr=${corrId}`);
 
-  // Ранние проверки до создания записи
-  // Проверка на конкурентную генерацию
   if (generatingLocks.has(chatId)) {
     return { success: false, error: 'Generation already in progress for this user. Please wait.', videoId: null, videoPath: null };
   }
 
-  const productImage = await getRandomProductImage(chatId);
-  if (!productImage) {
-    return { success: false, error: 'No product images found in /workspace/input. Upload images first.', videoId: null, videoPath: null };
-  }
-  console.log(`[VIDEO-PIPELINE] Selected product image: ${productImage.filename}`);
+  const settings = manageStore.getVideoPipelineSettings(chatId);
+  const model = settings.model || VIDEO_MODEL;
+  const useVideoRef = settings.useVideoRef === true;
 
-  const interior = await getRandomInterior(chatId);
-  if (!interior) {
-    return { success: false, error: 'No interiors configured. Add interiors first.', videoId: null, videoPath: null };
+  // Определяем режим: референсное изображение или обычный пайплайн
+  let refImage = null;
+  if (useVideoRef) {
+    const refImages = await getVideoReferenceImages(chatId);
+    if (refImages.length > 0) {
+      refImage = refImages[Math.floor(Math.random() * refImages.length)];
+      refImage.prompt = await getVideoReferencePrompt(chatId, refImage.filename);
+      console.log(`[VIDEO-PIPELINE] Reference mode: using ${refImage.filename}${refImage.prompt ? `, prompt: "${refImage.prompt.slice(0, 60)}…"` : ''}`);
+    } else {
+      console.warn(`[VIDEO-PIPELINE] useVideoRef=true but no video** files found in input/, falling back to normal mode`);
+    }
   }
-  console.log(`[VIDEO-PIPELINE] Selected interior: ${interior.style} (${interior.description.slice(0, 50)}...)`);
+
+  // Ранние проверки для обычного режима
+  let productImage = null;
+  let interior = null;
+  if (!refImage) {
+    productImage = await getRandomProductImage(chatId);
+    if (!productImage) {
+      return { success: false, error: 'No product images found in /workspace/input. Upload images first.', videoId: null, videoPath: null };
+    }
+    interior = await getRandomInterior(chatId);
+    if (!interior) {
+      return { success: false, error: 'No interiors configured. Add interiors first.', videoId: null, videoPath: null };
+    }
+    console.log(`[VIDEO-PIPELINE] Selected product image: ${productImage.filename}`);
+    console.log(`[VIDEO-PIPELINE] Selected interior: ${interior.style} (${interior.description.slice(0, 50)}...)`);
+  }
 
   let videoId = null;
   generatingLocks.add(chatId);
 
   try {
-    // Шаг 3: Создать запись видео-ассета
     const videoAsset = await vpRepo.createVideoAsset(chatId, {
-      productImagePath: productImage.filename,
-      interiorId: interior.id,
+      productImagePath: refImage ? refImage.filename : productImage.filename,
+      interiorId: interior?.id || null,
       correlationId: corrId,
       initiatingChannel
     });
     videoId = videoAsset.id;
 
-    // Обновляем статус: scene_generating
     await vpRepo.updateVideoStatus(chatId, videoId, 'scene_generating');
 
-    // Шаг 4: Сгенерировать сцену
-    const sceneResult = await generateScene(chatId, productImage, interior, corrId);
+    let sceneResult;
+    if (refImage) {
+      // Копируем референсное изображение в temp — минуем генерацию сцены
+      const chatTempDir = path.join(VIDEO_TEMP_ROOT, String(chatId));
+      await fs.mkdir(chatTempDir, { recursive: true });
+      const ext = path.extname(refImage.filename) || '.jpg';
+      const sceneFilename = `scene_ref_${corrId}${ext}`;
+      const scenePath = path.join(chatTempDir, sceneFilename);
+      await fs.copyFile(refImage.filepath, scenePath);
+      sceneResult = { imagePath: scenePath, refPrompt: refImage.prompt };
+      console.log(`[VIDEO-PIPELINE] Reference image ready as scene: ${scenePath}${refImage.prompt ? `, prompt loaded` : ''}`);
+    } else {
+      sceneResult = await generateScene(chatId, productImage, interior, corrId);
+    }
 
-    // Обновляем статус: scene_ready
     await vpRepo.updateVideoStatus(chatId, videoId, 'scene_ready', {
       sceneImagePath: sceneResult.imagePath
     });
     console.log(`[VIDEO-PIPELINE] Scene ready: ${sceneResult.imagePath}`);
 
-    // Шаг 5: Обновляем статус: video_generating
     await vpRepo.updateVideoStatus(chatId, videoId, 'video_generating');
 
-    // Шаг 6: Сгенерировать видео
-    const settings = manageStore.getVideoPipelineSettings(chatId);
-    const model = settings.model || VIDEO_MODEL;
     console.log(`[VIDEO-PIPELINE] Using model: ${model}`);
-    const videoResult = await generateVideoFromScene(chatId, videoId, sceneResult.imagePath, corrId, model);
+    const videoResult = await generateVideoFromScene(chatId, videoId, sceneResult.imagePath, corrId, model, sceneResult.refPrompt || null);
 
-    // Шаг 7: Сохранить видео
     const saved = await saveVideoToTemp(chatId, videoResult.videoBuffer, videoId);
 
-    // Шаг 8: Обновить статус: video_ready
     await vpRepo.updateVideoStatus(chatId, videoId, 'video_ready', {
       videoPath: saved.filename,
       videoDuration: videoResult.duration,
       fileSize: videoResult.videoBuffer.length
     });
 
-    // Шаг 9: Поставить метку initiatingChannel
     await vpRepo.markVideoUsedById(chatId, videoId, initiatingChannel);
+
+    if (refImage) {
+      await markVideoReferenceAsUsed(chatId, refImage.filename);
+    }
 
     console.log(`[VIDEO-PIPELINE] Video generated successfully: videoId=${videoId}, path=${saved.filepath}`);
 
@@ -707,7 +825,6 @@ async function generateVideo(chatId, initiatingChannel, correlationId) {
   } catch (e) {
     console.error(`[VIDEO-PIPELINE] Generation failed: ${e.message}`, e);
 
-    // Обновляем статус на failed если запись уже создана
     if (videoId) {
       try {
         await vpRepo.updateVideoStatus(chatId, videoId, 'failed', { errorText: e.message });

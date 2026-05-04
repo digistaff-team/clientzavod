@@ -13,7 +13,7 @@ const storageService = require('./storage.service');
 const bufferService = require('./buffer.service');
 const videoPipeline = require('./videoPipeline.service');
 const repository = require('./content/repository');
-const { safeSendToModerator } = require('./telegram.utils');
+const { safeSendToModerator, formatDraftMeta } = require('./telegram.utils');
 const channelSkills = require('./channelSkills');
 
 let cwBot = null; // Центральный бот премодерации
@@ -348,18 +348,12 @@ async function sendTiktokToModerator(chatId, bot, draft) {
   }
 
   const settings = getTiktokSettings(chatId);
-  const moderatorId = settings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID;
-
-  if (!moderatorId) {
-    console.warn('[TIKTOK-MVP] No moderator configured, auto-publishing');
-    await setTiktokDraft(chatId, String(draft.jobId), draft);
-    await publishTiktokPost(chatId, bot, draft.jobId);
-    return;
-  }
+  const moderatorId = manageStore.getEffectiveModerator(chatId, settings);
 
   // Формируем сообщение для модератора
   const caption = [
     `🎬 TikTok — черновик для модерации`,
+    formatDraftMeta(chatId),
     ``,
     `📝 ${draft.caption}`,
     ``,

@@ -256,6 +256,7 @@ router.post('/import-pinterest-boards', async (req, res) => {
 router.post('/pinterest/run-now', async (req, res) => {
   const chatId = normalizeChatId(req.body.chat_id);
   const reason = String(req.body.reason || 'api').trim() || 'api';
+  const boardId = req.body.board_id ? String(req.body.board_id).trim() : null;
   if (!chatId) {
     return res.status(400).json({ error: 'chat_id is required' });
   }
@@ -264,7 +265,7 @@ router.post('/pinterest/run-now', async (req, res) => {
     return res.status(409).json({ error: 'Telegram bot is not running for chat_id' });
   }
   try {
-    const result = await pinterestMvpService.runNow(chatId, bot, reason);
+    const result = await pinterestMvpService.runNow(chatId, bot, reason, boardId);
     return res.json(result);
   } catch (e) {
     return res.status(500).json({ error: e.message });

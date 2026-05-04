@@ -59,7 +59,7 @@ app.use(async (req, res, next) => {
 
 // Middleware
 app.use(express.json({ limit: '100mb' }));
-app.use(express.static('public'));
+app.use(express.static('public', { etag: true, lastModified: true, maxAge: 0 }));
 app.use(session({
     store: new FileStore({
         path: '/var/sandbox-data/.admin-sessions',
@@ -171,6 +171,47 @@ async function startServer() {
             console.log(`[CW-BOT] Username (from config): @${cwBotUsername}`);
         }
 
+        // Автоматическая отправка кода при запуске бота (/start)
+        cwBot.start(async (ctx) => {
+            const fromId = String(ctx.from?.id || '');
+            const username = ctx.from?.username ? `@${ctx.from.username}` : null;
+
+            let data = manageStore.getState(fromId);
+            let chatId = fromId;
+
+            if (!data) {
+                const allStates = manageStore.getAllStates();
+                for (const [cid, state] of Object.entries(allStates)) {
+                    if (state.verifiedTelegramId === fromId) {
+                        data = state;
+                        chatId = cid;
+                        break;
+                    }
+                }
+            }
+
+            if (!data) {
+                await ctx.reply('Вы не найдены в системе. Сначала авторизуйтесь через бота @clientzavod_bot').catch(() => {});
+                return;
+            }
+
+            if (data.onboardingComplete) {
+                await ctx.reply('Вы уже прошли настройку аккаунта.', {
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '📢 Перейти к каналам', url: `${config.APP_URL}/channels.html` }
+                        ]]
+                    }
+                }).catch(() => {});
+                return;
+            }
+
+            const code = String(Math.floor(100000 + Math.random() * 900000));
+            console.log(`[CW-BOT] /start from ${fromId}, generated code ${code} for chatId ${chatId}`);
+            manageStore.setPending(chatId, code, fromId, username);
+            await ctx.reply(`Код подтверждения: <b>${code}</b>\n\nВведите этот код на странице настройки. Код действителен 10 минут.`, { parse_mode: 'HTML' }).catch(() => {});
+        });
+
         // Обработчик текстовых сообщений для верификации через код
         cwBot.on('text', async (ctx) => {
             const fromId = String(ctx.from?.id || '');
@@ -204,7 +245,13 @@ async function startServer() {
             // Проверяем, прошёл ли пользователь онбординг (а не только авторизацию)
             if (data.onboardingComplete) {
                 console.log(`[CW-BOT] User ${fromId} already completed onboarding`);
-                await ctx.reply('Вы уже прошли настройку аккаунта. Перейдите в раздел "Каналы".').catch(() => {});
+                await ctx.reply('Вы уже прошли настройку аккаунта.', {
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '📢 Перейти к каналам', url: `${config.APP_URL}/channels.html` }
+                        ]]
+                    }
+                }).catch(() => {});
                 return;
             }
 
@@ -239,7 +286,7 @@ async function startServer() {
                 // Проверяем доступ: владелец или модератор
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const contentSettings = data.contentSettings || {};
-                const moderatorId = String(contentSettings.moderatorUserId || process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+                const moderatorId = String(contentSettings.moderatorUserId || '');
                 const allowedIds = new Set([ownerTgId, moderatorId].filter(Boolean));
                 if (allowedIds.has(fromId)) {
                     resolvedChatId = cid;
@@ -293,7 +340,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = vkSettings.moderatorUserId ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           data.verifiedTelegramId;
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
@@ -344,7 +391,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = okSettings.moderatorUserId ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           data.verifiedTelegramId;
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
@@ -392,7 +439,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = String(igConfig.moderator_user_id ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID || '');
+                                           data.verifiedTelegramId || '');
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
@@ -440,7 +487,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = ytSettings.moderator_user_id ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           data.verifiedTelegramId;
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
@@ -489,7 +536,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = pinSettings.moderatorUserId ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           data.verifiedTelegramId;
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
@@ -537,7 +584,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = ttSettings.moderatorUserId ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           data.verifiedTelegramId;
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
@@ -584,7 +631,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = fbConfig.moderatorUserId ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           data.verifiedTelegramId;
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
@@ -633,7 +680,7 @@ async function startServer() {
                 const globalSettings = data.contentSettings || {};
                 const channelModeratorId = vkVidSettings.moderator_user_id ||
                                            globalSettings.moderatorUserId ||
-                                           process.env.CONTENT_MVP_MODERATOR_USER_ID;
+                                           data.verifiedTelegramId;
                 const ownerTgId = String(data.verifiedTelegramId || '');
                 const allowedIds = new Set([ownerTgId, channelModeratorId].filter(Boolean));
 
