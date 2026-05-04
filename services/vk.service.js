@@ -3,6 +3,7 @@
  * Публикация на стену группы, загрузка фото, Stories
  */
 const https = require('https');
+const http = require('http');
 const manageStore = require('../manage/store');
 
 // Утилита: удалить Markdown-разметку
@@ -33,16 +34,29 @@ const RETRY_BASE_MS = 2000;
 function request(url, options = {}) {
     return new Promise((resolve, reject) => {
         const urlObj = new URL(url);
+        const isHttps = urlObj.protocol === 'https:';
+        const lib = isHttps ? https : http;
+
+        const headers = { ...(options.headers || {}) };
+
+        // Явно выставляем Content-Length если есть тело
+        if (options.body) {
+            const bodyLen = Buffer.isBuffer(options.body)
+                ? options.body.length
+                : Buffer.byteLength(options.body);
+            headers['Content-Length'] = bodyLen;
+        }
+
         const reqOptions = {
             hostname: urlObj.hostname,
-            port: urlObj.port || 443,
+            port: urlObj.port || (isHttps ? 443 : 80),
             path: urlObj.pathname + urlObj.search,
             method: options.method || 'GET',
-            headers: options.headers || {},
+            headers,
             timeout: options.timeout || 30000
         };
 
-        const req = https.request(reqOptions, (res) => {
+        const req = lib.request(reqOptions, (res) => {
             const chunks = [];
             res.on('data', chunk => chunks.push(chunk));
             res.on('end', () => {
@@ -150,7 +164,6 @@ async function uploadPhoto(uploadUrl, imageBuffer, filename = 'photo.png') {
         method: 'POST',
         headers: {
             'Content-Type': `multipart/form-data; boundary=${boundary}`,
-            'Content-Length': body.length
         },
         body,
         timeout: 60000
@@ -158,8 +171,21 @@ async function uploadPhoto(uploadUrl, imageBuffer, filename = 'photo.png') {
 
     console.log(`[VK-PHOTO] Upload response:`, JSON.stringify(res.json, null, 2).substring(0, 500));
 
-    if (!res.json || res.json.error) {
-        throw new Error(`VK photo upload failed: ${res.body?.slice(0, 300)}`);
+    if (!res.json) {
+        throw new Error(`VK photo upload failed: empty response. Body: ${res.body?.slice(0, 300)}`);
+    }
+
+    if (res.json.error) {
+        throw new Error(`VK photo upload failed: ${res.json.error}`);
+    }
+
+    // Проверяем что поле photo не пустое
+    if (!res.json.photo || res.json.photo === '') {
+        throw new Error(`VK photo upload failed: server returned empty "photo" field. Response: ${JSON.stringify(res.json)}`);
+    }
+
+    if (!res.json.server || !res.json.hash) {
+        throw new Error(`VK photo upload failed: missing server or hash fields. Response: ${JSON.stringify(res.json)}`);
     }
 
     return res.json;
